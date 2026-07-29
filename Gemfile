@@ -18,7 +18,7 @@ end
 # Rails must load before Propshaft (its railtie only registers once Rails is
 # present), and Propshaft before the Spree gems, so that tinymce-rails (loaded
 # by spree_admin) detects it and serves TinyMCE assets in development.
-gem 'rails', '~> 8.1.2'
+gem 'rails', '~> 8.1.3'
 gem 'propshaft'
 
 # Spree Commerce
