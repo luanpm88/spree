@@ -1,0 +1,113 @@
+# Production: runs a PREBUILT image pulled from GHCR — the server never builds.
+#
+# Why: building Spree needs `bundle install` + `assets:precompile`, which wants
+# ~2GB RAM and several minutes of CPU. GitHub Actions does that (see
+# .github/workflows/deploy.yml) and pushes to ghcr.io; the server only pulls.
+#
+# Usage on the server (see docs/DEPLOY.md for the full walkthrough):
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# The app listens on 127.0.0.1 only — host nginx terminates TLS and proxies in.
+# It is never directly reachable from the internet.
+
+x-app: &app
+  image: ${SPREE_IMAGE:-ghcr.io/luanpm88/spree:latest}
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    RAILS_ENV: production
+    DATABASE_URL: postgres://postgres@postgres:5432/spree_production
+
+    SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in .env}
+
+    # Public hostname — used for every generated URL (image URLs in API
+    # responses, links inside emails). Wrong value here = broken email links.
+    RAILS_HOST: ${RAILS_HOST:?set RAILS_HOST in .env}
+
+    # nginx terminates TLS and forwards plain HTTP over loopback.
+    # ASSUME_SSL=true  -> Rails generates https:// URLs and marks cookies secure.
+    # FORCE_SSL=false  -> Rails must NOT redirect again; nginx already did,
+    #                     and redirecting here causes an infinite loop.
+    RAILS_ASSUME_SSL: "true"
+    RAILS_FORCE_SSL: "false"
+
+    RAILS_LOG_LEVEL: ${RAILS_LOG_LEVEL:-info}
+
+    # ── Memory budget ────────────────────────────────────────────────────────
+    # Upstream's own render.yaml states a Spree process needs ~1GB RAM. These
+    # values are deliberately minimal for a small box. Raise them when the
+    # server has headroom.
+    WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}   # Puma workers (processes)
+    RAILS_MAX_THREADS: ${RAILS_MAX_THREADS:-3}
+    JOB_THREADS: ${JOB_THREADS:-2}           # Solid Queue pool, runs in Puma
+
+    # /jobs dashboard is admin-only — REQUIRED in production.
+    MISSION_CONTROL_USER: ${MISSION_CONTROL_USER:?set in .env}
+    MISSION_CONTROL_PASSWORD: ${MISSION_CONTROL_PASSWORD:?set in .env}
+
+    # Outgoing mail. If SMTP_HOST is unset Spree only LOGS mail — customers
+    # get nothing. See docs/DEPLOY.md §6.
+    SMTP_HOST: ${SMTP_HOST:-}
+    SMTP_PORT: ${SMTP_PORT:-587}
+    SMTP_USERNAME: ${SMTP_USERNAME:-}
+    SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust   # only reachable on the compose network
+      POSTGRES_DB: spree_production
+      PGDATA: /var/lib/postgresql/18/docker
+    # Tuned small on purpose. Postgres defaults assume it owns the machine.
+    command: >
+      postgres
+        -c shared_buffers=128MB
+        -c effective_cache_size=384MB
+        -c work_mem=4MB
+        -c maintenance_work_mem=64MB
+        -c max_connections=40
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: pg_isready -U postgres
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # Puma serves HTTP and runs Solid Queue's job supervisor in-process, so this
+  # is the only app container. The image ENTRYPOINT runs `db:prepare` when the
+  # command is `rails server`, so migrations apply automatically on deploy.
+  web:
+    <<: *app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Loopback ONLY. Host nginx proxies spree.b-teka.com to this.
+      # Binding 0.0.0.0 here would expose the app to the internet directly and
+      # bypass the host firewall (Docker inserts NAT rules ahead of ufw).
+      - "127.0.0.1:${SPREE_PORT:-3010}:3000"
+    volumes:
+      - storage_data:/rails/storage   # ActiveStorage local disk (uploads)
+    healthcheck:
+      test: curl -f http://localhost:3000/up || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 1200M
+
+volumes:
+  postgres_data:
+  storage_data:
