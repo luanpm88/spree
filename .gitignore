@@ -9,6 +9,9 @@
 
 # Ignore all environment files
 .env*
+# …but the templates carry no secrets and must be in the repo.
+!.env.example
+!.env.production.example
 !.env.example
 
 # Ignore all logfiles and tempfiles.
