@@ -1,102 +1,162 @@
-# Bàn giao — Spree Commerce (b-teka)
+# Project Handover — Spree Commerce
 
-**Ngày bàn giao:** 30/07/2026
-**Trạng thái:** đang chạy trên production, dùng để demo/UAT.
+**Handover date:** 30 July 2026
+**Status:** live on production, ready for demo / UAT.
 
-Tài liệu này dành cho **người tiếp nhận đã biết Spree**. Nội dung: đăng nhập ở đâu,
-đang có gì, chưa có gì, và bước tiếp theo.
+This document is written for a recipient **who already knows Spree**. It covers where
+to sign in, what is in place, what is not, and what to do next.
 
-- Chưa biết Spree → đọc [USER_GUIDE.md](USER_GUIDE.md) (có bản PDF)
-- Cần hiểu kiến trúc / data model → [DESIGN.md](DESIGN.md)
-- Chạy trên máy cá nhân → [LOCAL.md](LOCAL.md)
-- Chi tiết vận hành hạ tầng → [DEPLOY.md](DEPLOY.md)
+Companion documents:
+
+| | |
+|---|---|
+| [USER_GUIDE.md](USER_GUIDE.md) | Full guide, beginner → advanced (PDF included) |
+| [DESIGN.md](DESIGN.md) | Architecture, data model, extension points |
+| [LOCAL.md](LOCAL.md) | Running the stack on a developer machine |
+| [DEPLOY.md](DEPLOY.md) | Infrastructure and release process |
 
 ---
 
-## 1. Bắt đầu từ đâu
+## 1. Start here
 
-| # | Việc | Link |
+| # | Step | Link |
 |---|---|---|
-| 1 | Đăng nhập trang quản trị | **https://spree.b-teka.com/admin** |
-| 2 | Xem cửa hàng phía khách | **https://shop.b-teka.com** |
-| 3 | Đọc phần B2B để hiểu cấu hình bán sỉ | [USER_GUIDE.md §5](USER_GUIDE.md) |
+| 1 | Sign in to the admin | **https://spree.b-teka.com/admin** |
+| 2 | Open the customer storefront | **https://shop.b-teka.com** |
+| 3 | Read how B2B is configured | [USER_GUIDE.md §5](USER_GUIDE.md) |
 
-Tài khoản quản trị chính:
+Primary admin account:
 
 ```
 https://spree.b-teka.com/admin
 admin@b-teka.com  /  C6iKd7JsGZTjTbJv
 ```
 
-> **Đổi mật khẩu ngay sau khi nhận bàn giao.** Đây là mật khẩu sinh tự động lúc bàn
-> giao, đã đi qua kênh chat.
+> **Change every password immediately after handover.** These were generated for
+> handover and were shared over chat.
+
+![Admin sign-in](screenshots/prod/admin-01-login.png)
 
 ---
 
-## 2. Đường dẫn
+## 2. The running system
 
-| Chức năng | URL | Ghi chú |
-|---|---|---|
-| **Cửa hàng (khách mua)** | https://shop.b-teka.com | Next.js storefront |
-| **Quản trị** | https://spree.b-teka.com/admin | Rails admin |
-| Dashboard mới (React) | https://spree.b-teka.com/dashboard | bản admin thế hệ mới |
-| Store API | https://spree.b-teka.com/api/v3/store/ | cho storefront |
-| Admin API | https://spree.b-teka.com/api/v3/admin/ | cho tích hợp |
-| Hàng đợi tác vụ | https://spree.b-teka.com/jobs | HTTP Basic riêng |
-| Health check | https://spree.b-teka.com/up | trả 200 nếu app sống |
+Every screenshot below is taken from the **live production system**, not a staging or
+local environment.
 
-Cả hai domain đều đã có HTTPS (Let's Encrypt, tự động gia hạn).
+### 2.1 Customer storefront — https://shop.b-teka.com
+
+![Storefront home page](screenshots/prod/shop-01-home.png)
+
+![Product listing with filters and sort — 36 products](screenshots/prod/shop-02-listing.png)
+
+![Category page — Kitchen](screenshots/prod/shop-04-category.png)
+
+![Product detail — variant selection, stock status, add to cart](screenshots/prod/shop-03-product.png)
+
+### 2.2 Admin — https://spree.b-teka.com/admin
+
+![Admin dashboard](screenshots/prod/admin-02-dashboard.png)
+
+![Products](screenshots/prod/admin-03-products.png)
+
+![Product detail — price and stock live on the variant, not the product](screenshots/prod/admin-07-product-detail.png)
+
+![Orders](screenshots/prod/admin-04-orders.png)
+
+![Customers](screenshots/prod/admin-05-customers.png)
+
+### 2.3 B2B configuration
+
+Three pieces make B2B work. All are configured and running.
+
+![Customer groups — which customers are wholesale](screenshots/prod/admin-06-customer-groups.png)
+
+![Wholesale price list — matches ALL rules: Volume Rule (10+) AND Customer Group Rule](screenshots/prod/admin-08-price-list.png)
+
+![Sales channels — online (B2C), wholesale (B2B), point of sale](screenshots/prod/admin-09-channels.png)
+
+![The B2B gate — "Login required: visitors must sign in to browse", guest checkout not allowed](screenshots/prod/admin-10-channel-b2b.png)
+
+### 2.4 Roles and permissions
+
+![Six job-function roles](screenshots/prod/admin-11-roles.png)
 
 ---
 
-## 3. Tài khoản
+## 3. Accounts
 
-Tất cả tài khoản nhân viên dùng chung mật khẩu bàn giao: **`C6iKd7JsGZTjTbJv`**
+All staff accounts share the handover password: **`C6iKd7JsGZTjTbJv`**
 
-### 3.1 Nhân viên — đăng nhập `/admin`
+### 3.1 Staff — sign in at `/admin`
 
-| Email | Vai trò | Phạm vi |
+| Email | Role | Scope |
 |---|---|---|
-| `admin@b-teka.com` | Quản trị | Toàn quyền, kể cả phân quyền + cấu hình |
-| `manager@b-teka.com` | Quản lý | Đơn, sản phẩm, tồn kho, khuyến mãi, bảng giá, xem khách |
-| `catalog@b-teka.com` | NV sản phẩm | Chỉ sản phẩm, tồn kho, bảng giá |
-| `fulfillment@b-teka.com` | NV xử lý đơn | Đơn, khách, tồn kho, xem sản phẩm |
-| `sales_b2b@b-teka.com` | NV bán sỉ | Đơn, sản phẩm, tồn kho, **quản lý khách & nhóm khách** |
-| `support@b-teka.com` | CSKH | **Chỉ xem** |
+| `admin@b-teka.com` | Administrator | Everything, including permissions and configuration |
+| `manager@b-teka.com` | Store manager | Orders, products, stock, promotions, price lists, view customers |
+| `catalog@b-teka.com` | Catalogue staff | Products, stock and price lists only |
+| `fulfillment@b-teka.com` | Fulfilment | Orders, customers, stock, view products |
+| `sales_b2b@b-teka.com` | B2B sales | Orders, products, stock, **manage customers and customer groups** |
+| `support@b-teka.com` | Customer support | **Read only** |
 
-Phân quyền đã được kiểm chứng tự động (`node script/audit_roles.mjs` — 6/6 đúng).
-Ví dụ: `catalog` không vào được Đơn hàng/Khách hàng; chỉ `admin` vào được Cấu hình.
+Permissions are verified automatically — `node script/audit_roles.mjs` reports **6/6
+roles matching their intended access**. Confirmed by that check: `catalog` cannot reach
+Orders or Customers, `support` cannot reach Stock or Configuration, and only `admin`
+reaches Roles and Store settings.
 
-> **Hai điều về phân quyền Spree cần biết:**
-> 1. Tạo Role trong `/admin` mà **không gán permission set** thì người đó đăng nhập
->    được nhưng không thấy gì. Permission set khai báo trong
->    `config/initializers/spree.rb`, không khai báo qua giao diện.
-> 2. Màn hình **Price Lists gated bởi `ProductDisplay`**, không phải
->    `ProductManagement`. Nên vai trò chỉ-đọc (`support`) **vẫn xem được giá sỉ**.
->    Đây là hành vi của Spree. Muốn chặn thì bỏ `ProductDisplay` khỏi role `support`.
+> **Two things to know about Spree permissions:**
+>
+> 1. Creating a Role in the admin grants **nothing** on its own. A role only means
+>    something once permission sets are assigned to it in
+>    `config/initializers/spree.rb` — that is code, not a UI setting. A role with no
+>    permission sets can sign in and see an empty admin.
+> 2. The **Price Lists screen is gated by `ProductDisplay`, not `ProductManagement`**.
+>    A read-only role such as `support` can therefore **see wholesale pricing**. That
+>    is Spree's behaviour, not a configuration choice here. If it is commercially
+>    unacceptable, remove `ProductDisplay` from the `support` role.
 
-### 3.2 Khách hàng — đăng nhập ở storefront
+### 3.2 Customers — sign in on the storefront
 
-| Email | Loại | Mật khẩu |
+| Email | Type | Password |
 |---|---|---|
-| `wholesale@example.com` | **Khách B2B**, thuộc nhóm `Wholesale` | `C6iKd7JsGZTjTbJv` |
-| `retail@b-teka.com` | Khách lẻ | `C6iKd7JsGZTjTbJv` |
+| `wholesale@example.com` | **B2B customer**, member of the `Wholesale` group | `C6iKd7JsGZTjTbJv` |
+| `retail@b-teka.com` | Retail customer | `C6iKd7JsGZTjTbJv` |
 
-### 3.3 Khác
+To see B2B pricing in action, sign in as the wholesale customer and add **10 or more**
+units of a single item — below 10 the retail price applies.
+
+### 3.3 Other credentials
 
 | | |
 |---|---|
-| `/jobs` | HTTP Basic — user `jobs`, mật khẩu trong `.env` trên server |
-| API key (kênh online / B2C) | `pk_ypr3YTTdE4YqhhPWygYo992o` |
-| API key (kênh wholesale / B2B) | `pk_YPG1LGBuNM46FfqoPq1L5qCF` |
+| `/jobs` dashboard | HTTP Basic — user `jobs`, password in the server `.env` |
+| API key — online channel (B2C) | `pk_ypr3YTTdE4YqhhPWygYo992o` |
+| API key — wholesale channel (B2B) | `pk_YPG1LGBuNM46FfqoPq1L5qCF` |
 
-API key truyền qua header **`X-Spree-Api-Key`** (không phải `Authorization: Bearer`).
+API keys are sent in the **`X-Spree-Api-Key`** header. `Authorization: Bearer` returns
+401 — a common first mistake.
 
 ---
 
-## 4. Nền tảng & phiên bản
+## 4. URLs
 
-| Thành phần | Phiên bản |
+| Purpose | URL |
+|---|---|
+| **Customer storefront** | https://shop.b-teka.com |
+| **Admin** | https://spree.b-teka.com/admin |
+| React dashboard (newer admin) | https://spree.b-teka.com/dashboard |
+| Store API | https://spree.b-teka.com/api/v3/store/ |
+| Admin API | https://spree.b-teka.com/api/v3/admin/ |
+| Background jobs | https://spree.b-teka.com/jobs |
+| Health check | https://spree.b-teka.com/up |
+
+Both domains serve HTTPS with automatically renewing certificates.
+
+---
+
+## 5. Platform
+
+| Component | Version |
 |---|---|
 | Spree Commerce | **5.6.1 Community Edition** |
 | Rails | 8.1.3 |
@@ -104,136 +164,144 @@ API key truyền qua header **`X-Spree-Api-Key`** (không phải `Authorization:
 | PostgreSQL | 18.4 |
 | Storefront | spree/storefront — Next.js 16, React 19, Tailwind 4 (MIT) |
 | Node (storefront) | 22 |
-| OS | Ubuntu 24.04 LTS |
+| Operating system | Ubuntu 24.04 LTS |
 | Container runtime | Docker + Docker Compose |
-| Web server | nginx (reverse proxy, TLS qua Let's Encrypt) |
+| Web server | nginx reverse proxy, TLS via Let's Encrypt |
+| Source | github.com/luanpm88/spree |
 
-### Kiến trúc
+### Architecture
 
 ```
-   Khách  ──►  shop.b-teka.com    ──►  Storefront (Next.js)  ──┐
-                                                                │ Store API
-   NV     ──►  spree.b-teka.com   ──►  Spree (Rails + Puma)  ◄──┘
-                                            │
-                                            └──►  PostgreSQL
+  Customers ──►  shop.b-teka.com   ──►  Storefront (Next.js)  ──┐
+                                                                 │  Store API
+  Staff     ──►  spree.b-teka.com  ──►  Spree (Rails + Puma)  ◄──┘
+                                             │
+                                             └──►  PostgreSQL
 ```
 
-- **Không dùng Redis.** Hàng đợi (Solid Queue), cache (Solid Cache) và websocket
-  (Solid Cable) đều nằm trong PostgreSQL. Job chạy trong cùng process Puma.
-- **Không có worker riêng** — bớt một thành phần phải vận hành.
-- Tất cả chạy trong Docker container; nginx trên host làm reverse proxy và TLS.
-- Ảnh sản phẩm lưu bằng Active Storage trên disk (volume Docker).
+Two points worth knowing:
 
-### Quy trình phát hành
+- **No Redis.** Background jobs (Solid Queue), cache (Solid Cache) and websockets
+  (Solid Cable) all run inside PostgreSQL. Jobs run in the same Puma process, so there
+  is no separate worker to operate.
+- **The storefront's API URL is baked in at build time.** Next.js prerenders pages
+  against the Spree API during the image build, so pointing the storefront at a
+  different backend requires a **rebuild**, not an environment change.
+
+### Release process
 
 ```
 git push origin main
-   └─► GitHub Actions build image (linux/amd64) ─► GitHub Container Registry
-          └─► trên server:  ./script/deploy.sh   (pull + restart + health check)
+   └─► GitHub Actions builds the images (linux/amd64) ─► GitHub Container Registry
+          └─► on the server:  ./script/deploy.sh
 ```
 
-Server **không build** — chỉ tải image đã build sẵn. `script/deploy.sh` tự backup
-database trước khi container mới khởi động (migration chạy từ entrypoint của image).
-
-Mã nguồn: **github.com/luanpm88/spree**
-
----
-
-## 5. Đang có gì
-
-| | Trạng thái |
-|---|---|
-| Trang quản trị đầy đủ | ✅ |
-| Storefront cho khách (Next.js) | ✅ |
-| Store API + Admin API | ✅ |
-| 6 vai trò nhân viên, đã audit | ✅ |
-| **B2B**: kênh riêng bắt đăng nhập | ✅ |
-| **B2B**: nhóm khách hàng | ✅ |
-| **B2B**: bảng giá theo nhóm + theo số lượng | ✅ |
-| Multi-channel (online / wholesale / pos) | ✅ |
-| Multi-market (7 vùng) | ✅ |
-| HTTPS cả 2 domain, tự gia hạn | ✅ |
-| CI/CD build image tự động | ✅ |
-| Backup database mỗi lần deploy | ✅ |
-
-### Dữ liệu hiện tại — **là dữ liệu mẫu**
-
-36 sản phẩm / 121 biến thể / 22 khách / 2 đơn / 24 danh mục / 12 phương thức vận
-chuyển. Đây là **demo data của Spree**, không phải hàng thật. Trước khi chạy thật
-phải xoá và nhập catalog thật.
-
-### Cấu hình B2B đang có
-
-| Thành phần | Giá trị |
-|---|---|
-| Kênh B2B | `wholesale` — *Storefront access: Login required*, *Guest checkout: Not allowed* |
-| Nhóm khách | `Wholesale` |
-| Bảng giá | `Wholesale` — Active, 255 giá, **match ALL** hai điều kiện: |
-| → điều kiện 1 | Volume Rule — mua từ **10** cái |
-| → điều kiện 2 | Customer Group Rule — thuộc nhóm **Wholesale** |
-
-Nghĩa là khách phải **vừa** thuộc nhóm Wholesale **vừa** mua ≥10 cái mới được giá sỉ.
+The server never builds — it only pulls prebuilt images. `script/deploy.sh` dumps the
+database **before** the new container starts (migrations run from the image
+entrypoint), waits for the health check, and aborts if the app does not come up.
 
 ---
 
-## 6. Chưa có gì — cần làm trước khi chạy thật
+## 6. What is in place
 
-Xếp theo mức độ chặn.
+| | |
+|---|---|
+| Full admin interface | ✅ |
+| Customer storefront (Next.js) | ✅ |
+| Store API and Admin API | ✅ |
+| Six job-function roles, automatically audited | ✅ |
+| **B2B** — dedicated channel requiring sign-in | ✅ |
+| **B2B** — customer groups | ✅ |
+| **B2B** — price lists by group and by quantity | ✅ |
+| Multi-channel (online / wholesale / POS) | ✅ |
+| Multi-market (7 regions) | ✅ |
+| HTTPS on both domains, auto-renewing | ✅ |
+| CI/CD image build | ✅ |
+| Database backup on every deploy | ✅ |
 
-| # | Việc | Mức | Ghi chú |
+### Current data is **sample data**
+
+36 products / 121 variants / 22 customers / 2 orders / 24 categories / 12 shipping
+methods. This is Spree's demo catalogue, not real inventory. It must be removed before
+trading.
+
+### B2B configuration in place
+
+| Item | Value |
+|---|---|
+| B2B channel | `wholesale` — *Storefront access: Login required*, *Guest checkout: Not allowed* |
+| Customer group | `Wholesale` |
+| Price list | `Wholesale` — Active, 255 prices, **matches ALL** of: |
+| → rule 1 | Volume Rule — quantity **10 or more** |
+| → rule 2 | Customer Group Rule — member of **Wholesale** |
+
+Because the match policy is ALL, a customer must be **both** in the Wholesale group
+**and** buying 10+ units to receive wholesale pricing.
+
+---
+
+## 7. What is not in place
+
+Ordered by how much it blocks real trading.
+
+| # | Item | Severity | Notes |
 |---|---|---|---|
-| 1 | **Cấu hình SMTP** | 🔴 **chặn** | `SMTP_HOST` đang rỗng → Spree **chỉ ghi log**, khách **không nhận được email nào**: không có xác nhận đơn, không reset được mật khẩu. Cần SMTP + SPF/DKIM/DMARC. |
-| 2 | **Cổng thanh toán VN** | 🔴 **chặn** | Đang chỉ có Stripe / PayPal / Adyen. VNPay / MoMo / chuyển khoản **chưa có gem**, phải tự viết `PaymentMethod`. |
-| 3 | **Đổi tiền tệ sang VND** | 🔴 **chặn** | Store đang để **USD**. Đổi sang VND phải nhập lại toàn bộ giá. |
-| 4 | Xoá dữ liệu mẫu, nhập catalog thật | 🔴 | |
-| 5 | Đổi toàn bộ mật khẩu bàn giao | 🔴 | |
-| 6 | **Nâng RAM server** | 🟠 | Xem mục 7. |
-| 7 | Luồng duyệt đơn B2B | 🟠 | Bảng `OrderApproval` đã có sẵn nhưng **luồng tạo/duyệt phải tự lập trình**. |
-| 8 | Mời nhiều người dùng vào 1 tài khoản công ty | 🟠 | Bảng `Invitation` đã có, cần dựng luồng. |
-| 9 | Công nợ / thanh toán sau (NET 30) | 🟡 | Chưa có, phải tự làm. |
-| 10 | Báo giá (quotation) | 🟡 | Chưa có, phải tự làm. |
-| 11 | Backup định kỳ ra ngoài server | 🟡 | Hiện chỉ backup lúc deploy, lưu ngay trên máy. |
-| 12 | Đặt `JWT_SECRET_KEY` riêng | 🟡 | Đang fallback về `secret_key_base`. |
-| 13 | Giao diện storefront còn là bản mẫu Spree | 🟡 | Cần thiết kế lại theo thương hiệu. |
-| 14 | Tiếng Việt | 🟡 | `spree_i18n` đã cài, chưa kiểm tra độ phủ bản dịch. |
+| 1 | **SMTP not configured** | 🔴 **blocker** | `SMTP_HOST` is empty, so Spree only writes mail to the log. Customers receive **nothing** — no order confirmation, no password reset. Also needs SPF, DKIM and DMARC or mail will land in spam. |
+| 2 | **No Vietnamese payment gateway** | 🔴 **blocker** | Only Stripe, PayPal and Adyen are available. VNPay / MoMo / bank transfer have no published gem and must be implemented as a custom `PaymentMethod`. |
+| 3 | **Currency is USD** | 🔴 **blocker** | Switching to VND means re-entering all prices. |
+| 4 | Sample data still loaded | 🔴 | Remove and import the real catalogue. |
+| 5 | Handover passwords still active | 🔴 | Rotate all of them. |
+| 6 | **Server memory** | 🟠 | See §8. |
+| 7 | B2B order approval workflow | 🟠 | The `OrderApproval` model and table exist, but nothing creates or processes approvals — the workflow must be built. |
+| 8 | Multiple buyers under one company account | 🟠 | The `Invitation` model exists; the flow must be built. |
+| 9 | Credit terms / pay-on-account (NET 30) | 🟡 | Not available; custom work. |
+| 10 | Quotations | 🟡 | Not available; custom work. |
+| 11 | Off-server backups | 🟡 | Backups are taken on deploy but stored on the same machine. |
+| 12 | Dedicated `JWT_SECRET_KEY` | 🟡 | Currently falls back to `secret_key_base`. |
+| 13 | Storefront still uses the stock Spree theme | 🟡 | Needs brand design. |
+| 14 | Vietnamese translations unverified | 🟡 | `spree_i18n` is installed; coverage not checked. |
 
 ---
 
-## 7. Cảnh báo hạ tầng — cần xử lý
+## 8. Infrastructure warning
 
-**Máy chủ hiện tại đang chia sẻ với khoảng 28 website khác** (MySQL + PHP-FPM) và
-**tổng RAM chỉ 1.9 GB**.
+**Spree currently runs on a shared server that also hosts roughly 28 other websites**
+(MySQL + PHP-FPM), with **1.9 GB RAM in total**.
 
-Tài liệu chính thức của Spree ghi một tiến trình Spree cần **~1 GB RAM**. Thực đo
-trên máy này: Spree ~480 MB lúc bình thường, **~890 MB khi xử lý ảnh**, cộng thêm
-storefront Next.js và PostgreSQL.
+Spree's own documentation states one Spree process needs approximately **1 GB**.
+Measured on this machine: about **480 MB idle**, peaking near **890 MB during image
+processing**, plus the storefront and PostgreSQL.
 
-Trong quá trình triển khai, kernel đã **OOM-kill một tiến trình 128 KB** khi làm thao
-tác bảo trì swap — cho thấy máy thực sự đang sát ngưỡng.
+During deployment the kernel **OOM-killed a 128 KB maintenance process**, which
+confirms the machine runs close to its limit.
 
-Biện pháp đã áp dụng:
+Mitigations applied:
 
-- swap nâng lên 6 GB, `vm.swappiness=10`
-- giới hạn RAM từng container (Spree 1200 MB, PostgreSQL 512 MB, storefront 420 MB)
-- PostgreSQL tinh chỉnh nhỏ lại (`shared_buffers=128MB`)
-- **`mysqld` được đặt `oom_score_adj=-800`** → nếu hết RAM, kernel sẽ giết container
-  Spree/storefront **trước**, không giết MySQL của 28 site kia
+- swap increased to 6 GB, `vm.swappiness` lowered to 10
+- per-container memory limits (Spree 1200 MB, PostgreSQL 512 MB, storefront 420 MB)
+- PostgreSQL tuned down (`shared_buffers=128MB`)
+- **`mysqld` given `oom_score_adj=-800`**, so if memory runs out the kernel terminates
+  the Spree or storefront container **first** and leaves the 28 other sites running
 
-**Khuyến nghị: tách Spree sang máy riêng ≥2 GB RAM, hoặc nâng RAM máy hiện tại lên
-4 GB.** Cấu hình hiện tại chạy được để demo/UAT, nhưng không nên chạy thật lâu dài.
+These held during deployment: the container memory limit stopped Spree twice during
+image processing without affecting MySQL, nginx or any other site.
+
+**Recommendation: move Spree to its own server with at least 2 GB RAM, or increase
+this machine to 4 GB.** The present setup is adequate for demo and UAT but should not
+carry sustained production traffic.
 
 ---
 
-## 8. Vận hành hằng ngày
+## 9. Day-to-day operations
 
-Toàn bộ lệnh chạy trong thư mục mã nguồn trên server.
+All commands run from the source directory on the server.
 
 ```bash
-# phát hành phiên bản mới
-git push origin main          # CI build image
-./script/deploy.sh            # trên server: pull + restart + health check
+# release
+git push origin main          # CI builds the images
+./script/deploy.sh            # on the server: pull, restart, health-check
 
-# xem trạng thái / log
+# status and logs
 docker compose -f docker-compose.prod.yml ps
 docker compose -f docker-compose.prod.yml logs -f --tail=100 web
 
@@ -241,34 +309,41 @@ docker compose -f docker-compose.prod.yml logs -f --tail=100 web
 docker compose -f docker-compose.prod.yml exec web bin/rails console
 docker compose -f docker-compose.prod.yml exec postgres psql -U postgres spree_production
 
-# tạo lại tài khoản demo (đổi mật khẩu)
+# rotate the demo accounts
 docker compose -f docker-compose.prod.yml exec web bin/rails demo:seed_users PASSWORD='...'
 
-# kiểm tra email sau khi cấu hình SMTP
-docker compose -f docker-compose.prod.yml exec web bin/rails runner script/smoke_mail.rb ban@email.com
+# verify email once SMTP is configured
+docker compose -f docker-compose.prod.yml exec web bin/rails runner script/smoke_mail.rb you@example.com
 ```
 
-Rollback: ghim `SPREE_IMAGE=ghcr.io/luanpm88/spree:sha-<commit>` trong `.env` rồi chạy
-lại `./script/deploy.sh`. Lưu ý rollback image **không** hoàn nguyên migration — nếu
-cần thì restore từ `backups/pre-deploy-*.sql.gz`.
+**Rollback:** pin `SPREE_IMAGE=ghcr.io/luanpm88/spree:sha-<commit>` in `.env` and re-run
+`./script/deploy.sh`. Note that rolling the image back does **not** roll migrations
+back; if a release included a breaking migration, restore from
+`backups/pre-deploy-*.sql.gz`.
 
 ---
 
-## 9. Lưu ý kỹ thuật dễ vấp
+## 10. Gotchas
 
-1. **Storefront nung API URL vào lúc build.** Đổi backend mà storefront trỏ tới là
-   phải **build lại image**, không phải đổi biến môi trường.
-2. **Store API dùng header `X-Spree-Api-Key`.** Dùng `Authorization: Bearer` sẽ nhận
+Things that will cost time if not known up front.
+
+1. **The storefront bakes its API URL at build time.** Repointing it at another backend
+   is a rebuild, not an environment variable change.
+2. **Store API authentication uses `X-Spree-Api-Key`.** `Authorization: Bearer` returns
    401.
-3. **API key gắn theo kênh.** Key của kênh `wholesale` trả 401 khi chưa đăng nhập —
-   đó là *cổng B2B*, không phải lỗi.
-4. **`RAILS_ASSUME_SSL=true` + `RAILS_FORCE_SSL=false`.** Đặt `FORCE_SSL=true` sẽ gây
-   **redirect vô hạn** vì nginx đã redirect rồi.
-5. **Migration chạy từ entrypoint của image** khi container khởi động → backup phải
-   làm *trước*, và `script/deploy.sh` đã làm đúng thứ tự đó.
-6. **Container chỉ bind `127.0.0.1`.** Không đổi thành `0.0.0.0` — Docker chèn rule
-   NAT *trước* firewall, app sẽ lộ thẳng ra internet.
-7. **Không sửa code trong gem.** Thứ tự ưu tiên khi cần đổi hành vi: Events &
-   Subscribers → swap service qua `Spree.dependencies` → extension → decorator (cuối
-   cùng). Cần thêm field thì thử **Metafield** trước khi tạo migration.
-8. **AWS chặn cổng 25** → SMTP phải dùng 587 hoặc 465.
+3. **API keys are scoped to a sales channel.** The wholesale key returns
+   `401 authentication_required` for anonymous requests — that is the B2B gate working
+   as designed, not a fault.
+4. **`RAILS_ASSUME_SSL=true` with `RAILS_FORCE_SSL=false`.** nginx already redirects to
+   HTTPS; setting `FORCE_SSL=true` produces a redirect loop.
+5. **Migrations run from the image entrypoint** when the container starts, so any
+   backup must be taken *before* that. `script/deploy.sh` does this in the right order.
+6. **Containers bind to `127.0.0.1` only.** Do not change to `0.0.0.0` — Docker inserts
+   its NAT rules ahead of the host firewall, which would expose the app directly.
+7. **Never edit gem source.** Order of preference for changing behaviour: events and
+   subscribers → swap a service via `Spree.dependencies` → an extension gem →
+   decorators last. Before adding a database column, check whether a **Metafield**
+   solves it.
+8. **AWS blocks outbound port 25**, so SMTP must use port 587 or 465.
+9. **Price and stock live on the variant, not the product.** Products are grouping
+   containers; every product has at least one (possibly hidden) variant.
