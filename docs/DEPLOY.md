@@ -300,10 +300,14 @@ Server dùng SSH alias `github-spree` trong `~/.ssh/config` để chọn đúng 
 
 ---
 
-## 9. Email — chưa cấu hình, và store chưa dùng được nếu thiếu
+## 9. Email — chưa cấu hình
 
-**`SMTP_HOST` đang rỗng → Spree chỉ ghi mail vào log. Khách không nhận được gì:**
-không có mail xác nhận đơn, không reset được mật khẩu, không mời được admin.
+**Demo thì không cần.** Chỉ xem shop và admin thì email không liên quan; chỗ duy nhất
+thiếu là reset mật khẩu, mà mật khẩu đã bàn giao sẵn và admin đổi được bằng console.
+
+**Bán thật thì bắt buộc.** `SMTP_HOST` đang rỗng → Spree chỉ ghi mail vào log, khách
+không nhận được gì: không có mail xác nhận đơn, không reset được mật khẩu, không mời
+được admin.
 
 ```bash
 SMTP_HOST=            # vd smtp.sendgrid.net
@@ -315,7 +319,6 @@ SMTP_FROM_ADDRESS=store@b-teka.com
 
 | Nhà cung cấp | Ghi chú |
 |---|---|
-| **Acelle trên chính máy này** (`acellemail.b-teka.com`) | đang chạy sẵn, không phát sinh chi phí |
 | SendGrid / Mailgun / Brevo | free tier ~100 mail/ngày |
 | Amazon SES | rẻ nhất khi volume lớn, cùng region, phải xin ra khỏi sandbox |
 | Gmail SMTP | **đừng dùng cho production** |
