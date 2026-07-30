@@ -1,0 +1,447 @@
+#!/usr/bin/env bash
+#
+# Deploy Spree from your workstation. One script, no CI.
+#
+#   script/deploy help
+#
+# Design: images are built HERE for linux/amd64 and handed to the server, which
+# never builds. The server is a shared box with ~1.9GB RAM running MySQL,
+# PHP-FPM and ~28 other sites; a Spree image build wants around 2GB, so building
+# there would swap hard and risk OOM-killing the neighbours.
+#
+# Two ways to get the image across:
+#   ship   build → stream over SSH → release.  Needs no registry and no tokens.
+#   push   publish to a registry, then `release` pulls.  Needs write:packages.
+# `ship` is the default because it has no credential setup at all.
+#
+# Everything is idempotent and safe to re-run. Every remote step prints what it
+# is about to do, and release aborts rather than leaving a half-deployed box.
+#
+# Owner doc: docs/DEPLOY.md
+
+set -euo pipefail
+
+# ── config (override via env or deploy.env) ──────────────────────────────────
+SSH_HOST="${SSH_HOST:-ubuntu@54.169.34.13}"
+REMOTE_DIR="${REMOTE_DIR:-~/spree}"
+REGISTRY="${REGISTRY:-ghcr.io}"
+OWNER="${OWNER:-luanpm88}"
+BACKEND_IMAGE="${BACKEND_IMAGE:-$REGISTRY/$OWNER/spree}"
+STOREFRONT_IMAGE="${STOREFRONT_IMAGE:-$REGISTRY/$OWNER/spree-storefront}"
+PLATFORM="${PLATFORM:-linux/amd64}"
+COMPOSE="docker compose -f docker-compose.prod.yml"
+ADMIN_URL="${ADMIN_URL:-https://spree.b-teka.com}"
+SHOP_URL="${SHOP_URL:-https://shop.b-teka.com}"
+HEALTH_PORT="${SPREE_PORT:-3010}"
+
+# Storefront pages are prerendered against the API at build time, so the build
+# needs to know the public API URL and a publishable key. See docs/DEPLOY.md.
+SPREE_API_URL="${SPREE_API_URL:-$ADMIN_URL}"
+SPREE_PUBLISHABLE_KEY="${SPREE_PUBLISHABLE_KEY:-}"
+
+cd "$(dirname "$0")/.."
+[[ -f deploy.env ]] && source deploy.env   # gitignored, optional local overrides
+
+# ── output helpers ───────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+  B=$'\033[1m'; DIM=$'\033[2m'; R=$'\033[0m'
+  CY=$'\033[36m'; GR=$'\033[32m'; YE=$'\033[33m'; RE=$'\033[31m'
+else
+  B=''; DIM=''; R=''; CY=''; GR=''; YE=''; RE=''
+fi
+step() { printf '\n%s==>%s %s%s%s\n' "$CY" "$R" "$B" "$*" "$R"; }
+info() { printf '    %s%s%s\n' "$DIM" "$*" "$R"; }
+ok()   { printf '    %s✓%s %s\n' "$GR" "$R" "$*"; }
+warn() { printf '    %s!%s %s\n' "$YE" "$R" "$*"; }
+die()  { printf '\n%sFAILED:%s %s\n\n' "$RE" "$R" "$*" >&2; exit 1; }
+
+remote() { ssh -o ConnectTimeout=15 "$SSH_HOST" "cd $REMOTE_DIR && $*"; }
+# Run a remote command without the cd, for host-level things.
+host()   { ssh -o ConnectTimeout=15 "$SSH_HOST" "$*"; }
+
+git_sha()   { git rev-parse --short=12 HEAD; }
+git_dirty() { [[ -n "$(git status --porcelain)" ]] && echo yes || echo no; }
+
+# ── preflight ────────────────────────────────────────────────────────────────
+cmd_doctor() {
+  step "Workstation"
+  printf '    docker daemon : '; docker info --format '{{.ServerVersion}}' 2>/dev/null || echo 'NOT RUNNING'
+  printf '    buildx        : '; docker buildx version 2>/dev/null | head -1 || echo MISSING
+  printf '    %s builder : ' "$PLATFORM"
+  docker buildx inspect --bootstrap 2>/dev/null | grep -q "$PLATFORM" && echo yes || echo "NO — cross-build unavailable"
+  printf '    registry auth : '
+  # A push needs credentials; a pull of a public package does not.
+  if grep -q "$REGISTRY" ~/.docker/config.json 2>/dev/null; then
+    echo "logged in to $REGISTRY (push available)"
+  else
+    echo "not logged in — fine, 'deploy ship' does not need it"
+  fi
+
+  step "Repository"
+  info "commit  $(git_sha)  dirty=$(git_dirty)"
+  [[ "$(git_dirty)" == yes ]] && warn "uncommitted changes — the image will be built from the working tree, not from git"
+
+  step "Server ($SSH_HOST)"
+  if ! host true 2>/dev/null; then die "cannot ssh to $SSH_HOST"; fi
+  ok "ssh works"
+  printf '    docker        : '; host 'docker --version 2>/dev/null || echo MISSING'
+  printf '    checkout      : '; host "test -d $REMOTE_DIR/.git && echo present || echo MISSING"
+  printf '    .env          : '; host "test -f $REMOTE_DIR/.env && echo present || echo MISSING"
+  step "Server memory"
+  host 'free -m | head -2'
+}
+
+# ── build ────────────────────────────────────────────────────────────────────
+# Local layer cache. A registry cache would be faster to share between machines
+# but needs push credentials, and the whole point of the default flow is to need
+# none. First cross-build is slow (bundle install and asset compilation run under
+# emulation); later ones reuse everything up to the first changed layer, so a
+# code-only change is minutes rather than tens of minutes.
+CACHE_DIR="${CACHE_DIR:-$HOME/.cache/spree-buildx}"
+
+build_backend() {
+  local sha; sha="$(git_sha)"
+  step "Building backend for $PLATFORM"
+  info "cross-compiling under emulation — first run is slow, later runs reuse the cache"
+  mkdir -p "$CACHE_DIR/backend"
+  docker buildx build \
+    --platform "$PLATFORM" \
+    -t "$BACKEND_IMAGE:latest" \
+    -t "$BACKEND_IMAGE:sha-$sha" \
+    --cache-from "type=local,src=$CACHE_DIR/backend" \
+    --cache-to "type=local,dest=$CACHE_DIR/backend,mode=max" \
+    --load \
+    . || die "backend build failed"
+  ok "built $BACKEND_IMAGE:sha-$sha (also tagged :latest)"
+}
+
+build_storefront() {
+  local sha; sha="$(git_sha)"
+  [[ -n "$SPREE_PUBLISHABLE_KEY" ]] || die "SPREE_PUBLISHABLE_KEY is required — the storefront bakes it in at build time. Put it in deploy.env."
+  step "Building storefront for $PLATFORM"
+  info "baking in API: $SPREE_API_URL"
+  # Next prerenders pages against the API during the build, so a dead backend
+  # produces an image full of error pages that still starts up cleanly.
+  curl -fsS -o /dev/null --max-time 20 "$SPREE_API_URL/up" \
+    || die "$SPREE_API_URL/up unreachable — the build would prerender against a dead backend"
+  mkdir -p "$CACHE_DIR/storefront"
+  docker buildx build \
+    --platform "$PLATFORM" \
+    --build-arg "SPREE_API_URL=$SPREE_API_URL" \
+    --build-arg "SPREE_PUBLISHABLE_KEY=$SPREE_PUBLISHABLE_KEY" \
+    -t "$STOREFRONT_IMAGE:latest" \
+    -t "$STOREFRONT_IMAGE:sha-$sha" \
+    --cache-from "type=local,src=$CACHE_DIR/storefront" \
+    --cache-to "type=local,dest=$CACHE_DIR/storefront,mode=max" \
+    --load \
+    ./storefront || die "storefront build failed"
+  ok "built $STOREFRONT_IMAGE:sha-$sha (also tagged :latest)"
+}
+
+cmd_build() {
+  case "${1:-all}" in
+    backend)    build_backend ;;
+    storefront) build_storefront ;;
+    all)        build_backend; build_storefront ;;
+    *) die "build takes: backend | storefront | all" ;;
+  esac
+}
+
+# ── transfer images straight to the server (no registry, no credentials) ─────
+transfer_image() {
+  local image="$1" label="$2"
+  step "Transferring $label to the server"
+  local bytes; bytes="$(docker image inspect "$image" --format '{{.Size}}' 2>/dev/null || echo 0)"
+  [[ "$bytes" == 0 ]] && die "$image not found locally — run 'script/deploy build' first"
+  info "$(( bytes / 1024 / 1024 )) MB uncompressed; gzip -1 keeps the CPU off the critical path"
+  # Stream through gzip so nothing large is written to disk on either end.
+  docker save "$image" | gzip -1 | ssh "$SSH_HOST" 'gunzip | docker load' \
+    || die "transfer of $label failed"
+  ok "$label loaded on the server"
+}
+
+cmd_ship() {
+  local target="${1:-all}"
+  # Build targets are named after the app; compose services are named after the
+  # role. The backend's compose service is `web`, not `backend` — passing the
+  # build target straight through would make compose fail on an unknown service.
+  local svc
+  case "$target" in
+    backend)    build_backend; transfer_image "$BACKEND_IMAGE:latest" backend; svc=web ;;
+    storefront) build_storefront; transfer_image "$STOREFRONT_IMAGE:latest" storefront; svc=storefront ;;
+    all)        build_backend; build_storefront
+                transfer_image "$BACKEND_IMAGE:latest" backend
+                transfer_image "$STOREFRONT_IMAGE:latest" storefront
+                svc=all ;;
+    *) die "ship takes: backend | storefront | all" ;;
+  esac
+  NO_PULL=1 cmd_release "$svc"
+}
+
+cmd_push() {
+  local target="${1:-all}"
+  grep -q "$REGISTRY" ~/.docker/config.json 2>/dev/null \
+    || die "not logged in to $REGISTRY. Either 'docker login $REGISTRY' with a token that has write:packages, or use 'script/deploy ship' which needs no registry at all."
+  local sha; sha="$(git_sha)"
+  case "$target" in
+    backend)    docker push "$BACKEND_IMAGE:latest" && docker push "$BACKEND_IMAGE:sha-$sha" ;;
+    storefront) docker push "$STOREFRONT_IMAGE:latest" && docker push "$STOREFRONT_IMAGE:sha-$sha" ;;
+    all)        cmd_push backend; cmd_push storefront ;;
+  esac
+  ok "pushed to $REGISTRY"
+}
+
+# ── release ──────────────────────────────────────────────────────────────────
+cmd_release() {
+  local svc="${1:-all}"
+  case "$svc" in
+    all|web|storefront|postgres) ;;
+    backend) die "compose calls the backend service 'web' — use: release web" ;;
+    *) die "unknown service '$svc' — expected all | web | storefront | postgres" ;;
+  esac
+
+  step "Pre-release checks"
+  host "test -f $REMOTE_DIR/.env" || die "no .env on the server — run 'script/deploy setup' first"
+  remote "git rev-parse --short=12 HEAD" >/dev/null || die "no git checkout on the server"
+  ok "server is prepared"
+
+  step "Syncing code on the server"
+  remote "git fetch --quiet origin && git reset --hard --quiet origin/main && git log --oneline -1"
+
+  step "Backing up the database"
+  # Must happen BEFORE the new container starts: migrations run from the image
+  # entrypoint, so once it boots the schema has already changed.
+  if remote "$COMPOSE ps --status running --services 2>/dev/null | grep -q postgres"; then
+    remote "mkdir -p backups && $COMPOSE exec -T postgres pg_dump -U postgres spree_production | gzip > backups/pre-deploy-\$(date +%Y%m%d-%H%M%S).sql.gz" \
+      || die "pg_dump failed — refusing to deploy over an un-backed-up database"
+    remote "ls -1t backups/pre-deploy-*.sql.gz | tail -n +8 | xargs -r rm --"
+    ok "backup written (keeping the 7 most recent)"
+  else
+    warn "postgres not running — first deploy, nothing to back up"
+  fi
+
+  if [[ -n "${NO_PULL:-}" ]]; then
+    step "Skipping registry pull"
+    info "using the image transferred by 'ship'"
+  else
+    step "Pulling images"
+    remote "$COMPOSE pull ${svc/all/}" \
+      || die "pull failed — the package may be private, or the server is not logged in to $REGISTRY. 'script/deploy ship' avoids the registry entirely."
+  fi
+
+  step "Starting containers"
+  remote "$COMPOSE up -d --remove-orphans ${svc/all/}"
+
+  step "Waiting for health"
+  local code=""
+  for i in $(seq 1 40); do
+    code="$(host "curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:$HEALTH_PORT/up" || true)"
+    [[ "$code" == "200" ]] && { ok "backend healthy after $((i * 5))s"; break; }
+    if [[ $i -eq 40 ]]; then
+      warn "backend did not become healthy (last code: ${code:-none})"
+      remote "$COMPOSE logs --tail=60 web" || true
+      die "release aborted — containers are up but unhealthy; roll back with 'script/deploy rollback <tag>'"
+    fi
+    sleep 5
+  done
+
+  step "Verifying from the public internet"
+  for u in "$ADMIN_URL/up" "$ADMIN_URL/admin" "$SHOP_URL/"; do
+    local c; c="$(curl -s -o /dev/null -w '%{http_code}' -L --max-redirs 3 -m 30 "$u" || echo 000)"
+    [[ "$c" == "200" ]] && ok "$u → $c" || warn "$u → $c"
+  done
+
+  step "Confirming the neighbours are still up"
+  cmd_neighbours
+
+  step "Cleaning old images"
+  remote "docker image prune -f --filter 'until=168h' >/dev/null 2>&1" || true
+
+  printf '\n%sReleased.%s  %s  |  %s\n\n' "$GR$B" "$R" "$ADMIN_URL/admin" "$SHOP_URL"
+}
+
+# ── the 28 other sites on this box ───────────────────────────────────────────
+cmd_neighbours() {
+  local hosts="shopcuaban.vn sattanhung.com luathuynhgia.com Guucoffee.com acm.b-teka.com acellemail.b-teka.com nitrasa.vn bialo.vn"
+  local bad=0
+  for h in $hosts; do
+    local c; c="$(host "curl -s -o /dev/null -w '%{http_code}' -m 10 -H 'Host: $h' http://127.0.0.1/" || echo 000)"
+    if [[ "$c" =~ ^(200|301|302)$ ]]; then ok "$h → $c"; else warn "$h → $c"; bad=$((bad + 1)); fi
+  done
+  [[ $bad -gt 0 ]] && warn "$bad neighbour site(s) not responding normally — investigate before continuing"
+  host 'echo; free -m | head -2; echo; systemctl is-active mysql nginx | paste -sd" " -'
+}
+
+# ── status / logs / shells ───────────────────────────────────────────────────
+cmd_status() {
+  step "Containers"
+  remote "$COMPOSE ps"
+  step "Resource use"
+  host 'docker stats --no-stream --format "    {{.Name}}  {{.MemUsage}}  cpu={{.CPUPerc}}"'
+  step "Host memory"
+  host 'free -m | head -2'
+  step "Deployed versions"
+  remote "git log --oneline -1"
+  remote "$COMPOSE images --format '    {{.Service}}  {{.Repository}}:{{.Tag}}'" 2>/dev/null || \
+    remote "$COMPOSE images"
+  step "Public endpoints"
+  for u in "$ADMIN_URL/up" "$SHOP_URL/"; do
+    printf '    %-42s %s\n' "$u" "$(curl -s -o /dev/null -w '%{http_code}' -L --max-redirs 3 -m 20 "$u" || echo 000)"
+  done
+  step "Failed background jobs"
+  remote "$COMPOSE exec -T web bin/rails runner 'puts SolidQueue::FailedExecution.count' 2>/dev/null" | tail -1
+}
+
+cmd_logs()    { remote "$COMPOSE logs -f --tail=${LINES:-100} ${1:-web}"; }
+cmd_console() { ssh -t "$SSH_HOST" "cd $REMOTE_DIR && $COMPOSE exec web bin/rails console"; }
+cmd_psql()    { ssh -t "$SSH_HOST" "cd $REMOTE_DIR && $COMPOSE exec postgres psql -U postgres spree_production"; }
+cmd_shell()   { ssh -t "$SSH_HOST" "cd $REMOTE_DIR && $COMPOSE exec web bash"; }
+cmd_restart() { remote "$COMPOSE restart ${1:-web}"; cmd_status; }
+
+# ── rollback ─────────────────────────────────────────────────────────────────
+cmd_rollback() {
+  local tag="${1:-}"
+  [[ -n "$tag" ]] || die "usage: script/deploy rollback sha-<12 chars>   (see 'deploy releases')"
+  step "Rolling back to $tag"
+  warn "this rolls back CODE only — migrations already applied are NOT reverted"
+  warn "if the bad release added a breaking migration, restore from backups/ instead"
+  remote "sed -i.bak 's|^SPREE_IMAGE=.*|SPREE_IMAGE=$BACKEND_IMAGE:$tag|' .env && grep '^SPREE_IMAGE=' .env"
+  remote "$COMPOSE pull web && $COMPOSE up -d web"
+  step "Waiting for health"
+  for i in $(seq 1 30); do
+    [[ "$(host "curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:$HEALTH_PORT/up" || true)" == "200" ]] \
+      && { ok "healthy"; return 0; }
+    sleep 5
+  done
+  die "rollback did not become healthy — check 'script/deploy logs'"
+}
+
+cmd_releases() {
+  step "Local git history (tags are sha-<commit>)"
+  git log --oneline -12
+  step "Backups on the server"
+  remote "ls -1lht backups/ 2>/dev/null | head -10" || info "none yet"
+}
+
+# ── one-time server setup ────────────────────────────────────────────────────
+cmd_setup() {
+  step "Checking Docker on the server"
+  if ! host 'command -v docker >/dev/null'; then
+    warn "Docker is not installed. On a SHARED host this also installs containerd and"
+    warn "inserts iptables rules. It does not touch nginx, MySQL or PHP-FPM."
+    read -r -p "    Install Docker on $SSH_HOST? [y/N] " a
+    [[ "$a" == y || "$a" == Y ]] || die "aborted"
+    host 'curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker $USER'
+    ok "Docker installed — you may need to reconnect for group membership"
+  else
+    ok "Docker present: $(host 'docker --version')"
+  fi
+
+  step "Checking the checkout"
+  if ! host "test -d $REMOTE_DIR/.git"; then
+    info "cloning — the server needs read access (deploy key) for a private repo"
+    host "git clone $(git remote get-url origin) $REMOTE_DIR"
+  fi
+  ok "checkout present"
+
+  step "Checking .env"
+  if ! host "test -f $REMOTE_DIR/.env"; then
+    warn "no .env — creating one from the template with generated secrets"
+    remote "cp .env.production.example .env && \
+      sed -i \"s|^SECRET_KEY_BASE=.*|SECRET_KEY_BASE=\$(openssl rand -hex 64)|\" .env && \
+      sed -i \"s|^MISSION_CONTROL_PASSWORD=.*|MISSION_CONTROL_PASSWORD=\$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)|\" .env && \
+      chmod 600 .env"
+    warn "now edit $REMOTE_DIR/.env and set RAILS_HOST, SPREE_PUBLISHABLE_KEY and the SMTP_* values"
+  else
+    ok ".env present"
+  fi
+
+  step "Memory guards"
+  # Never swapoff a live swapfile on a box this tight — pulling the pages back
+  # into RAM is itself enough to trigger the OOM killer. Add a second file.
+  host 'if [ ! -f /swapfile2 ]; then
+      sudo fallocate -l 2G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap /swapfile2 >/dev/null && sudo swapon /swapfile2
+      grep -q "^/swapfile2" /etc/fstab || echo "/swapfile2 none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
+      echo "    added 2G swap"
+    else echo "    extra swap already present"; fi
+    sudo sysctl -qw vm.swappiness=10
+    grep -q "^vm.swappiness" /etc/sysctl.conf || echo "vm.swappiness=10" | sudo tee -a /etc/sysctl.conf >/dev/null'
+  # Make Spree the OOM victim rather than the database serving 28 other sites.
+  host 'for p in $(pgrep -x mysqld); do echo -800 | sudo tee /proc/$p/oom_score_adj >/dev/null; done
+    sudo mkdir -p /etc/systemd/system/mysql.service.d
+    printf "[Service]\nOOMScoreAdjust=-800\n" | sudo tee /etc/systemd/system/mysql.service.d/oom.conf >/dev/null
+    sudo systemctl daemon-reload'
+  ok "swap, swappiness and MySQL OOM protection in place"
+
+  step "nginx vhosts"
+  info "install manually, then let certbot add TLS — see docs/DEPLOY.md"
+  info "  sudo cp deploy/nginx/*.conf /etc/nginx/sites-available/ && ln -s … && sudo nginx -t"
+}
+
+cmd_verify() {
+  step "Running the handover verification against production"
+  [[ -n "${HANDOVER_PASSWORD:-}" ]] || die "set HANDOVER_PASSWORD"
+  node script/verify_handover.mjs
+}
+
+cmd_help() {
+  cat <<EOF
+${B}script/deploy${R} — deploy Spree without CI
+
+  ${B}Everyday${R}
+    status                 what is running, versions, memory, failed jobs
+    logs [service]         follow logs (default web; LINES=n to change tail)
+    release [svc]          backup → pull → up → health → verify (svc: web|storefront|all)
+    restart [service]
+
+  ${B}Shipping a change${R}
+    ship [target]          build → stream to the server → release   ${DIM}(no registry needed)${R}
+    build [target]         cross-build only, leaves the image local
+    push [target]          push to $REGISTRY (needs write:packages)
+    release [svc]          pull from the registry and roll out
+
+  ${B}Recovery${R}
+    releases               recent commits and server backups
+    rollback sha-<commit>  previous image; does NOT revert migrations
+
+  ${B}Access${R}
+    console                Rails console          psql   PostgreSQL prompt
+    shell                  bash in the container
+
+  ${B}Setup / checks${R}
+    doctor                 workstation + server readiness
+    setup                  one-time server preparation (Docker, .env, swap, OOM guards)
+    neighbours             health of the other sites sharing this box
+    verify                 end-to-end check of every claim in the handover
+
+  ${B}Config${R} (env or ./deploy.env)
+    SSH_HOST=$SSH_HOST
+    BACKEND_IMAGE=$BACKEND_IMAGE
+    STOREFRONT_IMAGE=$STOREFRONT_IMAGE
+    SPREE_API_URL=$SPREE_API_URL
+    PLATFORM=$PLATFORM
+
+  Full documentation: docs/DEPLOY.md
+EOF
+}
+
+case "${1:-help}" in
+  doctor)     shift; cmd_doctor "$@" ;;
+  setup)      shift; cmd_setup "$@" ;;
+  build)      shift; cmd_build "$@" ;;
+  ship)       shift; cmd_ship "$@" ;;
+  push)       shift; cmd_push "$@" ;;
+  release)    shift; cmd_release "$@" ;;
+  rollback)   shift; cmd_rollback "$@" ;;
+  releases)   shift; cmd_releases "$@" ;;
+  status)     shift; cmd_status "$@" ;;
+  logs)       shift; cmd_logs "$@" ;;
+  restart)    shift; cmd_restart "$@" ;;
+  console)    shift; cmd_console "$@" ;;
+  psql)       shift; cmd_psql "$@" ;;
+  shell)      shift; cmd_shell "$@" ;;
+  neighbours) shift; cmd_neighbours "$@" ;;
+  verify)     shift; cmd_verify "$@" ;;
+  help|-h|--help) cmd_help ;;
+  *) die "unknown command '$1' — try 'script/deploy help'" ;;
+esac
