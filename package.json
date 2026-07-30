@@ -1,0 +1,15 @@
+{
+  "name": "spree-docs-tooling",
+  "private": true,
+  "type": "module",
+  "description": "Docs tooling ONLY (Playwright screenshots + PDF build). The Rails app itself uses importmap-rails and needs no npm packages — nothing here is loaded at runtime or baked into the Docker image.",
+  "scripts": {
+    "screenshots": "node script/capture_screenshots.mjs",
+    "guide": "node script/build_guide.mjs",
+    "docs": "npm run screenshots && npm run guide"
+  },
+  "devDependencies": {
+    "markdown-it": "^14.1.0",
+    "playwright": "^1.62.0"
+  }
+}

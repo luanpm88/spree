@@ -35,3 +35,10 @@ storage/*
 # Ignore CI and Docs
 .github
 .claude
+
+# Docs tooling — Playwright/markdown-it are only used to build the PDF guide
+# on a workstation. 21MB that must never enter the image build context.
+node_modules
+docs/screenshots
+docs/USER_GUIDE.pdf
+docs/.user_guide.build.html
