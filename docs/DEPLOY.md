@@ -1,399 +1,351 @@
 # Deploy
 
-Toàn bộ quá trình khảo sát server, thiết kế deploy, và các bước thực thi.
+Cách deploy Spree lên production, và toàn bộ khảo sát hạ tầng phía sau nó.
 
-- Spree là gì → [DESIGN.md](DESIGN.md)
-- Chạy local → [LOCAL.md](LOCAL.md)
+**Không dùng CI.** Mọi thứ chạy qua `script/deploy` từ máy bạn. Lý do và cách dùng ở
+[§3](#3-script-deploy--công-cụ-duy-nhất).
 
-**Trạng thái: CHƯA deploy.** Đã chuẩn bị xong toàn bộ config, đang chờ chốt hạ tầng
-(xem [§2](#2-vấn-đề-ram--cần-quyết-định)).
+- Spree là gì, kiến trúc → [DESIGN.md](DESIGN.md)
+- Chạy trên máy cá nhân → [LOCAL.md](LOCAL.md)
+- Bàn giao cho khách → [HANDOVER.md](HANDOVER.md)
+
+**Trạng thái: đang chạy production.** https://spree.b-teka.com/admin ·
+https://shop.b-teka.com
 
 ---
 
-## 1. Khảo sát server (`54.169.34.13`)
+## 1. Tóm tắt
 
-Đo trực tiếp qua SSH, ngày 2026-07-29.
+```bash
+script/deploy doctor            # máy mình + server đã sẵn sàng chưa
+script/deploy ship backend      # build → đẩy qua SSH → release
+script/deploy status            # đang chạy gì, RAM, job lỗi
+script/deploy logs web          # xem log
+script/deploy rollback sha-…    # quay lại bản trước
+```
 
-### Thông số máy
+Chỉ có 3 việc thường làm: **ship** (đưa code mới lên), **status** (xem tình hình),
+**logs** (khi có gì lạ).
+
+---
+
+## 2. Kiến trúc
+
+```
+   Máy bạn                                Server 54.169.34.13
+   ┌──────────────────────┐               ┌──────────────────────────────────┐
+   │ docker buildx        │               │ nginx :80/:443 (dùng chung 28 site)│
+   │   --platform amd64   │               │   spree.b-teka.com ─┐            │
+   │        │             │               │   shop.b-teka.com ──┼─┐          │
+   │        ▼             │  docker save  │                     │ │          │
+   │   image amd64  ──────┼──── | ssh ───►│  127.0.0.1:3010 ◄───┘ │  web      │
+   │                      │   docker load │  127.0.0.1:3011 ◄─────┘  storefront│
+   └──────────────────────┘               │        │                          │
+                                          │        ▼  postgres (volume)       │
+                                          └──────────────────────────────────┘
+```
+
+**Server không bao giờ build.** Máy này chỉ còn ~300 MB RAM trống và đang chạy MySQL +
+PHP-FPM cho ~28 website khác; build image Spree cần ~2 GB. Build ở đó là swap nặng và
+có nguy cơ OOM kéo các site khác chết theo.
+
+**Container chỉ mở trên `127.0.0.1`.** nginx là lối vào duy nhất. Nếu bind `0.0.0.0`,
+Docker chèn rule NAT **trước** ufw → app lộ thẳng ra internet dù firewall đang bật.
+
+---
+
+## 3. `script/deploy` — công cụ duy nhất
+
+### Vì sao bỏ CI
+
+Trước đây dùng GitHub Actions. Đã bỏ vì:
+
+- **Không kiểm soát được lúc cần.** Deploy trên một server nhỏ dùng chung cần *xem*
+  từng bước: RAM còn bao nhiêu, 28 site kia còn sống không. CI thì bấm rồi chờ.
+- **Cần token mà project không có.** Đẩy image lên GHCR cần PAT scope `write:packages`.
+  Thêm một secret phải quản lý chỉ để deploy một server là không đáng.
+- **Chậm và khó debug.** Sửa một dòng cũng phải commit → chờ CI → mới biết đúng sai.
+
+`script/deploy` chạy từ máy bạn, in ra từng bước, và **dừng lại thay vì để server ở
+trạng thái nửa vời**.
+
+### Hai đường đưa image lên
+
+| | Cần gì | Khi nào dùng |
+|---|---|---|
+| **`ship`** ⭐ | không cần gì | mặc định — build rồi stream qua SSH |
+| `push` + `release` | token `write:packages` | khi có nhiều server cùng pull một image |
+
+`ship` = `build` + `docker save | gzip | ssh docker load` + `release`. Không registry,
+không token, không đăng nhập gì cả.
+
+### Toàn bộ lệnh
+
+```
+Hằng ngày
+  status                 đang chạy gì, version, RAM, job lỗi
+  logs [service]         xem log (mặc định web; LINES=n để đổi số dòng)
+  release [svc]          backup → pull → up → health → verify
+  restart [service]
+
+Đưa code mới lên
+  ship [target]          build → stream qua SSH → release   (không cần registry)
+  build [target]         chỉ build, giữ image ở máy
+  push [target]          đẩy lên registry (cần write:packages)
+
+Cứu hộ
+  releases               commit gần đây + backup trên server
+  rollback sha-<commit>  về image cũ (KHÔNG hoàn nguyên migration)
+
+Truy cập
+  console                Rails console        psql   PostgreSQL
+  shell                  bash trong container
+
+Cài đặt / kiểm tra
+  doctor                 máy mình + server sẵn sàng chưa
+  setup                  chuẩn bị server lần đầu (Docker, .env, swap, chống OOM)
+  neighbours             sức khoẻ 28 site dùng chung máy
+  verify                 kiểm tra end-to-end mọi thứ ghi trong HANDOVER
+```
+
+`target` = `backend` | `storefront` | `all`.
+`svc` = tên service trong compose: `web` | `storefront` | `postgres` | `all`.
+
+> **`backend` và `web` là hai tên khác nhau.** `backend` là *build target*, `web` là
+> *compose service*. `script/deploy release backend` sẽ báo lỗi và nhắc dùng `web` —
+> cố tình như vậy để không im lặng chạy sai.
+
+### Cấu hình
+
+Mặc định đã đúng cho server hiện tại. Muốn đổi thì tạo `deploy.env` (đã gitignore):
+
+```bash
+SSH_HOST=ubuntu@54.169.34.13
+SPREE_API_URL=https://spree.b-teka.com
+SPREE_PUBLISHABLE_KEY=pk_...        # BẮT BUỘC khi build storefront
+```
+
+---
+
+## 4. Build chéo kiến trúc (cross-build)
+
+Máy dev là **Apple Silicon (arm64)**, server là **x86_64**. Nên phải build
+`--platform linux/amd64`, chạy qua giả lập (emulation) → **chậm**.
+
+Giảm đau bằng **buildx local layer cache** (`~/.cache/spree-buildx`):
+
+| Lần build | Thời gian |
+|---|---|
+| Lần đầu | chậm — `bundle install` + biên dịch asset đều chạy giả lập |
+| Sửa code Ruby/view | nhanh hơn nhiều — chỉ làm lại từ layer `COPY` trở đi |
+| Sửa `Gemfile` | chậm lại — phải `bundle install` lại |
+
+> Cache nằm ở máy bạn, không chia sẻ. Máy khác build lần đầu vẫn chậm.
+
+### Storefront nung API URL vào lúc build
+
+`storefront/Dockerfile` **prerender** trang bằng cách gọi Spree API **trong lúc
+build**. Hệ quả:
+
+- `SPREE_API_URL` và `SPREE_PUBLISHABLE_KEY` là **build-arg**, không phải biến runtime.
+- Đổi backend mà storefront trỏ tới → **build lại**, không phải sửa `.env`.
+- Backend **phải đang sống** lúc build. `script/deploy` tự `curl $SPREE_API_URL/up`
+  trước khi build và dừng nếu chết — nếu không sẽ ra image toàn trang lỗi mà vẫn
+  chạy bình thường, rất khó phát hiện.
+
+---
+
+## 5. `release` làm gì
+
+Thứ tự này có chủ ý:
+
+1. **Kiểm tra `.env`** trên server — không có thì dừng ngay.
+2. `git fetch` + `reset --hard origin/main` — code trên server khớp git.
+3. **Backup database** ra `backups/pre-deploy-<timestamp>.sql.gz`, giữ 7 bản gần nhất.
+   → **Phải làm TRƯỚC khi container mới lên**, vì migration chạy từ entrypoint của
+   image; container lên là schema đã đổi rồi. `pg_dump` fail → dừng, không deploy.
+4. Pull image (hoặc bỏ qua nếu vừa `ship`).
+5. `up -d --remove-orphans`.
+6. **Chờ health** ở `127.0.0.1:3010/up`, tối đa ~200 giây. Không lên thì in 60 dòng
+   log cuối và **thoát khác 0**.
+7. Kiểm tra từ internet thật: `/up`, `/admin`, storefront.
+8. **Kiểm tra lại 28 site kia** — điều đáng quan tâm nhất sau khi động vào máy này.
+9. Dọn image cũ hơn 7 ngày.
+
+---
+
+## 6. Khảo sát server
+
+Đo trực tiếp qua SSH, 30/07/2026.
 
 | | |
 |---|---|
-| OS | Ubuntu 24.04.4 LTS |
-| Kernel | 6.17.0-1019-**aws** → EC2, region ap-southeast-1 (Singapore) |
-| Kiến trúc | **x86_64** → build image `linux/amd64` |
-| RAM | **1907 MB tổng · 1181 MB đang dùng · ~725 MB còn dùng được** |
-| Swap | 4 GB (`/swapfile`), đã dùng ~650 MB |
-| Đĩa | 58 GB, dùng 43 GB → **còn 15 GB** |
-| sudo | passwordless ✅ |
-| Docker | **CHƯA CÓ** ❌ |
+| OS | Ubuntu 24.04 LTS |
+| Kernel | 6.17.0-1019-**aws** → EC2, ap-southeast-1 |
+| Kiến trúc | **x86_64** |
+| RAM | **1907 MB tổng**, thường còn **~300 MB** |
+| Swap | 6 GB (`/swapfile` 4G + `/swapfile2` 2G) |
+| Đĩa | 58 GB, còn ~15 GB |
+| Docker | 29.6.2 |
+| nginx | 1.24.0, TLS do certbot quản lý |
 
-### Máy này đang chạy gì
-
-**Đây không phải máy trống — đây là server production đang chạy thật.**
+### Máy này không trống
 
 ```
-mysqld                    20.8% RAM   ← MySQL, tiến trình ngốn nhất
-php-fpm: shopcuaban_vn     6.0% + 4.6%
-php-fpm: sattanhung_com    5.1% + 4.4%
-php-fpm: Guucoffee_com     4.8%
-php-fpm: luathuynhgia_com  4.3%
-nginx 1.24.0 (3 worker)   → đang giữ cổng 80 và 443
+mysqld                    ~20% RAM   ← tiến trình lớn nhất
+php-fpm: shopcuaban_vn, sattanhung_com, Guucoffee_com, luathuynhgia_com, …
+nginx (3 worker)          giữ cổng 80/443
 ```
 
-nginx đang serve **~28 vhost**, trong đó có site khách hàng thật:
+~28 vhost, có site khách hàng thật: `shopcuaban.vn`, `sattanhung.com`,
+`luathuynhgia.com`, `Guucoffee.com`, `nitrasa.vn`, `bialo.vn`, `acellemail.b-teka.com`…
+
+Stack là **LEMP** (nginx + MySQL + PHP-FPM). Spree là Rails + PostgreSQL → tách biệt
+hoàn toàn về dữ liệu, **nhưng dùng chung RAM**.
+
+### DNS & TLS
 
 ```
-shopcuaban.vn        sattanhung.com       luathuynhgia.com    Guucoffee.com
-auriuscrm.com        nitrasa.vn           hoanglongtnt.com    ketoantrican.com
-khohanglaptop.com    khomaynenkhi.com     bialo.vn            cbenergy.vn
-seedcareervn.com     guucafe.com          cafedanhphat.vn     voducfoods.b-teka.com
-acellemail.b-teka.com  acm.b-teka.com     nike.b-teka.com     logitech.b-teka.com
-autotaybac.b-teka.com  dieuan.b-teka.com  orgafood.b-teka.com  … và vhost khác
+spree.b-teka.com → 54.169.34.13 ✅
+shop.b-teka.com  → 54.169.34.13 ✅
 ```
 
-Stack là **LEMP (nginx + MySQL + PHP-FPM)**, mỗi site một pool PHP-FPM và một user
-riêng. Spree là Rails + PostgreSQL → **hoàn toàn tách biệt**, không đụng gì tới MySQL
-hay PHP. Nhưng nó **dùng chung RAM**.
-
-### DNS
-
-```
-spree.b-teka.com  →  54.169.34.13     ✅ đúng, đã trỏ sẵn
-b-teka.com        →  52.220.55.112    (máy khác, không liên quan)
-```
-
-### TLS
-
-`certbot` đã có sẵn ở `/usr/bin/certbot`, các vhost hiện tại đều dùng TLS do certbot
-quản lý. → Spree đi theo đúng convention đó, **không tự viết block SSL**.
-
-Convention vhost của máy này (đọc từ `acm.b-teka.com`):
-
-- file ở `/etc/nginx/sites-available/<domain>`, symlink sang `sites-enabled/`
-- log: `/var/log/nginx/<domain_dùng_gạch_dưới>.access.log`
-- block `listen 443 ssl` + redirect 80→443 do certbot tự thêm
+Cả hai đã có cert Let's Encrypt, certbot tự gia hạn.
 
 ---
 
-## 2. Vấn đề RAM — cần quyết định
+## 7. Chuyện RAM — đã xảy ra thật
 
-**Đây là rào cản duy nhất còn lại.**
+Tài liệu chính thức của Spree ghi một tiến trình Spree cần **~1 GB**. Đo thực tế:
 
-`render.yaml` do chính Spree phát hành ghi rõ:
-
-> *"a Spree process needs ~1GB RAM, so this doesn't fit free/starter instances"*
-
-Đối chiếu:
-
-```
-Spree (Puma 1 worker)   ~  700–1000 MB
-PostgreSQL 18           ~  150–250 MB
-                        ─────────────
-cần                     ~  850–1250 MB
-server còn              ~      725 MB      ← thiếu
-```
-
-Nghĩa là **thiếu ~150–500 MB**. Máy sẽ vẫn chạy được nhờ 4 GB swap, nhưng:
-
-- swap trên EBS → I/O chậm, latency tăng cho **tất cả** site trên máy
-- MySQL bị đẩy ra swap → 28 site PHP kia chậm theo
-- lúc cao điểm (import sản phẩm, resize ảnh) dễ bị **OOM killer**, và nó thường
-  giết `mysqld` vì đó là tiến trình to nhất → **sập toàn bộ site khách hàng**
-
-Nói thẳng: **deploy Spree lên máy này có rủi ro làm chậm/sập 28 site đang chạy thật.**
-Về mặt kỹ thuật thì làm được, nhưng đây là quyết định kinh doanh, không phải kỹ thuật —
-nên mình để bạn chốt.
-
-### Các lựa chọn
-
-| | Cách | RAM | Chi phí | Rủi ro site đang chạy |
-|---|---|---|---|---|
-| **A** | **VPS riêng** cho Spree, 2 GB, trỏ `spree.b-teka.com` sang | đủ | ~5–12 USD/tháng | **không** ⭐ khuyến nghị |
-| **B** | Nâng RAM EC2 hiện tại `t3.small`→`t3.medium` (2→4 GB) | đủ | ~+15 USD/tháng, reboot 1 lần | không, sau khi nâng |
-| **C** | Deploy luôn lên máy hiện tại, giới hạn RAM + tăng swap | thiếu | 0 | **có** |
-| **D** | Chỉ demo, dùng PaaS (Render/Railway free) — repo có sẵn `render.yaml` | đủ | 0 | không |
-
-**Khuyến nghị: A** — VPS riêng 2 GB. Cách ly hoàn toàn, deploy thoải mái, không phải lo
-làm ảnh hưởng site khách. Nếu chỉ cần demo cho nhanh thì **D**.
-
-Nếu bạn chọn **C**, mình sẽ làm với các biện pháp giảm thiểu đã cấu hình sẵn:
-`WEB_CONCURRENCY=1`, `JOB_THREADS=2`, giới hạn memory container (1200M cho web,
-512M cho postgres), Postgres tune nhỏ (`shared_buffers=128MB`), và tăng swap lên 6 GB.
-Vẫn **không loại bỏ được** rủi ro OOM, chỉ giảm.
-
----
-
-## 3. Thiết kế deploy
-
-### Nguyên tắc: server không build
-
-```
-   bạn push code
-        │
-        ▼
-   GitHub  ──► Actions: bundle install + assets:precompile + docker build
-        │              (runner của GitHub, RAM thoải mái, miễn phí)
-        │
-        ▼
-   ghcr.io/luanpm88/spree:latest        ← image amd64 đã build xong
-        │
-        ▼  server chỉ `docker compose pull`
-   ┌────────────────────────────────────────────────┐
-   │  Server 54.169.34.13                           │
-   │                                                │
-   │  nginx :80/:443  (đã có, dùng chung 28 site)   │
-   │     │  spree.b-teka.com                        │
-   │     ▼                                          │
-   │  127.0.0.1:3010 ──► [web] Puma + Solid Queue   │
-   │                        │                       │
-   │                        ▼                       │
-   │                     [postgres] volume          │
-   └────────────────────────────────────────────────┘
-```
-
-**Vì sao build ở Actions:** `bundle install` + `assets:precompile` cần ~2 GB RAM. Build
-trên server 725 MB sẽ OOM — và trên máy dùng chung thì nó kéo cả site khác chết theo.
-
-**Vì sao bind `127.0.0.1`:** container chỉ mở trên loopback, không ra internet. nginx là
-lối vào duy nhất. Nếu bind `0.0.0.0`, Docker chèn rule NAT **trước** ufw → app lộ ra
-internet dù firewall đang bật.
-
-### Các file liên quan
-
-| File | Việc |
+| | |
 |---|---|
-| [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) | build + push image lên GHCR khi push `main` |
-| [`docker-compose.prod.yml`](../docker-compose.prod.yml) | chạy image trên server, có giới hạn RAM |
-| [`.env.production.example`](../.env.production.example) | mẫu biến môi trường |
-| [`deploy/nginx/spree.b-teka.com.conf`](../deploy/nginx/spree.b-teka.com.conf) | vhost reverse proxy |
-| [`script/deploy.sh`](../script/deploy.sh) | pull → backup DB → up → chờ health |
+| Spree lúc bình thường | ~430–490 MB |
+| Spree lúc xử lý ảnh | **~890 MB** |
+| Storefront (Next.js) | ~40–85 MB |
+| PostgreSQL | ~35–60 MB |
 
-### Khác biệt so với local
+**Sự cố đã xảy ra:** lúc chuẩn bị deploy, chỉ vì chạy `swapoff` để mở rộng swap,
+kernel đã **OOM-kill chính tiến trình `swapoff` (128 KB)** — vì tắt swap buộc phải kéo
+839 MB từ swap về RAM mà không đủ chỗ.
 
-| | Local | Production |
-|---|---|---|
-| Image | build tại máy, `target: dev` | pull từ GHCR, final stage |
-| Source code | bind-mount, sửa là thấy | nằm trong image |
-| Email | Mailpit bắt hết | SMTP thật |
-| `/dashboard` | 404 (không bake) | ✅ có |
-| TLS | không | nginx + certbot |
-| Migration | `make db-prepare` tay | tự chạy từ entrypoint khi boot |
-| Puma workers | 1, 10 job thread | 1, 2 job thread |
+> **Bài học: không bao giờ `swapoff` file swap đang dùng trên máy này.** Muốn thêm
+> swap thì **tạo file thứ hai** (`/swapfile2`) rồi `swapon`. `script/deploy setup`
+> làm đúng như vậy.
+
+**Sự cố thứ hai:** lúc `spree:load_sample_data`, container Spree bị **cgroup OOM giết 2
+lần** (~1 GB RSS mỗi lần) khi xử lý ảnh. Đây là **giới hạn container hoạt động đúng** —
+nó giết Spree chứ không giết MySQL, 28 site kia không hề bị ảnh hưởng. Dữ liệu vẫn
+toàn vẹn, 4 job ảnh bị lỗi và retry xong.
+
+### Các biện pháp đang áp dụng
+
+```
+swap                    6 GB, vm.swappiness=10
+giới hạn container      web 1200M · postgres 512M · storefront 420M
+PostgreSQL              shared_buffers=128MB, max_connections=40
+Puma                    WEB_CONCURRENCY=1, RAILS_MAX_THREADS=3, JOB_THREADS=2
+mysqld oom_score_adj    -800  ← quan trọng nhất
+docker log              json-file, max 10 MB × 3
+```
+
+`oom_score_adj=-800` cho `mysqld` nghĩa là: **hết RAM thì kernel giết container
+Spree/storefront trước, không giết MySQL của 28 site kia.** Áp dụng ngay qua `/proc`
+(không cần restart MySQL) và persist qua systemd drop-in cho lần khởi động sau.
+
+> **Khuyến nghị: tách Spree sang máy riêng ≥2 GB, hoặc nâng máy này lên 4 GB.**
+> Cấu hình hiện tại đủ cho demo/UAT, không nên chạy thật lâu dài.
 
 ---
 
-## 4. Các bước deploy (chạy sau khi chốt §2)
-
-> Chưa chạy bước nào. Ghi ra để review trước.
-
-### 4.1 Cài Docker trên server
+## 8. Chuẩn bị server lần đầu
 
 ```bash
-ssh ubuntu@54.169.34.13
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker ubuntu
-exit && ssh ubuntu@54.169.34.13     # login lại để nhận group
-docker run --rm hello-world
+script/deploy setup      # Docker, checkout, .env, swap, chống OOM
 ```
 
-> Trên máy dùng chung: `get.docker.com` cài `containerd` và **có thể chèn rule iptables**.
-> Nó không sửa gì của nginx/MySQL/PHP-FPM, nhưng vẫn nên làm lúc ít traffic.
-
-Nếu chọn phương án C, tăng swap trước:
+Rồi cài nginx vhost bằng tay (cố tình không tự động — sai một dòng là 28 site sập):
 
 ```bash
-sudo swapoff /swapfile
-sudo fallocate -l 6G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-sudo sysctl -w vm.swappiness=10       # ưu tiên giữ RAM cho tiến trình đang chạy
-```
-
-### 4.2 Lấy code + cấu hình
-
-```bash
-cd ~ && git clone git@github.com:luanpm88/spree.git && cd spree
-cp .env.production.example .env
-
-# sinh secret
-openssl rand -hex 64      # → SECRET_KEY_BASE
-openssl rand -base64 24   # → MISSION_CONTROL_PASSWORD
-nano .env                 # điền cả SMTP nữa, xem §6
-```
-
-> Server cần quyền đọc repo. Repo private → thêm deploy key:
-> `ssh-keygen -t ed25519 -C spree-deploy -f ~/.ssh/id_ed25519` rồi dán public key vào
-> GitHub → repo → Settings → Deploy keys (read-only là đủ).
-
-### 4.3 Đăng nhập GHCR
-
-Image trong GHCR mặc định private → server phải login bằng Personal Access Token có
-scope `read:packages`:
-
-```bash
-echo <PAT> | docker login ghcr.io -u luanpm88 --password-stdin
-```
-
-> Hoặc vào GitHub → Packages → spree → Package settings → đổi visibility sang
-> **public**, khi đó không cần login. Image không chứa secret (secret nằm ở `.env`
-> runtime), nhưng có chứa toàn bộ source code — cân nhắc.
-
-### 4.4 Chạy
-
-```bash
-chmod +x script/deploy.sh
-./script/deploy.sh
-```
-
-Lần đầu, tạo admin + dữ liệu:
-
-```bash
-DC="docker compose -f docker-compose.prod.yml"
-$DC exec -T -e EMAIL=admin@b-teka.com -e PASSWORD='<mật khẩu mạnh>' \
-   web bin/rails spree:cli:create_admin
-$DC exec web bin/rails spree:cli:ensure_api_key
-
-# Demo B2B/B2C. BỎ QUA nếu đây là store thật — nó tạo sản phẩm giả.
-$DC exec web bin/rails spree:load_sample_data
-```
-
-### 4.5 nginx + TLS
-
-```bash
-sudo cp deploy/nginx/spree.b-teka.com.conf /etc/nginx/sites-available/spree.b-teka.com
+sudo cp deploy/nginx/spree.b-teka.com.conf /etc/nginx/sites-available/
+sudo cp deploy/nginx/shop.b-teka.com.conf  /etc/nginx/sites-available/
 sudo ln -s /etc/nginx/sites-available/spree.b-teka.com /etc/nginx/sites-enabled/
-sudo nginx -t                       # BẮT BUỘC — cấu hình sai là 28 site kia sập
+sudo ln -s /etc/nginx/sites-available/shop.b-teka.com  /etc/nginx/sites-enabled/
+sudo nginx -t                    # BẮT BUỘC pass mới được reload
 sudo systemctl reload nginx
 sudo certbot --nginx -d spree.b-teka.com
+sudo certbot --nginx -d shop.b-teka.com
 ```
 
-`nginx -t` fail thì **xoá symlink rồi reload lại**, đừng cố sửa khi đang lỗi.
+`nginx -t` fail → **xoá symlink rồi reload lại**, đừng cố sửa khi đang lỗi.
 
-### 4.6 Kiểm tra
+Tạo dữ liệu ban đầu:
 
 ```bash
-curl -I https://spree.b-teka.com/up          # 200
-curl -I https://spree.b-teka.com/admin       # 302 → sign_in
-free -m                                      # còn RAM không?
-docker stats --no-stream                     # container ăn bao nhiêu
+script/deploy console
+# hoặc:
+ssh ubuntu@54.169.34.13 'cd ~/spree && docker compose -f docker-compose.prod.yml exec \
+  -T -e EMAIL=admin@b-teka.com -e PASSWORD="..." web bin/rails spree:cli:create_admin'
 ```
 
-Và test email — xem §6. **Chưa test email thì coi như chưa xong.**
+### Repo private → server cần deploy key
+
+```bash
+ssh ubuntu@54.169.34.13 'ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519_spree'
+# rồi thêm public key vào GitHub → repo → Settings → Deploy keys (read-only)
+gh repo deploy-key add key.pub --repo luanpm88/spree --title "prod server"
+```
+
+Server dùng SSH alias `github-spree` trong `~/.ssh/config` để chọn đúng key.
 
 ---
 
-## 5. Deploy lần sau
+## 9. Email — chưa cấu hình, và store chưa dùng được nếu thiếu
 
-```bash
-git push origin main          # Actions build image (~5-10 phút)
-ssh ubuntu@54.169.34.13 'cd ~/spree && ./script/deploy.sh'
-```
-
-`script/deploy.sh` tự: pull code → **dump DB ra `backups/`** → pull image → up →
-chờ `/up` trả 200 → dọn image cũ. Nếu health fail nó in 60 dòng log cuối và exit khác 0.
-
-Sửa docs thì Actions **không build** (đã ignore `docs/**`).
-
-### Rollback
-
-```bash
-# tìm tag commit trước
-docker images | grep spree
-# ghim vào .env rồi chạy lại
-echo 'SPREE_IMAGE=ghcr.io/luanpm88/spree:sha-<commit>' >> .env
-./script/deploy.sh
-```
-
-> Rollback image **không** hoàn nguyên migration. Nếu bản mới có migration phá vỡ
-> tương thích, phải restore từ `backups/pre-deploy-*.sql.gz`.
-
----
-
-## 6. Email — phải cấu hình, không thì store không dùng được
-
-**Nếu `SMTP_HOST` rỗng, Spree chỉ ghi mail vào log. Khách không nhận được gì:** không có
-mail xác nhận đơn, không reset được mật khẩu, không mời được admin.
-
-Cần 5 giá trị:
+**`SMTP_HOST` đang rỗng → Spree chỉ ghi mail vào log. Khách không nhận được gì:**
+không có mail xác nhận đơn, không reset được mật khẩu, không mời được admin.
 
 ```bash
 SMTP_HOST=            # vd smtp.sendgrid.net
-SMTP_PORT=587
+SMTP_PORT=587         # KHÔNG dùng 25 — AWS chặn cổng 25 ra ngoài
 SMTP_USERNAME=
 SMTP_PASSWORD=
 SMTP_FROM_ADDRESS=store@b-teka.com
 ```
 
-Chọn nhà cung cấp:
-
-| | Ghi chú |
+| Nhà cung cấp | Ghi chú |
 |---|---|
-| **Acelle trên chính máy này** (`acellemail.b-teka.com`) | bạn đang chạy sẵn — có SMTP thì dùng luôn, không phát sinh chi phí |
-| SendGrid / Mailgun / Brevo | free tier ~100 mail/ngày, deliverability tốt |
-| Amazon SES | rẻ nhất khi volume lớn, cùng region ap-southeast-1, phải xin ra khỏi sandbox |
-| Gmail SMTP | **đừng dùng cho production** — giới hạn thấp, dễ bị chặn |
+| **Acelle trên chính máy này** (`acellemail.b-teka.com`) | đang chạy sẵn, không phát sinh chi phí |
+| SendGrid / Mailgun / Brevo | free tier ~100 mail/ngày |
+| Amazon SES | rẻ nhất khi volume lớn, cùng region, phải xin ra khỏi sandbox |
+| Gmail SMTP | **đừng dùng cho production** |
 
-> **Cổng 25 ra ngoài bị AWS chặn mặc định.** Luôn dùng cổng **587** (hoặc 465).
-
-Kiểm tra sau khi set:
+Kiểm tra:
 
 ```bash
-docker compose -f docker-compose.prod.yml exec web \
-  bin/rails runner script/smoke_mail.rb ban@email.com
+ssh ubuntu@54.169.34.13 'cd ~/spree && docker compose -f docker-compose.prod.yml \
+  exec web bin/rails runner script/smoke_mail.rb ban@email.com'
 ```
 
-Và để mail không vào spam, thêm DNS cho `b-teka.com`: **SPF**, **DKIM** (nhà cung cấp
-cấp), **DMARC**. Thiếu SPF/DKIM là gần như chắc chắn vào spam.
+Thêm **SPF + DKIM + DMARC** cho domain gửi, thiếu là gần như chắc chắn vào spam.
 
 ---
 
-## 7. Checklist trước khi coi là xong
+## 10. Vận hành
 
-- [ ] Chốt hạ tầng ([§2](#2-vấn-đề-ram--cần-quyết-định))
-- [ ] Docker chạy trên server
-- [ ] `.env` đủ: `SECRET_KEY_BASE`, `RAILS_HOST`, `MISSION_CONTROL_PASSWORD`
-- [ ] Server login được GHCR (hoặc image đã public)
-- [ ] `./script/deploy.sh` chạy xanh
-- [ ] vhost nginx cài, `nginx -t` pass, certbot ra cert
-- [ ] `https://spree.b-teka.com/up` → 200
-- [ ] Đăng nhập `/admin` được
-- [ ] **SMTP set và `script/smoke_mail.rb` gửi tới hộp thư thật**
-- [ ] SPF + DKIM + DMARC cho domain gửi mail
-- [ ] `/jobs` đòi mật khẩu (không để mặc định)
-- [ ] `free -m` còn RAM sau khi chạy 30 phút
-- [ ] Backup DB có định kỳ (§8) — không chỉ backup lúc deploy
-- [ ] 28 site kia vẫn bình thường 🙏
+### Backup
 
----
-
-## 8. Vận hành
-
-### Lệnh hay dùng
+`release` chỉ backup **lúc deploy**. Cần cron riêng:
 
 ```bash
-DC="docker compose -f docker-compose.prod.yml"
-$DC ps                    # trạng thái
-$DC logs -f --tail=100 web
-$DC exec web bin/rails console
-$DC exec postgres psql -U postgres spree_production
-$DC restart web
-docker stats --no-stream  # RAM/CPU thật
+0 3 * * * cd /home/ubuntu/spree && docker compose -f docker-compose.prod.yml exec -T \
+  postgres pg_dump -U postgres spree_production | gzip > backups/daily-$(date +\%F).sql.gz \
+  && find backups -name 'daily-*.sql.gz' -mtime +14 -delete
 ```
 
-### Backup định kỳ
+Đĩa còn ~15 GB → **nên đẩy backup ra ngoài** (S3/R2).
 
-`script/deploy.sh` chỉ backup **lúc deploy**. Cần cron riêng:
-
-```bash
-# crontab -e — 3h sáng mỗi ngày, giữ 14 bản
-0 3 * * * cd /home/ubuntu/spree && \
-  docker compose -f docker-compose.prod.yml exec -T postgres \
-  pg_dump -U postgres spree_production | gzip > backups/daily-$(date +\%F).sql.gz && \
-  find backups -name 'daily-*.sql.gz' -mtime +14 -delete
-```
-
-Đĩa chỉ còn 15 GB → **nên đẩy backup ra ngoài** (S3/R2), đừng để nằm mãi trên máy.
-
-Nhớ backup cả **volume `storage_data`** (ảnh sản phẩm) — `pg_dump` không có ảnh:
+Nhớ backup cả volume `storage_data` (ảnh sản phẩm) — `pg_dump` không có ảnh:
 
 ```bash
 docker run --rm -v spree_storage_data:/data -v $PWD/backups:/b alpine \
@@ -403,29 +355,48 @@ docker run --rm -v spree_storage_data:/data -v $PWD/backups:/b alpine \
 ### Restore
 
 ```bash
-gunzip -c backups/pre-deploy-XXX.sql.gz | \
-  docker compose -f docker-compose.prod.yml exec -T postgres \
-  psql -U postgres spree_production
+gunzip -c backups/pre-deploy-XXX.sql.gz | docker compose -f docker-compose.prod.yml \
+  exec -T postgres psql -U postgres spree_production
 ```
+
+### Rollback
+
+```bash
+script/deploy releases
+script/deploy rollback sha-<12 ký tự>
+```
+
+> Rollback image **không hoàn nguyên migration**. Nếu bản mới có migration phá vỡ
+> tương thích thì phải restore từ `backups/`.
 
 ---
 
-## 9. Ghi chú tích luỹ
+## 11. Ghi chú tích luỹ
 
-Cập nhật khi phát hiện thêm.
+Những thứ đã trả giá để biết.
 
-1. **Server là máy production dùng chung, không phải máy trống.** Mọi thao tác phải cân
-   nhắc 28 site đang chạy. Luôn `nginx -t` trước khi reload.
-2. **Không build trên server.** Build cần ~2 GB.
-3. Server là **x86_64** → image `linux/amd64`. Máy dev là Apple Silicon (arm64) → **image
-   local và image prod khác kiến trúc**, không dùng lẫn được.
-4. `RAILS_ASSUME_SSL=true` + `RAILS_FORCE_SSL=false` khi có nginx đứng trước. Đặt
-   `FORCE_SSL=true` sẽ **redirect vô hạn** vì nginx đã redirect rồi.
-5. Bind `127.0.0.1`, không bao giờ `0.0.0.0` — Docker chèn NAT trước ufw.
-6. `RAILS_HOST` sai → link trong email và URL ảnh trong API sai. Không có lỗi báo, chỉ
-   là link hỏng.
-7. Migration chạy từ entrypoint image (`bin/docker-entrypoint` gọi `db:prepare` khi
-   command là `rails server`) → **không cần** bước migrate riêng, nhưng cũng nghĩa là
-   **backup phải làm TRƯỚC khi container mới lên**. `script/deploy.sh` làm đúng thứ tự đó.
-8. Cổng 25 bị AWS chặn → SMTP phải 587/465.
-9. Không cần Redis: Solid Queue/Cache/Cable đều nằm trong Postgres.
+1. **Server là máy production dùng chung, không phải máy trống.** Luôn `nginx -t`
+   trước khi reload. Luôn `script/deploy neighbours` sau khi deploy.
+2. **Không build trên server.** Cần ~2 GB.
+3. **Không `swapoff` swap đang dùng.** Đã bị OOM-kill vì việc này (§7). Thêm file thứ hai.
+4. Server **x86_64**, máy dev **arm64** → image local và prod **khác kiến trúc**, không
+   dùng lẫn được. Luôn `--platform linux/amd64`.
+5. `RAILS_ASSUME_SSL=true` + `RAILS_FORCE_SSL=false` khi có nginx đứng trước.
+   `FORCE_SSL=true` → **redirect vô hạn**.
+6. Bind `127.0.0.1`, không bao giờ `0.0.0.0` — Docker chèn NAT trước ufw.
+7. `RAILS_HOST` sai → link trong email và URL ảnh trong API sai. Không báo lỗi, chỉ là
+   link hỏng.
+8. **Migration chạy từ entrypoint image** → backup phải làm TRƯỚC. `release` đúng thứ tự.
+9. **Cổng 25 bị AWS chặn** → SMTP phải 587/465.
+10. Không cần Redis — Solid Queue/Cache/Cable đều trong PostgreSQL.
+11. **Healthcheck phải dùng `127.0.0.1`, không dùng `localhost`.** Trong image
+    storefront, `/etc/hosts` chỉ map `localhost → ::1` còn Next bind IPv4 → healthcheck
+    báo *unhealthy* trong khi web vẫn chạy hoàn hảo. Đã mất thời gian vì lỗi này.
+12. **`spree:load_sample_data` tạo admin `spree@example.com` với mật khẩu mặc định
+    `spree123`.** Full quyền admin. **Không bao giờ chạy task này trên store thật.**
+    Xem [HANDOVER.md §3.1](HANDOVER.md).
+13. `config/recurring.yml` của spree_starter gọi `SolidCable::Message.prunable` —
+    solid_cable 4.0.2 đổi tên thành `trimmable`. Sai tên thì job lỗi mỗi giờ và bảng
+    `solid_cable_messages` phình mãi không dọn.
+14. **Ảnh sản phẩm đi qua `/rails/active_storage/...` trên domain backend.** Nếu tách
+    domain thì nginx phải route đúng, không thì storefront mất hết ảnh.
