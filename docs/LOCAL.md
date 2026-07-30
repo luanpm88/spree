@@ -46,6 +46,7 @@ Xong thì mở:
 
 | | URL | Đăng nhập |
 |---|---|---|
+| **Cửa hàng (khách mua)** | http://localhost:3001 | — |
 | Admin | http://localhost:3000/admin | `admin@b-teka.com` / `spree123456` |
 | Hộp thư (bắt hết mail) | http://localhost:8025 | — |
 | Job queue | http://localhost:3000/jobs | `spree` / `spree123` |
@@ -126,11 +127,38 @@ bin/rails runner script/smoke_mail.rb ban@email.com`.
 ### Kiến trúc container
 
 ```
-web        Puma (Rails) + Solid Queue supervisor CHUNG 1 process
-postgres   Postgres 18 — chứa cả data, job queue, cache, cable
-mailpit    bắt mail
-admin_css  watcher build Tailwind cho admin
+web         Puma (Rails) + Solid Queue supervisor CHUNG 1 process
+postgres    Postgres 18 — chứa cả data, job queue, cache, cable
+storefront  Next.js 16 — cửa hàng khách mua, gọi Store API của web
+mailpit     bắt mail
+admin_css   watcher build Tailwind cho admin
 ```
+
+### Storefront (cửa hàng cho khách)
+
+Spree 5 **không có storefront cho Rails**, nên trang khách mua là một app riêng:
+[spree/storefront](https://github.com/spree/storefront) (Next.js 16, MIT), đã vendor
+sẵn vào thư mục `storefront/`.
+
+Ở local nó chạy **`pnpm dev`**, không phải bản build. Lý do: image production
+*prerender* các trang bằng cách gọi Spree API **lúc build** (xem
+`storefront/Dockerfile`), nên nếu dùng bản build thì đổi nội dung nào cũng phải build
+lại. Dev mode gọi API theo từng request và hot-reload.
+
+```bash
+docker compose -f docker-compose.dev.yml logs -f storefront   # xem log
+docker compose -f docker-compose.dev.yml restart storefront
+```
+
+Nó cần `SPREE_PUBLISHABLE_KEY` trong `.env` — lấy bằng `make api-key`.
+
+> **Lần khởi động đầu chậm** (vài phút): container phải `pnpm install` rồi Next.js
+> biên dịch lần đầu. Trang đầu tiên có thể mất 10–20 giây. Những lần sau nhanh vì
+> `node_modules` và `.next` nằm trong Docker volume.
+
+> `node_modules` và `.next` **cố tình để trong named volume**, không dùng bind mount —
+> container là Alpine/musl còn máy bạn là macOS/arm64, dùng chung thư mục sẽ hỏng
+> native module.
 
 **Không có Redis, không có worker riêng.** Solid Queue chạy job ngay trong Puma
 (`SOLID_QUEUE_IN_PUMA`), queue nằm trong Postgres. Đây là lý do stack nhẹ.
