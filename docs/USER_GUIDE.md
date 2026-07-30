@@ -617,7 +617,8 @@ Danh sách đầy đủ, kèm nguyên nhân gốc: [LOCAL.md §5](LOCAL.md).
 2. **Thanh toán Việt Nam** — Stripe/PayPal/Adyen đã có gem, nhưng VNPay / MoMo /
    chuyển khoản thì **phải tự viết**.
 3. **Tiền tệ** — dữ liệu mẫu đang USD, chuyển VND cần đổi ở Store và nhập lại giá.
-4. **Email** — chọn nhà cung cấp SMTP (có thể dùng Acelle đang chạy trên cùng server).
+4. **Email** — chọn nhà cung cấp SMTP (SendGrid / Mailgun / Brevo / Amazon SES).
+   Demo không cần; bán thật thì bắt buộc.
 5. **Duyệt đơn B2B** — bảng đã có, luồng cần lập trình.
 6. **Hạ tầng** — server hiện tại còn ~725 MB RAM trong khi Spree cần ~1 GB;
    đang chạy 28 site khác. Xem [DEPLOY.md §2](DEPLOY.md).
