@@ -217,6 +217,40 @@ Luôn bind `127.0.0.1` và để nginx làm lối vào duy nhất.
 
 SMTP phải dùng 587 hoặc 465.
 
+### 3.6 Sender phải thuộc domain đã authenticate, nếu không mail im lặng không tới
+
+`b-teka.com` chưa authenticate trong SendGrid → gửi dưới dạng `store@b-teka.com` (giá
+trị mặc định trong template) bị từ chối / vào spam. **Spree không cảnh báo gì** — mail
+chỉ đơn giản là không tới.
+
+Phải kiểm tra trước khi chọn sender:
+
+```bash
+curl -H "Authorization: Bearer $KEY" https://api.sendgrid.com/v3/verified_senders
+curl -H "Authorization: Bearer $KEY" https://api.sendgrid.com/v3/whitelabel/domains
+```
+
+Đã chọn `soft.support@hoangkhang.com.vn` vì `hoangkhang.com.vn` có `valid=true`.
+
+### 3.7 `deliver!` không lỗi ≠ mail đã tới
+
+SMTP trả OK chỉ nghĩa là nhà cung cấp đã **nhận**. Bounce chỉ thấy khi query activity
+log. Test password-reset thật trả về:
+
+```
+status: not_delivered
+bounce: 550 5.1.1 User does not exist - <retail@b-teka.com>
+```
+
+Không phải lỗi cấu hình — `retail@b-teka.com` là **địa chỉ demo không tồn tại**. Nhưng
+nếu chỉ nhìn `DELIVERED OK` từ script thì đã kết luận sai là email hoạt động với mọi
+địa chỉ.
+
+### 3.8 Tài khoản SendGrid đang dùng chung với hệ thống thật
+
+Lúc cấu hình, tài khoản này đang gửi ~540 mail/ngày cho một sản phẩm khác. Volume Spree
+nhỏ nên không ảnh hưởng, nhưng **bounce/spam từ Spree tính vào reputation chung**.
+
 ---
 
 ## 4. Về công cụ tự động (Playwright, PDF)
