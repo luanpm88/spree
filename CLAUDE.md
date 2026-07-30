@@ -127,15 +127,53 @@ module Spree
 end
 ```
 
+## Project documentation
+
+Read these before making assumptions — they record what was verified against the
+running system, not what the upstream docs claim. Index: `docs/README.md`.
+
+| | |
+|---|---|
+| `docs/DESIGN.md` | Architecture, data model, B2B mechanism, extension points |
+| `docs/LOCAL.md` | Docker dev setup + the failures already hit, with root causes |
+| `docs/DEPLOY.md` | `script/deploy`, server survey, the memory situation |
+| `docs/DISCOVERIES.md` | Every non-obvious finding. **Check here first when something behaves oddly.** |
+| `docs/TOOLING.md` | The automation scripts (screenshots, PDFs, permission audit) |
+| `docs/HANDOVER.md` | Client-facing handover (English, standalone) |
+| `docs/USER_GUIDE.md` | Beginner → advanced guide |
+
 ## Development
 
+Everything runs in Docker — no host Ruby needed. `make help` lists every target.
+
 ```bash
-bin/setup              # Install dependencies, prepare database, index search
-bin/dev                # Start web (jobs run in-process) + admin CSS watcher
-bin/rails console      # Rails console
-bin/rails db:migrate   # Run migrations
-bin/rails db:seed      # Seed the databases
+make setup             # first time: build, boot, create DB, seed, sample data, admin
+make up / make down    # start / stop
+make console           # Rails console
+make logs              # tail web logs
+make css               # build admin Tailwind (REQUIRED — /admin 500s without it)
+make test              # rspec
 ```
+
+Native equivalents (`bin/setup`, `bin/dev`, `bin/rails …`) still work if you have
+Ruby 4.0.1 locally.
+
+> Database commands use `run --rm`, not `exec`: on an empty database Puma boots Solid
+> Queue in-process, the supervisor raises on missing tables and takes Puma down, so
+> there is no container to exec into. See `docs/LOCAL.md §5.4`.
+
+## Deployment
+
+**No CI.** Deployment is a script you run and watch:
+
+```bash
+script/deploy help
+script/deploy ship backend    # build for amd64 → stream over SSH → release
+script/deploy status
+```
+
+The server never builds images (shared 1.9GB box also serving ~28 other sites).
+Details and rationale in `docs/DEPLOY.md`.
 
 ## Coding Conventions
 
