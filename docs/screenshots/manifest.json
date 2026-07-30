@@ -1,0 +1,122 @@
+[
+  {
+    "slug": "01-login",
+    "caption": "Trang đăng nhập admin",
+    "file": "screenshots/01-login.png"
+  },
+  {
+    "slug": "02-dashboard",
+    "caption": "Dashboard — tổng quan doanh thu, đơn hàng",
+    "file": "screenshots/02-dashboard.png"
+  },
+  {
+    "slug": "03-products",
+    "caption": "Danh sách sản phẩm",
+    "file": "screenshots/03-products.png"
+  },
+  {
+    "slug": "04-product-edit",
+    "caption": "Chi tiết một sản phẩm — biến thể, giá, tồn kho",
+    "file": "screenshots/04-product-edit.png"
+  },
+  {
+    "slug": "05-taxonomies",
+    "caption": "Taxonomy — cây danh mục",
+    "file": "screenshots/05-taxonomies.png"
+  },
+  {
+    "slug": "06-orders",
+    "caption": "Danh sách đơn hàng",
+    "file": "screenshots/06-orders.png"
+  },
+  {
+    "slug": "07-order-detail",
+    "caption": "Chi tiết đơn hàng",
+    "file": "screenshots/07-order-detail.png"
+  },
+  {
+    "slug": "08-customers",
+    "caption": "Khách hàng",
+    "file": "screenshots/08-customers.png"
+  },
+  {
+    "slug": "09-customer-groups",
+    "caption": "Nhóm khách hàng — nền tảng phân giá B2B",
+    "file": "screenshots/09-customer-groups.png"
+  },
+  {
+    "slug": "10-price-lists",
+    "caption": "Bảng giá (Price Lists) — giá sỉ B2B",
+    "file": "screenshots/10-price-lists.png"
+  },
+  {
+    "slug": "11-price-list-detail",
+    "caption": "Bảng giá Wholesale và các điều kiện áp dụng",
+    "file": "screenshots/11-price-list-detail.png"
+  },
+  {
+    "slug": "12-channels",
+    "caption": "Channels — online / wholesale / POS",
+    "file": "screenshots/12-channels.png"
+  },
+  {
+    "slug": "13a-channel-b2c",
+    "caption": "Channel B2C \"Online Store\" — mọi thứ để mặc định",
+    "file": "screenshots/13a-channel-b2c.png"
+  },
+  {
+    "slug": "13b-channel-b2b",
+    "caption": "Channel B2B \"Wholesale\" — Storefront access = Login required, Guest checkout = tắt",
+    "file": "screenshots/13b-channel-b2b.png"
+  },
+  {
+    "slug": "14-markets",
+    "caption": "Markets — nhóm quốc gia theo vùng",
+    "file": "screenshots/14-markets.png"
+  },
+  {
+    "slug": "15-promotions",
+    "caption": "Khuyến mãi",
+    "file": "screenshots/15-promotions.png"
+  },
+  {
+    "slug": "16-shipping-methods",
+    "caption": "Phương thức vận chuyển",
+    "file": "screenshots/16-shipping-methods.png"
+  },
+  {
+    "slug": "17-payment-methods",
+    "caption": "Cổng thanh toán",
+    "file": "screenshots/17-payment-methods.png"
+  },
+  {
+    "slug": "18-stock",
+    "caption": "Tồn kho",
+    "file": "screenshots/18-stock.png"
+  },
+  {
+    "slug": "19-tax-rates",
+    "caption": "Thuế",
+    "file": "screenshots/19-tax-rates.png"
+  },
+  {
+    "slug": "20-store-settings",
+    "caption": "Cấu hình cửa hàng",
+    "file": "screenshots/20-store-settings.png"
+  },
+  {
+    "slug": "21-roles",
+    "caption": "Vai trò & phân quyền",
+    "file": "screenshots/21-roles.png"
+  },
+  {
+    "slug": "22-webhooks",
+    "caption": "Webhook — bắn sự kiện ra hệ thống ngoài",
+    "file": "screenshots/22-webhooks.png"
+  },
+  {
+    "slug": "23-mailpit",
+    "caption": "Mailpit — hộp thư bắt toàn bộ email ở local",
+    "file": "screenshots/23-mailpit.png"
+  }
+]

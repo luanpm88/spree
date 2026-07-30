@@ -48,3 +48,6 @@
 !/app/assets/builds/.keep
 
 coverage/*
+
+# PDF build intermediate
+docs/.user_guide.build.html

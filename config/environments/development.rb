@@ -89,4 +89,18 @@ Rails.application.configure do
 
   # Raise error when a before_action's only/except options reference missing actions.
   config.action_controller.raise_on_missing_callback_actions = true
+
+  # Hostnames allowed to reach the app in development.
+  #
+  # Rails blocks any Host header it doesn't recognise (DNS-rebinding defence) and
+  # returns 403 "Blocked hosts: …". localhost and 127.0.0.1 are permitted out of
+  # the box, so this only matters once you put a real hostname in front — see
+  # docs/LOCAL.md §8 for the nginx + /etc/hosts setup that serves spree.local.
+  #
+  # Add more without editing this file:  DEV_HOSTS=foo.local,bar.test
+  config.hosts << 'spree.local'
+  config.hosts << 'mail.spree.local'
+  ENV.fetch('DEV_HOSTS', '').split(',').map(&:strip).reject(&:empty?).each do |host|
+    config.hosts << host
+  end
 end
