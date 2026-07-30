@@ -134,6 +134,62 @@ services:
     ports:
       - "${SPREE_PORT:-3000}:3000"
 
+  # Customer-facing storefront — spree/storefront (Next.js 16, MIT), vendored
+  # in ./storefront. Spree 5 ships no Rails storefront, so this is the shop
+  # customers actually see; it talks to the backend over the Store API.
+  #
+  # Runs `pnpm dev` rather than a production build on purpose: the production
+  # image prerenders pages against the Spree API at BUILD time (see
+  # storefront/Dockerfile), which would mean rebuilding on every content change
+  # and needing the API reachable from the build container. Dev mode fetches at
+  # request time and hot-reloads instead.
+  #
+  # Note this is a different image from the Rails one — node, not ruby.
+  storefront:
+    image: node:22-alpine
+    working_dir: /app
+    depends_on:
+      web:
+        condition: service_started
+    environment:
+      # In-cluster address of the Rails app. Not localhost:3000 — that would be
+      # the storefront container itself.
+      SPREE_API_URL: http://web:3000
+      # Product images need ONE hostname that resolves the same way in two
+      # places: the browser loads them, and next/image ALSO fetches them
+      # server-side to optimise. So `localhost:3000` is wrong here — inside this
+      # container that is the storefront's own port, which 500s.
+      #
+      # spree.local satisfies both: the browser resolves it via /etc/hosts, and
+      # this container resolves it via extra_hosts below. It also mirrors
+      # production, where browser and container both use https://spree.b-teka.com.
+      #
+      # Requires: `echo '127.0.0.1 spree.local mail.spree.local' | sudo tee -a /etc/hosts`
+      # plus the host nginx vhost (deploy/nginx/local/). Without them, unset this
+      # and set images.unoptimized instead — see docs/LOCAL.md.
+      SPREE_IMAGES_URL: ${SPREE_IMAGES_URL:-http://spree.local}
+      SPREE_PUBLISHABLE_KEY: ${SPREE_PUBLISHABLE_KEY:?run `make api-key` and put it in .env}
+      NEXT_TELEMETRY_DISABLED: "1"
+      PORT: "3001"
+      HOSTNAME: 0.0.0.0
+      WATCHPACK_POLLING: "true"   # bind-mounted FS events are unreliable on macOS
+    extra_hosts:
+      # Lets this container resolve spree.local to the host's nginx, which
+      # proxies through to the web container on :3000.
+      - "spree.local:host-gateway"
+    volumes:
+      - ./storefront:/app
+      - storefront_node_modules:/app/node_modules
+      - storefront_next:/app/.next
+    ports:
+      - "${STOREFRONT_PORT:-3001}:3001"
+    # corepack activates the exact pnpm pinned in package.json.
+    command: >
+      sh -c "corepack enable &&
+             corepack prepare pnpm@10.33.4 --activate &&
+             (test -d node_modules/next || pnpm install --frozen-lockfile) &&
+             pnpm dev --port 3001 --hostname 0.0.0.0"
+
   # Spree Admin's Tailwind CSS, rebuilt on change.
   #
   # This service is NOT in the upstream spree_starter compose — we added it.
@@ -157,3 +213,7 @@ volumes:
   storage_data:
   bundle_cache:
   tmp_cache:
+  # Kept in volumes (not the bind mount) so host and container never fight over
+  # node_modules built for Alpine/musl, and so .next cache survives restarts.
+  storefront_node_modules:
+  storefront_next:

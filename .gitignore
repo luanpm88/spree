@@ -51,3 +51,15 @@ coverage/*
 
 # PDF build intermediate
 docs/.user_guide.build.html
+
+# ── Storefront (Next.js) ─────────────────────────────────────────────────────
+# .pnpm-store is pnpm's content-addressable cache — tens of thousands of files
+# that appeared here because pnpm ran with the repo as its store dir. Never commit.
+storefront/.pnpm-store/
+storefront/node_modules/
+storefront/.next/
+storefront/.env*
+!storefront/.env.example
+!storefront/.env.local.example
+storefront/test-results/
+storefront/playwright-report/

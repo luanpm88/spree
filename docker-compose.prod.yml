@@ -108,6 +108,47 @@ services:
         limits:
           memory: 1200M
 
+  # Customer-facing storefront (Next.js 16 standalone) — the shop customers
+  # actually see, at shop.b-teka.com. Spree 5 ships no Rails storefront.
+  #
+  # The image is prebuilt by .github/workflows/deploy-storefront.yml with
+  # SPREE_API_URL and SPREE_PUBLISHABLE_KEY baked in at build time, because Next
+  # prerenders pages against the Spree API during the build. Changing which
+  # backend it points at therefore means a REBUILD, not an env change here.
+  storefront:
+    image: ${STOREFRONT_IMAGE:-ghcr.io/luanpm88/spree-storefront:latest}
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      PORT: "3001"
+      HOSTNAME: 0.0.0.0
+      # Runtime API calls. Public URL (not the in-cluster http://web:3000) so
+      # that server-rendered pages and next/image use the same host the browser
+      # does — Spree returns Active Storage URLs on the store's own host, and
+      # next/image only accepts hosts in its remotePatterns allowlist.
+      SPREE_API_URL: ${SPREE_API_URL:-https://spree.b-teka.com}
+      SPREE_PUBLISHABLE_KEY: ${SPREE_PUBLISHABLE_KEY:?set in .env}
+    ports:
+      # Loopback only — host nginx terminates TLS for shop.b-teka.com.
+      - "127.0.0.1:${STOREFRONT_PORT:-3011}:3001"
+    healthcheck:
+      # The app redirects / to /{market}/{locale}, so a 2xx/3xx both mean alive.
+      test: ["CMD-SHELL", "wget -q --spider -S http://localhost:3001/ 2>&1 | grep -qE 'HTTP/1.1 (2|3)' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          # Next standalone idles around 120-200MB. This box is shared and
+          # tight, so cap it and let it be the OOM victim before MySQL.
+          memory: 420M
+
 volumes:
   postgres_data:
   storage_data:
