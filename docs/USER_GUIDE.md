@@ -625,16 +625,60 @@ Danh sách đầy đủ, kèm nguyên nhân gốc: [LOCAL.md §5](LOCAL.md).
 | Kiểm tra sống | http://spree.local/up |
 | Store API | http://spree.local/api/v3/store/ |
 
-## B. Tài khoản mẫu
+## B. Tài khoản demo theo vai trò
 
-| Email | Vai trò | Mật khẩu |
+Tất cả dùng mật khẩu **`spree123456`**. Tạo lại bất cứ lúc nào:
+
+```bash
+docker compose -f docker-compose.dev.yml exec web bin/rails demo:seed_users
+docker compose -f docker-compose.dev.yml exec web bin/rails demo:accounts   # xem lại
+```
+
+### Nhân viên — đăng nhập tại `/admin`
+
+| Email | Vai trò | Làm được gì |
 |---|---|---|
-| `admin@b-teka.com` | quản trị | `spree123456` |
-| `spree@example.com` | quản trị (dữ liệu mẫu) | `spree123456` |
-| `wholesale@example.com` | **khách B2B**, nhóm Wholesale | (chưa đặt) |
-| `/jobs` | HTTP Basic | `spree` / `spree123` |
+| `admin@b-teka.com` | **Quản trị** | toàn quyền, kể cả phân quyền và cấu hình |
+| `manager@b-teka.com` | **Quản lý** | đơn, sản phẩm, tồn kho, khuyến mãi, bảng giá, xem khách |
+| `catalog@b-teka.com` | **NV sản phẩm** | chỉ sản phẩm + tồn kho + bảng giá |
+| `fulfillment@b-teka.com` | **NV xử lý đơn** | đơn, khách, tồn kho, xem sản phẩm |
+| `sales_b2b@b-teka.com` | **NV bán sỉ** | đơn, sản phẩm, tồn kho, **quản lý khách & nhóm khách** |
+| `support@b-teka.com` | **CSKH** | chỉ xem đơn / khách / sản phẩm |
 
-> Đây là mật khẩu **chỉ dùng cho máy local**. Trên server phải đặt mật khẩu mạnh riêng.
+### Khách hàng — đăng nhập qua storefront/API
+
+| Email | Là gì |
+|---|---|
+| `wholesale@example.com` | **khách B2B**, đã ở nhóm `Wholesale` → được giá sỉ |
+| `retail@b-teka.com` | khách lẻ → giá niêm yết |
+
+### Đã kiểm chứng phân quyền
+
+Chạy `node script/audit_roles.mjs` để tự kiểm tra. Kết quả hiện tại: **6/6 vai trò
+đúng như thiết kế**. Cụ thể đã xác nhận:
+
+- `catalog` **không** vào được Đơn hàng, Khách hàng, Khuyến mãi, Cấu hình
+- `support` **không** vào được Tồn kho, Khuyến mãi, Cấu hình
+- chỉ `admin` vào được Phân quyền và Cấu hình cửa hàng
+
+> **Hai điều cần biết về phân quyền Spree:**
+>
+> 1. Tạo Role trong `/admin` mà **không gán permission set** thì người đó đăng nhập
+>    được nhưng **không thấy gì**. Permission set khai báo ở
+>    `config/initializers/spree.rb`.
+> 2. Màn hình **Price Lists bị chặn theo `ProductDisplay`**, không phải
+>    `ProductManagement`. Nghĩa là **vai trò chỉ-đọc như CSKH vẫn xem được giá sỉ.**
+>    Đây là thiết kế của Spree. Nếu không muốn, bỏ `ProductDisplay` khỏi role
+>    `support`.
+
+### Khác
+
+| | |
+|---|---|
+| `/jobs` | HTTP Basic: `spree` / `spree123` |
+
+> Đây là mật khẩu **chỉ dùng cho máy local**. Trên server phải đặt mật khẩu mạnh riêng
+> (`bin/rails demo:seed_users PASSWORD='...'`).
 
 ## C. Lệnh hay dùng
 
