@@ -4,16 +4,8 @@
 **Status:** live on production, ready for demo / UAT.
 
 This document is written for a recipient **who already knows Spree**. It covers where
-to sign in, what is in place, what is not, and what to do next.
-
-Companion documents:
-
-| | |
-|---|---|
-| [USER_GUIDE.md](USER_GUIDE.md) | Full guide, beginner → advanced (PDF included) |
-| [DESIGN.md](DESIGN.md) | Architecture, data model, extension points |
-| [LOCAL.md](LOCAL.md) | Running the stack on a developer machine |
-| [DEPLOY.md](DEPLOY.md) | Infrastructure and release process |
+to sign in, what is in place, what is not, and what to do next. It is self-contained —
+nothing else is needed to pick the system up.
 
 ---
 
@@ -23,7 +15,7 @@ Companion documents:
 |---|---|---|
 | 1 | Sign in to the admin | **https://spree.b-teka.com/admin** |
 | 2 | Open the customer storefront | **https://shop.b-teka.com** |
-| 3 | Read how B2B is configured | [USER_GUIDE.md §5](USER_GUIDE.md) |
+| 3 | Review how B2B is configured | §2.3 below |
 
 Primary admin account:
 
@@ -90,6 +82,8 @@ All staff accounts share the handover password: **`C6iKd7JsGZTjTbJv`**
 
 ### 3.1 Staff — sign in at `/admin`
 
+This is the **complete** list — there are exactly seven admin accounts on the system.
+
 | Email | Role | Scope |
 |---|---|---|
 | `admin@b-teka.com` | Administrator | Everything, including permissions and configuration |
@@ -98,6 +92,21 @@ All staff accounts share the handover password: **`C6iKd7JsGZTjTbJv`**
 | `fulfillment@b-teka.com` | Fulfilment | Orders, customers, stock, view products |
 | `sales_b2b@b-teka.com` | B2B sales | Orders, products, stock, **manage customers and customer groups** |
 | `support@b-teka.com` | Customer support | **Read only** |
+| `spree@example.com` | Administrator | Created by Spree's sample data — see the warning below |
+
+> **`spree@example.com` — delete this account.** It is created automatically by Spree's
+> sample-data loader and carries the **full administrator role**. It shipped with
+> Spree's publicly documented default password (`spree123`); that password has been
+> rotated to the handover password above, so the default no longer works. It is listed
+> here only so nothing is hidden. It serves no purpose once the sample catalogue is
+> removed — **delete it as part of go-live**:
+>
+> ```
+> Spree::AdminUser.find_by(email: 'spree@example.com')&.destroy
+> ```
+>
+> Whenever `spree:load_sample_data` is run again, this account comes back with the
+> default password. Never run that task against a production store.
 
 Permissions are verified automatically — `node script/audit_roles.mjs` reports **6/6
 roles matching their intended access**. Confirmed by that check: `catalog` cannot reach
@@ -124,6 +133,12 @@ reaches Roles and Store settings.
 
 To see B2B pricing in action, sign in as the wholesale customer and add **10 or more**
 units of a single item — below 10 the retail price applies.
+
+There are **22 customer records in total**. The other 20 (`sarah.johnson@example.com`,
+`michael.chen@example.com`, and similar) come from Spree's sample data. They each have
+a password set, but it is randomly generated and not recorded anywhere, so nobody can
+sign in as them. They are demo records and **will be removed together with the sample
+catalogue** before go-live.
 
 ### 3.3 Other credentials
 
@@ -249,8 +264,9 @@ Ordered by how much it blocks real trading.
 | 1 | **SMTP not configured** | 🔴 **blocker** | `SMTP_HOST` is empty, so Spree only writes mail to the log. Customers receive **nothing** — no order confirmation, no password reset. Also needs SPF, DKIM and DMARC or mail will land in spam. |
 | 2 | **No Vietnamese payment gateway** | 🔴 **blocker** | Only Stripe, PayPal and Adyen are available. VNPay / MoMo / bank transfer have no published gem and must be implemented as a custom `PaymentMethod`. |
 | 3 | **Currency is USD** | 🔴 **blocker** | Switching to VND means re-entering all prices. |
-| 4 | Sample data still loaded | 🔴 | Remove and import the real catalogue. |
-| 5 | Handover passwords still active | 🔴 | Rotate all of them. |
+| 4 | Sample data still loaded | 🔴 | Remove and import the real catalogue. This also removes the 20 demo customer records. |
+| 5 | Handover passwords still active | 🔴 | Rotate all seven admin accounts and both demo customers. |
+| 5b | **Delete `spree@example.com`** | 🔴 | Full-administrator account created by the sample-data loader, originally carrying Spree's public default password. Rotated, but it should not exist on a real store. See §3.1. |
 | 6 | **Server memory** | 🟠 | See §8. |
 | 7 | B2B order approval workflow | 🟠 | The `OrderApproval` model and table exist, but nothing creates or processes approvals — the workflow must be built. |
 | 8 | Multiple buyers under one company account | 🟠 | The `Invitation` model exists; the flow must be built. |
