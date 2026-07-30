@@ -136,8 +136,11 @@ services:
       # Loopback only — host nginx terminates TLS for shop.b-teka.com.
       - "127.0.0.1:${STOREFRONT_PORT:-3011}:3001"
     healthcheck:
-      # The app redirects / to /{market}/{locale}, so a 2xx/3xx both mean alive.
-      test: ["CMD-SHELL", "wget -q --spider -S http://localhost:3001/ 2>&1 | grep -qE 'HTTP/1.1 (2|3)' || exit 1"]
+      # 127.0.0.1, NOT localhost. In this image /etc/hosts maps localhost to ::1
+      # only, while Next binds IPv4 0.0.0.0 — so `localhost` gives "connection
+      # refused" and the container reports unhealthy while happily serving real
+      # traffic. wget follows the / -> /{market}/{locale} redirect and exits 0.
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3001/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5

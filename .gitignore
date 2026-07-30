@@ -65,3 +65,6 @@ storefront/test-results/
 storefront/playwright-report/
 
 docs/.handover.build.html
+
+# local deploy overrides (secrets)
+deploy.env
