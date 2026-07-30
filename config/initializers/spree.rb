@@ -54,9 +54,66 @@ Rails.application.config.after_initialize do
   # Spree.exports << Spree::Exports::Payments
   # Spree.reports << Spree::Reports::MassivelyOvercomplexReportForCfo
 
-  # Role-based permissions
+  # ── Role-based permissions ────────────────────────────────────────────────
+  # Spree ships two roles (:default for customers, :admin for staff) and 14
+  # permission sets. Assigning sets here is what makes a role mean anything —
+  # creating a Spree::Role row alone grants nothing.
+  #
+  # A role with no permission sets can sign in and see nothing, so every staff
+  # role below includes DashboardDisplay.
+  #
+  # Create the matching users with:  bin/rails demo:seed_users
+  # Full list: Spree::PermissionSets::Base.descendants
   Spree.permissions.assign(:default, [Spree::PermissionSets::DefaultCustomer])
   Spree.permissions.assign(:admin, [Spree::PermissionSets::SuperUser])
+
+  # Quản lý — thấy hết, làm được gần hết, nhưng không sửa cấu hình hệ thống
+  # và không tự cấp quyền cho người khác.
+  Spree.permissions.assign(:manager, [
+    Spree::PermissionSets::DashboardDisplay,
+    Spree::PermissionSets::OrderManagement,
+    Spree::PermissionSets::ProductManagement,
+    Spree::PermissionSets::PromotionManagement,
+    Spree::PermissionSets::StockManagement,
+    Spree::PermissionSets::UserDisplay
+  ])
+
+  # Nhân viên sản phẩm — chỉ catalog và tồn kho. Không xem được đơn/khách.
+  Spree.permissions.assign(:catalog, [
+    Spree::PermissionSets::DashboardDisplay,
+    Spree::PermissionSets::ProductManagement,
+    Spree::PermissionSets::StockManagement
+  ])
+
+  # Nhân viên xử lý đơn — xử lý đơn, xem hàng và tồn kho, không sửa giá.
+  Spree.permissions.assign(:fulfillment, [
+    Spree::PermissionSets::DashboardDisplay,
+    Spree::PermissionSets::OrderManagement,
+    Spree::PermissionSets::ProductDisplay,
+    Spree::PermissionSets::StockDisplay,
+    Spree::PermissionSets::UserDisplay
+  ])
+
+  # Nhân viên bán sỉ (B2B) — cần quản lý khách để gán customer group, cần xem
+  # giá, và cần xử lý đơn sỉ. UserManagement là thứ cho phép gán nhóm khách.
+  # StockDisplay thêm vào sau khi audit (script/audit_roles.mjs) cho thấy thiếu
+  # nó thì không xem được tồn kho — mà bán sỉ thì luôn phải trả lời "còn hàng
+  # không". ProductManagement KHÔNG tự bao gồm quyền xem tồn kho.
+  Spree.permissions.assign(:sales_b2b, [
+    Spree::PermissionSets::DashboardDisplay,
+    Spree::PermissionSets::OrderManagement,
+    Spree::PermissionSets::ProductManagement,
+    Spree::PermissionSets::StockDisplay,
+    Spree::PermissionSets::UserManagement
+  ])
+
+  # CSKH — chỉ đọc. Trả lời khách mà không sửa được gì.
+  Spree.permissions.assign(:support, [
+    Spree::PermissionSets::DashboardDisplay,
+    Spree::PermissionSets::OrderDisplay,
+    Spree::PermissionSets::ProductDisplay,
+    Spree::PermissionSets::UserDisplay
+  ])
 end
 
 Spree.user_class = 'Spree::User'
