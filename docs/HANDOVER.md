@@ -134,6 +134,12 @@ reaches Roles and Store settings.
 To see B2B pricing in action, sign in as the wholesale customer and add **10 or more**
 units of a single item — below 10 the retail price applies.
 
+> **The demo addresses are not real mailboxes.** `admin@b-teka.com`,
+> `retail@b-teka.com` and the rest do not exist, so "forgot password" on them sends
+> mail that bounces (`550 User does not exist`). Email itself works — to see it, use a
+> real address. Change one of these accounts to your own address, or create a customer
+> with it, before testing password reset or order confirmations.
+
 There are **22 customer records in total**. The other 20 (`sarah.johnson@example.com`,
 `michael.chen@example.com`, and similar) come from Spree's sample data. They each have
 a password set, but it is randomly generated and not recorded anywhere, so nobody can
@@ -233,12 +239,31 @@ entrypoint), waits for the health check, and aborts if the app does not come up.
 | HTTPS on both domains, auto-renewing | ✅ |
 | CI/CD image build | ✅ |
 | Database backup on every deploy | ✅ |
+| Transactional email (SendGrid, DKIM-signed) | ✅ |
 
 ### Current data is **sample data**
 
 36 products / 121 variants / 22 customers / 2 orders / 24 categories / 12 shipping
 methods. This is Spree's demo catalogue, not real inventory. It must be removed before
 trading.
+
+### Transactional email
+
+Configured and verified end to end:
+
+| | |
+|---|---|
+| Provider | SendGrid (SMTP relay, port 587) |
+| Sender | `soft.support@hoangkhang.com.vn` |
+| Authentication | domain-authenticated in SendGrid — DKIM and SPF signed |
+
+Verified by sending through Spree's own mailer stack and confirming delivery in the
+provider's activity log, not just a successful SMTP handshake.
+
+> `b-teka.com` is **not** authenticated with the mail provider, so mail cannot be sent
+> as `…@b-teka.com` — it would be rejected or treated as spam. To send from a b-teka
+> address, authenticate the domain with the provider (add its DKIM/SPF DNS records)
+> first.
 
 ### B2B configuration in place
 
@@ -261,7 +286,7 @@ Ordered by how much it blocks real trading.
 
 | # | Item | Severity | Notes |
 |---|---|---|---|
-| 1 | **SMTP not configured** | 🔴 **blocker** | `SMTP_HOST` is empty, so Spree only writes mail to the log. Customers receive **nothing** — no order confirmation, no password reset. Also needs SPF, DKIM and DMARC or mail will land in spam. |
+| 1 | Transactional email | ✅ **working** | Sending through SendGrid from an authenticated domain (DKIM/SPF signed). Verified end to end — see §6. |
 | 2 | **No Vietnamese payment gateway** | 🔴 **blocker** | Only Stripe, PayPal and Adyen are available. VNPay / MoMo / bank transfer have no published gem and must be implemented as a custom `PaymentMethod`. |
 | 3 | **Currency is USD** | 🔴 **blocker** | Switching to VND means re-entering all prices. |
 | 4 | Sample data still loaded | 🔴 | Remove and import the real catalogue. This also removes the 20 demo customer records. |

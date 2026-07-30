@@ -300,37 +300,62 @@ Server dùng SSH alias `github-spree` trong `~/.ssh/config` để chọn đúng 
 
 ---
 
-## 9. Email — chưa cấu hình
+## 9. Email — đã cấu hình xong
 
-**Demo thì không cần.** Chỉ xem shop và admin thì email không liên quan; chỗ duy nhất
-thiếu là reset mật khẩu, mà mật khẩu đã bàn giao sẵn và admin đổi được bằng console.
+Đang gửi qua **SendGrid** (SMTP relay, cổng 587), sender
+`soft.support@hoangkhang.com.vn`. Đã kiểm chứng bằng mailer thật của Spree và xác nhận
+`delivered` trong activity log của nhà cung cấp, không chỉ là SMTP handshake thành công.
 
-**Bán thật thì bắt buộc.** `SMTP_HOST` đang rỗng → Spree chỉ ghi mail vào log, khách
-không nhận được gì: không có mail xác nhận đơn, không reset được mật khẩu, không mời
-được admin.
+Cấu hình nằm trong `.env` trên server (chmod 600, không có trong git):
 
 ```bash
-SMTP_HOST=            # vd smtp.sendgrid.net
-SMTP_PORT=587         # KHÔNG dùng 25 — AWS chặn cổng 25 ra ngoài
-SMTP_USERNAME=
-SMTP_PASSWORD=
-SMTP_FROM_ADDRESS=store@b-teka.com
+SMTP_HOST=smtp.sendgrid.net
+SMTP_PORT=587          # KHÔNG dùng 25 — AWS chặn cổng 25 ra ngoài
+SMTP_USERNAME=apikey   # với SendGrid, username luôn là chuỗi "apikey"
+SMTP_PASSWORD=<API key>
+SMTP_FROM_ADDRESS=soft.support@hoangkhang.com.vn
 ```
-
-| Nhà cung cấp | Ghi chú |
-|---|---|
-| SendGrid / Mailgun / Brevo | free tier ~100 mail/ngày |
-| Amazon SES | rẻ nhất khi volume lớn, cùng region, phải xin ra khỏi sandbox |
-| Gmail SMTP | **đừng dùng cho production** |
 
 Kiểm tra:
 
 ```bash
-ssh ubuntu@54.169.34.13 'cd ~/spree && docker compose -f docker-compose.prod.yml \
-  exec web bin/rails runner script/smoke_mail.rb ban@email.com'
+ssh ubuntu@54.169.34.13 'cd ~/spree && sudo docker compose -f docker-compose.prod.yml \
+  exec -T web bin/rails runner script/smoke_mail.rb ban@email.com'
 ```
 
-Thêm **SPF + DKIM + DMARC** cho domain gửi, thiếu là gần như chắc chắn vào spam.
+### Ba điều đã học khi cấu hình
+
+**Sender phải thuộc domain đã authenticate.** `b-teka.com` **chưa** authenticate trong
+SendGrid → không gửi được dưới dạng `store@b-teka.com` (giá trị mặc định trong template)
+vì sẽ bị từ chối hoặc vào spam. `hoangkhang.com.vn` đã authenticate (DKIM + SPF) nên
+dùng địa chỉ trên domain đó. Muốn gửi từ `@b-teka.com` thì phải authenticate domain đó
+trước (thêm DNS record DKIM/SPF của nhà cung cấp).
+
+Kiểm tra sender hợp lệ **trước khi** chọn:
+
+```bash
+curl -s -H "Authorization: Bearer $SENDGRID_KEY" \
+  https://api.sendgrid.com/v3/verified_senders
+curl -s -H "Authorization: Bearer $SENDGRID_KEY" \
+  https://api.sendgrid.com/v3/whitelabel/domains    # chỉ dùng cái valid=true
+```
+
+**Địa chỉ demo không phải mailbox thật.** `retail@b-teka.com`, `admin@b-teka.com`… không
+tồn tại → gửi tới đó bị `550 5.1.1 User does not exist`. Đây **không phải lỗi cấu hình**.
+Muốn test email thì dùng địa chỉ thật.
+
+**Kiểm tra `status` trong activity log, đừng chỉ tin SMTP trả OK.** `deliver!` không lỗi
+chỉ nghĩa là nhà cung cấp đã *nhận*, chưa chắc đã *gửi tới*. Bounce chỉ thấy khi query
+API:
+
+```bash
+curl -s -H "Authorization: Bearer $SENDGRID_KEY" \
+  'https://api.sendgrid.com/v3/messages?limit=5&query=to_email%3D%22ban%40email.com%22'
+```
+
+> Tài khoản SendGrid này **đang dùng chung với hệ thống khác đang chạy thật** (~540
+> mail/ngày của sản phẩm khác lúc triển khai). Volume từ Spree rất nhỏ nên không ảnh
+> hưởng, nhưng bounce/spam từ Spree vẫn tính vào reputation chung của tài khoản.
 
 ---
 
