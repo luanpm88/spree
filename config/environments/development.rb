@@ -100,6 +100,11 @@ Rails.application.configure do
   # Add more without editing this file:  DEV_HOSTS=foo.local,bar.test
   config.hosts << 'spree.local'
   config.hosts << 'mail.spree.local'
+  # The storefront container reaches the API at http://web:3000 over the compose
+  # network, so the Host header is the service name. Without this the storefront
+  # gets Rails' HTML "Blocked hosts" page where it expects JSON and fails with
+  # `Unexpected token '<'`.
+  config.hosts << 'web'
   ENV.fetch('DEV_HOSTS', '').split(',').map(&:strip).reject(&:empty?).each do |host|
     config.hosts << host
   end
