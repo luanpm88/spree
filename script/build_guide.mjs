@@ -13,10 +13,41 @@ import MarkdownIt from 'markdown-it';
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
+// Which document to render. Defaults to the user guide; pass a name to build
+// another one:  node script/build_guide.mjs HANDOVER
+const DOC = (process.argv[2] || 'USER_GUIDE').replace(/\.md$/i, '');
+
+const COVERS = {
+  USER_GUIDE: {
+    eyebrow: 'Tài liệu nội bộ · b-teka',
+    title: 'Spree Commerce<br>Hướng dẫn toàn tập',
+    sub: 'Nền tảng thương mại điện tử B2B &amp; B2C',
+    foot: 'Ảnh chụp trong tài liệu được lấy trực tiếp từ hệ thống đã dựng.',
+    running: 'Spree — Hướng dẫn toàn tập',
+    pageLabel: 'trang',
+  },
+  HANDOVER: {
+    eyebrow: 'Project handover · b-teka',
+    title: 'Spree Commerce<br>Project Handover',
+    sub: 'Live production system',
+    foot: 'Every screenshot in this document is taken from the live production system.',
+    running: 'Spree Commerce — Project Handover',
+    pageLabel: 'page',
+  },
+};
+
 const DOCS = path.resolve('docs');
-const SRC = path.join(DOCS, 'USER_GUIDE.md');
-const OUT_PDF = path.join(DOCS, 'USER_GUIDE.pdf');
-const OUT_HTML = path.join(DOCS, '.user_guide.build.html');
+const SRC = path.join(DOCS, `${DOC}.md`);
+const OUT_PDF = path.join(DOCS, `${DOC}.pdf`);
+const OUT_HTML = path.join(DOCS, `.${DOC.toLowerCase()}.build.html`);
+const COVER = COVERS[DOC] || {
+  eyebrow: 'b-teka',
+  title: DOC.replace(/_/g, ' '),
+  sub: '',
+  foot: '',
+  running: DOC,
+  pageLabel: 'page',
+};
 
 const md = new MarkdownIt({ html: true, linkify: true, typographer: false });
 
@@ -192,9 +223,9 @@ const run = async () => {
 
   const cover = `
     <div class="cover">
-      <div class="eyebrow">Tài liệu nội bộ · b-teka</div>
-      <h1>Spree Commerce<br>Hướng dẫn toàn tập</h1>
-      <div class="sub">Nền tảng thương mại điện tử B2B &amp; B2C</div>
+      <div class="eyebrow">${COVER.eyebrow}</div>
+      <h1>${COVER.title}</h1>
+      <div class="sub">${COVER.sub}</div>
       <dl>
         <dt>Spree</dt><dd>5.6.1 Community Edition</dd>
         <dt>Nền tảng</dt><dd>Rails 8.1.3 · Ruby 4.0.1 · PostgreSQL 18</dd>
@@ -202,20 +233,29 @@ const run = async () => {
         <dt>Repository</dt><dd>github.com/luanpm88/spree</dd>
         <dt>Cập nhật</dt><dd>30/07/2026</dd>
       </dl>
-      <div class="foot">
-        Ảnh chụp trong tài liệu được lấy trực tiếp từ hệ thống đã dựng.
-      </div>
+      <div class="foot">${COVER.foot}</div>
     </div>`;
 
   const doc = `<!doctype html><html lang="vi"><head><meta charset="utf-8">
-    <title>Spree — Hướng dẫn toàn tập</title><style>${CSS}</style></head>
+    <title>${COVER.running}</title><style>${CSS}</style></head>
     <body>${cover}${html}</body></html>`;
 
   await writeFile(OUT_HTML, doc);
 
   const browser = await chromium.launch();
   const page = await browser.newPage();
-  await page.goto(`file://${OUT_HTML}`, { waitUntil: 'load' });
+  // The page is one large self-contained file — every screenshot is inlined as
+  // a base64 data URI, so this is tens of MB of markup. The default 30s
+  // navigation timeout is not enough once a doc carries ~25 images.
+  await page.goto(`file://${OUT_HTML}`, { waitUntil: 'domcontentloaded', timeout: 180000 });
+  // Data URIs decode synchronously but layout still needs them measured, so
+  // wait for every <img> to report complete before printing — otherwise images
+  // land in the PDF at the wrong height or blank.
+  await page.waitForFunction(
+    () => Array.from(document.images).every((i) => i.complete && i.naturalHeight > 0),
+    null,
+    { timeout: 180000 }
+  ).catch(() => console.log('  (warning: some images never reported complete)'));
   await page.emulateMedia({ media: 'print' });
 
   await page.pdf({
@@ -224,13 +264,13 @@ const run = async () => {
     printBackground: true,
     displayHeaderFooter: true,
     headerTemplate: `<div style="font-size:7.5pt;color:#8b94a3;width:100%;padding:0 14mm;
-      font-family:-apple-system,sans-serif;">Spree — Hướng dẫn toàn tập</div>`,
+      font-family:-apple-system,sans-serif;">${COVER.running}</div>`,
     // Group the page counter in ONE flex child — otherwise space-between pushes
     // the number, the slash and the total to opposite ends of the page.
     footerTemplate: `<div style="font-size:7.5pt;color:#8b94a3;width:100%;padding:0 14mm;
       font-family:-apple-system,sans-serif;display:flex;justify-content:space-between;">
       <span>github.com/luanpm88/spree</span>
-      <span>trang <span class="pageNumber"></span> / <span class="totalPages"></span></span>
+      <span>${COVER.pageLabel} <span class="pageNumber"></span> / <span class="totalPages"></span></span>
       </div>`,
     margin: { top: '18mm', bottom: '18mm', left: '14mm', right: '14mm' },
   });
@@ -239,7 +279,7 @@ const run = async () => {
 
   const { size } = await stat(OUT_PDF);
   const imgCount = [...doc.matchAll(/<img /g)].length;
-  console.log(`\nPDF: docs/USER_GUIDE.pdf  (${(size / 1024 / 1024).toFixed(1)} MB, ${imgCount} images)`);
+  console.log(`\nPDF: docs/${DOC}.pdf  (${(size / 1024 / 1024).toFixed(1)} MB, ${imgCount} images)`);
   if (missing.length) {
     console.log(`\nWARNING — ${missing.length} screenshot(s) missing, rendered as placeholders:`);
     missing.forEach((m) => console.log(`  ${m}`));

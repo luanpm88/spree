@@ -72,8 +72,19 @@ mà bạn tự làm, gọi dữ liệu qua API.
    └────────────────────────┘          └─────────────────────────────┘
 ```
 
-Vì vậy **hiện tại vào `/` sẽ tự nhảy sang `/admin`** — đúng như thiết kế, chưa có
-storefront. Đây là việc cần chốt (xem [8.4](#84-việc-còn-phải-quyết)).
+Trang khách hàng của dự án này dùng **[spree/storefront](https://github.com/spree/storefront)**
+— storefront chính chủ của Spree, mã nguồn mở (MIT), viết bằng Next.js 16 + React 19 +
+Tailwind 4. Đã dựng sẵn:
+
+| | |
+|---|---|
+| Local | http://localhost:3001 |
+| Production | **https://shop.b-teka.com** |
+
+![Cửa hàng cho khách — chạy thật trên production](screenshots/25-storefront-prod.png)
+
+Vào thẳng `spree.b-teka.com/` sẽ nhảy sang `/admin` — đúng như thiết kế, vì đó là
+domain của backend/quản trị, còn cửa hàng nằm ở domain riêng.
 
 Lợi ích của cách này: một backend phục vụ được **nhiều mặt tiền cùng lúc** — web B2C,
 web B2B, app mobile, máy POS tại quầy — mà không phải viết lại nghiệp vụ.
@@ -617,12 +628,24 @@ Danh sách đầy đủ, kèm nguyên nhân gốc: [LOCAL.md §5](LOCAL.md).
 
 ## A. Địa chỉ
 
+### Production (đang chạy thật)
+
 | | |
 |---|---|
-| Quản trị | http://spree.local/admin |
-| Hộp thư local | http://mail.spree.local |
+| **Cửa hàng (khách mua)** | **https://shop.b-teka.com** |
+| **Quản trị** | **https://spree.b-teka.com/admin** |
+| Store API | https://spree.b-teka.com/api/v3/store/ |
+| Hàng đợi | https://spree.b-teka.com/jobs |
+| Kiểm tra sống | https://spree.b-teka.com/up |
+
+### Local
+
+| | |
+|---|---|
+| Cửa hàng | http://localhost:3001 |
+| Quản trị | http://spree.local/admin · http://localhost:3000/admin |
+| Hộp thư (bắt hết mail) | http://mail.spree.local · http://localhost:8025 |
 | Hàng đợi | http://spree.local/jobs |
-| Kiểm tra sống | http://spree.local/up |
 | Store API | http://spree.local/api/v3/store/ |
 
 ## B. Tài khoản demo theo vai trò

@@ -63,3 +63,5 @@ storefront/.env*
 !storefront/.env.local.example
 storefront/test-results/
 storefront/playwright-report/
+
+docs/.handover.build.html

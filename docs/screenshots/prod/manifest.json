@@ -1,0 +1,77 @@
+[
+  {
+    "slug": "shop-01-home",
+    "caption": "Storefront home page — shop.b-teka.com",
+    "file": "screenshots/prod/shop-01-home.png"
+  },
+  {
+    "slug": "shop-02-listing",
+    "caption": "Product listing — all products",
+    "file": "screenshots/prod/shop-02-listing.png"
+  },
+  {
+    "slug": "shop-04-category",
+    "caption": "Category page with filters — Kitchen",
+    "file": "screenshots/prod/shop-04-category.png"
+  },
+  {
+    "slug": "shop-03-product",
+    "caption": "Product detail — variant selection and add to cart",
+    "file": "screenshots/prod/shop-03-product.png"
+  },
+  {
+    "slug": "admin-01-login",
+    "caption": "Admin sign-in — spree.b-teka.com/admin",
+    "file": "screenshots/prod/admin-01-login.png"
+  },
+  {
+    "slug": "admin-02-dashboard",
+    "caption": "Admin dashboard",
+    "file": "screenshots/prod/admin-02-dashboard.png"
+  },
+  {
+    "slug": "admin-03-products",
+    "caption": "Products — 36 products / 121 variants",
+    "file": "screenshots/prod/admin-03-products.png"
+  },
+  {
+    "slug": "admin-04-orders",
+    "caption": "Orders",
+    "file": "screenshots/prod/admin-04-orders.png"
+  },
+  {
+    "slug": "admin-05-customers",
+    "caption": "Customers",
+    "file": "screenshots/prod/admin-05-customers.png"
+  },
+  {
+    "slug": "admin-06-customer-groups",
+    "caption": "Customer groups — the basis of B2B pricing",
+    "file": "screenshots/prod/admin-06-customer-groups.png"
+  },
+  {
+    "slug": "admin-09-channels",
+    "caption": "Sales channels — online (B2C) / wholesale (B2B) / POS",
+    "file": "screenshots/prod/admin-09-channels.png"
+  },
+  {
+    "slug": "admin-11-roles",
+    "caption": "Roles and permissions — six job-function roles",
+    "file": "screenshots/prod/admin-11-roles.png"
+  },
+  {
+    "slug": "admin-07-product-detail",
+    "caption": "Product detail — price and stock live on the variant",
+    "file": "screenshots/prod/admin-07-product-detail.png"
+  },
+  {
+    "slug": "admin-08-price-list",
+    "caption": "Wholesale price list — Volume Rule (10+) AND Customer Group Rule",
+    "file": "screenshots/prod/admin-08-price-list.png"
+  },
+  {
+    "slug": "admin-10-channel-b2b",
+    "caption": "B2B gate — Login required, guest checkout disabled",
+    "file": "screenshots/prod/admin-10-channel-b2b.png"
+  }
+]
