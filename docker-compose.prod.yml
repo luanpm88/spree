@@ -38,9 +38,13 @@ x-app: &app
     # Upstream's own render.yaml states a Spree process needs ~1GB RAM. These
     # values are deliberately minimal for a small box. Raise them when the
     # server has headroom.
+    # Tuned DOWN after the host began swapping ~19MB/s with 27% iowait and
+    # MySQL had 392MB pushed into swap. Each Puma thread and each Solid Queue
+    # worker is a Ruby stack plus its own object churn, and on a box this tight
+    # fewer, busier threads beat more, idler ones.
     WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}   # Puma workers (processes)
-    RAILS_MAX_THREADS: ${RAILS_MAX_THREADS:-3}
-    JOB_THREADS: ${JOB_THREADS:-2}           # Solid Queue pool, runs in Puma
+    RAILS_MAX_THREADS: ${RAILS_MAX_THREADS:-2}
+    JOB_THREADS: ${JOB_THREADS:-1}           # Solid Queue pool, runs in Puma
 
     # /jobs dashboard is admin-only — REQUIRED in production.
     MISSION_CONTROL_USER: ${MISSION_CONTROL_USER:?set in .env}
@@ -80,7 +84,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          # Uses ~35MB steady state; 320M is generous for this workload.
+          memory: 320M
 
   # Puma serves HTTP and runs Solid Queue's job supervisor in-process, so this
   # is the only app container. The image ENTRYPOINT runs `db:prepare` when the
@@ -106,7 +111,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1200M
+          # Measured steady state is ~420MB. 768M leaves headroom for a request
+          # spike while capping the runaway growth that pushed MySQL into swap.
+          # Image processing can transiently want ~890MB — if a bulk import gets
+          # OOM-killed, raise this temporarily rather than leaving it high.
+          memory: 768M
 
   # Customer-facing storefront (Next.js 16 standalone) — the shop customers
   # actually see, at shop.b-teka.com. Spree 5 ships no Rails storefront.
@@ -148,9 +157,9 @@ services:
     deploy:
       resources:
         limits:
-          # Next standalone idles around 120-200MB. This box is shared and
-          # tight, so cap it and let it be the OOM victim before MySQL.
-          memory: 420M
+          # Measured at ~74MB steady state. Capped low deliberately: this box is
+          # shared, and the storefront should be the OOM victim before MySQL.
+          memory: 256M
 
 volumes:
   postgres_data:
