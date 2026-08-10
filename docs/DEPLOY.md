@@ -242,12 +242,22 @@ toàn vẹn, 4 job ảnh bị lỗi và retry xong.
 
 ```
 swap                    6 GB, vm.swappiness=10
-giới hạn container      web 1200M · postgres 512M · storefront 420M
+giới hạn container      web 768M · postgres 320M · storefront 256M
 PostgreSQL              shared_buffers=128MB, max_connections=40
-Puma                    WEB_CONCURRENCY=1, RAILS_MAX_THREADS=3, JOB_THREADS=2
+Puma                    WEB_CONCURRENCY=1, RAILS_MAX_THREADS=2, JOB_THREADS=1
+restart policy          always (KHÔNG phải unless-stopped — xem §11)
 mysqld oom_score_adj    -800  ← quan trọng nhất
 docker log              json-file, max 10 MB × 3
 ```
+
+> **Các con số trên đã được siết lại ngày 2026-08-10.** Trước đó là 1200M/512M/420M với
+> 3 thread và 2 job worker, và máy chủ bắt đầu swap ~19 MB/s với iowait 27–29%, MySQL bị
+> đẩy 392 MB vào swap. Sau khi siết: swap-out về 0, iowait còn 7%. Mỗi Puma thread và
+> mỗi Solid Queue worker là một ngăn xếp Ruby kèm rác đối tượng riêng, nên trên máy chật
+> thì ít thread mà bận còn hơn nhiều thread mà rảnh.
+>
+> Web đo được ~420 MB lúc bình thường. Xử lý ảnh có thể vọt ~890 MB — nếu import hàng
+> loạt bị OOM giết thì nâng tạm rồi hạ lại, đừng để cao thường trực.
 
 `oom_score_adj=-800` cho `mysqld` nghĩa là: **hết RAM thì kernel giết container
 Spree/storefront trước, không giết MySQL của 28 site kia.** Áp dụng ngay qua `/proc`

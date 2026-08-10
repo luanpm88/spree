@@ -591,11 +591,15 @@ tiến trình với web. Nhờ vậy stack rất nhẹ.
 ## 8.2 Cách đưa lên server
 
 ```bash
-git push origin main    # GitHub tự build ảnh Docker
-ssh ubuntu@54.169.34.13 'cd ~/spree && ./script/deploy.sh'
+script/deploy ship backend    # chạy ở máy mình, không phải trên server
 ```
 
-Server **không build**, chỉ tải ảnh đã build sẵn. Lý do và chi tiết: [DEPLOY.md](DEPLOY.md).
+Không có CI. Deploy là một script mình chạy và ngồi xem. Nó build ảnh ở máy mình, đẩy
+thẳng qua SSH vào Docker của server, sao lưu database rồi mới release, và **tự huỷ nếu
+app không lên**.
+
+Server **không bao giờ build**. Build Spree cần khoảng 2 GB RAM, mà máy đó đang chia sẻ
+với 28 site khác. Lý do đầy đủ và các lệnh còn lại: [DEPLOY.md](DEPLOY.md).
 
 ## 8.3 Sự cố thường gặp
 

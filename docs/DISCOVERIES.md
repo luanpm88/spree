@@ -174,6 +174,42 @@ thường**. `script/deploy` tự curl `/up` trước khi build.
 
 `storefront/.pnpm-store/` đã xuất hiện với **38,477 file** chờ commit. Phải gitignore.
 
+### 2.10 `restart: unless-stopped` KHÔNG sống sót qua reboot của máy chủ
+
+Đây là phát hiện đắt nhất của cả dự án: **Spree sập 5 ngày mà không ai biết.**
+
+Máy chủ reboot ngày 2026-08-05 để nâng kernel. Trình tự tắt máy dừng container, và
+Docker ghi nhận đó là **dừng có chủ ý**. Khi daemon khởi động lại, `unless-stopped`
+đúng theo tên của nó: nó từ chối bật lại thứ đã bị dừng. Kết quả là hai tên miền trả
+502 suốt từ đó tới 2026-08-10.
+
+```yaml
+restart: always          # đúng
+# restart: unless-stopped   # sai, sẽ nằm im sau reboot
+```
+
+Hai bài học tách biệt, đừng gộp:
+
+1. **Chọn đúng chính sách restart.** `unless-stopped` chỉ hợp lý khi bạn thật sự muốn
+   một lần `docker stop` thủ công được tôn trọng qua reboot. Với dịch vụ chạy thật thì
+   gần như luôn là `always`.
+2. **Không có giám sát thì không có sự cố nào tồn tại.** Cái sửa được ở dòng YAML,
+   nhưng cái khiến nó kéo dài 5 ngày là **không có gì báo động**. Một cái ping vào
+   `/up` là đủ. Xem `docs/PLAN.md`, mục `task_uptime_monitor`.
+
+### 2.11 Cross-build arm64 → amd64 có thể chết vì lỗi QEMU
+
+`script/deploy ship` build trên máy Mac rồi đẩy sang server amd64. Stage dashboard chết:
+
+```
+node: ../deps/uv/src/unix/linux.c:1430: uv__io_poll:
+      Assertion 'errno == EEXIST' failed.  Aborted (core dumped)   exit 134
+```
+
+Đây là lỗi giả lập QEMU, không phải lỗi code. **Chưa giải quyết được.** Hệ quả thực tế:
+mọi bản vá đều không lên được production, kể cả bản sửa `solid_cable` ở §1.10. Hai
+hướng: `colima --vz-rosetta` (phải tạo lại VM), hoặc build ngay trên một máy amd64.
+
 ---
 
 ## 3. Về server dùng chung
@@ -314,7 +350,8 @@ Script chạy trong project mới resolve được `node_modules` — chạy fil
 |---|---|
 | Login qua Playwright còn flaky ở 1–2 tài khoản cuối | §4.2 — không ảnh hưởng người dùng thật |
 | `spree@example.com` nên xoá khi go-live | §1.9 |
-| Chưa cấu hình SMTP → khách không nhận được email | [DEPLOY.md §9](DEPLOY.md) |
+| Cross-build arm64→amd64 chết vì QEMU, chưa ship được bản vá nào | §2.11 |
+| Chưa có giám sát uptime — đã trả giá 5 ngày sập | §2.10 |
 | Chưa có cổng thanh toán VN (VNPay/MoMo) | phải tự viết `PaymentMethod` |
 | Tiền tệ đang USD | đổi VND phải nhập lại giá |
 | Luồng duyệt đơn B2B | bảng `OrderApproval` có sẵn, luồng phải tự code |
