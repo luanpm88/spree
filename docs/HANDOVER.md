@@ -21,11 +21,14 @@ Primary admin account:
 
 ```
 https://spree.b-teka.com/admin
-admin@b-teka.com  /  C6iKd7JsGZTjTbJv
+admin@b-teka.com  /  sent separately
 ```
 
-> **Change every password immediately after handover.** These were generated for
-> handover and were shared over chat.
+> **Passwords are not written in this document.** They are sent over a private channel,
+> because this file lives in a source repository and anything written here is readable
+> by anyone who can read the repository.
+>
+> **Change every password once you have signed in.**
 
 ![Admin sign-in](screenshots/prod/admin-01-login.png)
 
@@ -78,7 +81,8 @@ Three pieces make B2B work. All are configured and running.
 
 ## 3. Accounts
 
-All staff accounts share the handover password: **`C6iKd7JsGZTjTbJv`**
+Each staff account has its own password, sent separately. They are deliberately not
+listed here.
 
 ### 3.1 Staff — sign in at `/admin`
 
@@ -128,8 +132,8 @@ reaches Roles and Store settings.
 
 | Email | Type | Password |
 |---|---|---|
-| `wholesale@example.com` | **B2B customer**, member of the `Wholesale` group | `C6iKd7JsGZTjTbJv` |
-| `retail@b-teka.com` | Retail customer | `C6iKd7JsGZTjTbJv` |
+| `wholesale@example.com` | **B2B customer**, member of the `Wholesale` group | sent separately |
+| `retail@b-teka.com` | Retail customer | sent separately |
 
 To see B2B pricing in action, sign in as the wholesale customer and add **10 or more**
 units of a single item — below 10 the retail price applies.
@@ -151,8 +155,8 @@ catalogue** before go-live.
 | | |
 |---|---|
 | `/jobs` dashboard | HTTP Basic — user `jobs`, password in the server `.env` |
-| API key — online channel (B2C) | `pk_ypr3YTTdE4YqhhPWygYo992o` |
-| API key — wholesale channel (B2B) | `pk_YPG1LGBuNM46FfqoPq1L5qCF` |
+| API key — online channel (B2C) | sent separately |
+| API key — wholesale channel (B2B) | sent separately |
 
 API keys are sent in the **`X-Spree-Api-Key`** header. `Authorization: Bearer` returns
 401 — a common first mistake.
@@ -211,15 +215,21 @@ Two points worth knowing:
 
 ### Release process
 
+There is no CI. A release is a script you run and watch.
+
 ```
-git push origin main
-   └─► GitHub Actions builds the images (linux/amd64) ─► GitHub Container Registry
-          └─► on the server:  ./script/deploy.sh
+script/deploy ship backend
+   └─► builds the linux/amd64 image on the operator's machine
+          └─► streams it over SSH straight into the server's Docker
+                 └─► backs up the database, releases, health-checks
 ```
 
-The server never builds — it only pulls prebuilt images. `script/deploy.sh` dumps the
-database **before** the new container starts (migrations run from the image
-entrypoint), waits for the health check, and aborts if the app does not come up.
+The server never builds. Building Spree needs roughly 2 GB of RAM and several minutes
+of CPU, which this server does not have to spare.
+
+The order matters: the database is dumped **before** the new container starts, because
+migrations run from the image entrypoint. The script then waits for the health check
+and aborts the release if the application does not come up.
 
 ---
 
@@ -237,7 +247,7 @@ entrypoint), waits for the health check, and aborts if the app does not come up.
 | Multi-channel (online / wholesale / POS) | ✅ |
 | Multi-market (7 regions) | ✅ |
 | HTTPS on both domains, auto-renewing | ✅ |
-| CI/CD image build | ✅ |
+| Scripted, health-checked deployment | ✅ |
 | Database backup on every deploy | ✅ |
 | Transactional email (SendGrid, DKIM-signed) | ✅ |
 
@@ -337,30 +347,33 @@ carry sustained production traffic.
 
 All commands run from the source directory on the server.
 
+`script/deploy` is the single entry point, run from the source directory on the
+operator's machine. `script/deploy help` lists every subcommand.
+
 ```bash
 # release
-git push origin main          # CI builds the images
-./script/deploy.sh            # on the server: pull, restart, health-check
+script/deploy ship backend     # build locally, stream over SSH, back up, release
+script/deploy status           # what is running, and is it healthy
+script/deploy logs             # tail the application log
+script/deploy verify           # check the public URLs answer
 
-# status and logs
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs -f --tail=100 web
-
-# Rails console / database
-docker compose -f docker-compose.prod.yml exec web bin/rails console
-docker compose -f docker-compose.prod.yml exec postgres psql -U postgres spree_production
+# Rails console and database, without hunting for the compose file
+script/deploy console
+script/deploy psql
 
 # rotate the demo accounts
 docker compose -f docker-compose.prod.yml exec web bin/rails demo:seed_users PASSWORD='...'
 
-# verify email once SMTP is configured
+# prove email actually arrives (check the provider's log, not just the handshake)
 docker compose -f docker-compose.prod.yml exec web bin/rails runner script/smoke_mail.rb you@example.com
 ```
 
-**Rollback:** pin `SPREE_IMAGE=ghcr.io/luanpm88/spree:sha-<commit>` in `.env` and re-run
-`./script/deploy.sh`. Note that rolling the image back does **not** roll migrations
-back; if a release included a breaking migration, restore from
-`backups/pre-deploy-*.sql.gz`.
+**Rollback:** `script/deploy releases` lists what is available, `script/deploy rollback`
+returns to the previous image.
+
+Rolling the image back does **not** roll migrations back. If a release included a
+breaking migration, restore from the pre-deploy dump instead — one is taken
+automatically before every release.
 
 ---
 
@@ -378,7 +391,11 @@ Things that will cost time if not known up front.
 4. **`RAILS_ASSUME_SSL=true` with `RAILS_FORCE_SSL=false`.** nginx already redirects to
    HTTPS; setting `FORCE_SSL=true` produces a redirect loop.
 5. **Migrations run from the image entrypoint** when the container starts, so any
-   backup must be taken *before* that. `script/deploy.sh` does this in the right order.
+   backup must be taken *before* that. `script/deploy` does this in the right order.
+6. **Use `restart: always`, not `restart: unless-stopped`.** On a host reboot the
+   shutdown sequence stops the container, Docker records that as a deliberate stop, and
+   `unless-stopped` then refuses to bring it back when the daemon restarts. This cost
+   five days of downtime after a kernel upgrade, with nothing to signal it was down.
 6. **Containers bind to `127.0.0.1` only.** Do not change to `0.0.0.0` — Docker inserts
    its NAT rules ahead of the host firewall, which would expose the app directly.
 7. **Never edit gem source.** Order of preference for changing behaviour: events and

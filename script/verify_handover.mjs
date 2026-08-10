@@ -1,13 +1,18 @@
 // Walk docs/HANDOVER.md end to end as the client would, and prove or disprove
 // every claim it makes against the LIVE production system.
 //
-//   HANDOVER_PASSWORD=... node script/verify_handover.mjs
+//   HANDOVER_PASSWORD=... PK_ONLINE=pk_... PK_WHOLESALE=pk_... \
+//     node script/verify_handover.mjs
 //
 // Writes proof screenshots to docs/screenshots/verify/ and prints a pass/fail
 // table. Exits non-zero if any claim fails, so it can gate a handover.
 //
 // This deliberately re-derives everything from the running site rather than
 // trusting the document — the point is to catch the document being wrong.
+//
+// Every credential comes from the environment. They used to be literals here, and
+// this file is tracked in a public repo, so the API keys were published along with
+// it. Read them from the server's .env, or from the admin under Channels.
 
 import { chromium, request as pwRequest } from 'playwright';
 import { mkdir } from 'node:fs/promises';
@@ -16,12 +21,15 @@ import path from 'node:path';
 const ADMIN = 'https://spree.b-teka.com';
 const SHOP = 'https://shop.b-teka.com';
 const PW = process.env.HANDOVER_PASSWORD;
-const PK_ONLINE = 'pk_ypr3YTTdE4YqhhPWygYo992o';
-const PK_WHOLESALE = 'pk_YPG1LGBuNM46FfqoPq1L5qCF';
+const PK_ONLINE = process.env.PK_ONLINE;
+const PK_WHOLESALE = process.env.PK_WHOLESALE;
 const OUT = path.resolve('docs/screenshots/verify');
 
-if (!PW) {
-  console.error('Set HANDOVER_PASSWORD');
+const missing = Object.entries({ HANDOVER_PASSWORD: PW, PK_ONLINE, PK_WHOLESALE })
+  .filter(([, v]) => !v)
+  .map(([k]) => k);
+if (missing.length) {
+  console.error(`Set ${missing.join(', ')} — see the header of this file.`);
   process.exit(1);
 }
 
