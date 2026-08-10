@@ -68,3 +68,18 @@ docs/.handover.build.html
 
 # local deploy overrides (secrets)
 deploy.env
+
+# Project plan — the source of truth for where this engagement is.
+# NOT committed: luanpm88/spree is a public repo and this file names the client's
+# shop domains and the Spree versions each one runs. Publishing "these shops are
+# on 5.2.3" is a roadmap for anyone looking for an unpatched target.
+# Make the repo private if this needs version history.
+docs/plan.json
+docs/PLAN.md
+
+# Client-owned email design assets. luanpm88/spree is a public repo; these are
+# the client's templates and his brand copy, given to us to run HIS shops, not to
+# publish. The mailer decorator checks for the view's presence rather than
+# assuming it, so a checkout without them still sends correct stock emails.
+app/views/spree/order_mailer/
+the client's own locale files
