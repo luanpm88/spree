@@ -1,0 +1,393 @@
+#!/usr/bin/env node
+// docs/plan.json is the single source of truth for where this project is.
+// This script is the only thing allowed to write docs/PLAN.md.
+//
+//   script/plan status      one screen: what we are doing, what we are waiting for
+//   script/plan validate    schema + referential integrity (every id must resolve)
+//   script/plan render      regenerate docs/PLAN.md from the JSON
+//   script/plan check       validate, then confirm PLAN.md is not stale
+//
+// Why a validator at all: the value of this file is that "continue" means reading
+// one place. A dangling blocked_by id, or a task blocked by a question that was
+// already answered, silently turns the plan into fiction. The checks below are the
+// ones that catch that.
+
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const JSON_PATH = join(ROOT, 'docs/plan.json')
+const MD_PATH = join(ROOT, 'docs/PLAN.md')
+
+const C = process.stdout.isTTY
+  ? { dim: '\x1b[2m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', bold: '\x1b[1m', off: '\x1b[0m' }
+  : { dim: '', red: '', green: '', yellow: '', bold: '', off: '' }
+
+function load() {
+  if (!existsSync(JSON_PATH)) die(`missing ${JSON_PATH}`)
+  try {
+    return JSON.parse(readFileSync(JSON_PATH, 'utf8'))
+  } catch (e) {
+    die(`docs/plan.json is not valid JSON: ${e.message}`)
+  }
+}
+
+function die(msg) {
+  console.error(`${C.red}error${C.off} ${msg}`)
+  process.exit(1)
+}
+
+// ── validate ────────────────────────────────────────────────────────────────
+
+const TASK_STATUS = ['todo', 'in_progress', 'blocked', 'parked', 'done']
+const WAIT_STATUS = ['open', 'answered', 'dropped']
+const SEVERITY = ['low', 'medium', 'high']
+
+function validate(plan) {
+  const errors = []
+  const warnings = []
+
+  for (const key of ['meta', 'status', 'client', 'timeline', 'waiting_on_client', 'decisions', 'tasks', 'risks']) {
+    if (!plan[key]) errors.push(`missing top-level key: ${key}`)
+  }
+  if (errors.length) return { errors, warnings }
+
+  // Collect every id in the file and reject duplicates. Two things sharing an id
+  // means a reference silently resolves to the wrong one.
+  const ids = new Map()
+  const collections = ['shops', 'servers', 'waiting_on_client', 'decisions', 'tasks', 'done', 'risks', 'open_questions_for_us', 'learnings']
+  for (const coll of collections) {
+    for (const item of plan[coll] ?? []) {
+      if (!item.id) { errors.push(`${coll}: an entry has no id`); continue }
+      if (ids.has(item.id)) errors.push(`duplicate id "${item.id}" in ${coll} and ${ids.get(item.id)}`)
+      ids.set(item.id, coll)
+    }
+  }
+
+  const has = (id) => ids.has(id)
+
+  for (const t of plan.tasks ?? []) {
+    if (!TASK_STATUS.includes(t.status)) errors.push(`task ${t.id}: status "${t.status}" not one of ${TASK_STATUS.join(', ')}`)
+    for (const b of t.blocked_by ?? []) {
+      if (!has(b)) errors.push(`task ${t.id}: blocked_by "${b}" does not exist`)
+    }
+    // A task blocked only by questions the client already answered is not blocked.
+    const blockers = (t.blocked_by ?? []).map((b) => (plan.waiting_on_client ?? []).find((w) => w.id === b)).filter(Boolean)
+    if (blockers.length && blockers.every((w) => w.status === 'answered')) {
+      warnings.push(`task ${t.id} is blocked only by answered questions, it may be unblocked now`)
+    }
+    if (t.status === 'blocked' && !(t.blocked_by ?? []).length && !t.detail) {
+      warnings.push(`task ${t.id} is "blocked" but nothing says by what`)
+    }
+  }
+
+  for (const w of plan.waiting_on_client ?? []) {
+    if (!WAIT_STATUS.includes(w.status)) errors.push(`waiting ${w.id}: status "${w.status}" not one of ${WAIT_STATUS.join(', ')}`)
+    if (w.severity && !SEVERITY.includes(w.severity)) errors.push(`waiting ${w.id}: severity "${w.severity}" not one of ${SEVERITY.join(', ')}`)
+    for (const b of w.blocks ?? []) {
+      if (!has(b)) errors.push(`waiting ${w.id}: blocks "${b}" does not exist`)
+    }
+    if (w.status === 'answered' && !w.answer) errors.push(`waiting ${w.id}: marked answered but has no answer`)
+    if (w.status === 'open' && !w.asked_on) warnings.push(`waiting ${w.id}: open but no asked_on date`)
+  }
+
+  for (const r of plan.risks ?? []) {
+    if (!SEVERITY.includes(r.severity)) errors.push(`risk ${r.id}: severity "${r.severity}" not one of ${SEVERITY.join(', ')}`)
+  }
+
+  for (const s of plan.shops ?? []) {
+    if (s.risk_ref && !has(s.risk_ref)) errors.push(`shop ${s.id}: risk_ref "${s.risk_ref}" does not exist`)
+  }
+
+  const ISO = /^\d{4}-\d{2}-\d{2}$/
+  for (const e of plan.timeline ?? []) {
+    if (!ISO.test(e.date ?? '')) errors.push(`timeline entry "${e.summary}": date must be YYYY-MM-DD`)
+    if (!['in', 'out'].includes(e.direction)) errors.push(`timeline entry "${e.summary}": direction must be in or out`)
+  }
+  if (!ISO.test(plan.meta?.updated ?? '')) errors.push('meta.updated must be YYYY-MM-DD')
+
+  if (!plan.status?.next_action) errors.push('status.next_action is empty, the plan cannot answer "what now"')
+
+  // The whole point is that this file is current. Warn if the newest timeline
+  // entry is ahead of meta.updated.
+  const newest = (plan.timeline ?? []).map((e) => e.date).sort().pop()
+  if (newest && plan.meta?.updated && newest > plan.meta.updated) {
+    warnings.push(`meta.updated (${plan.meta.updated}) is older than the newest timeline entry (${newest})`)
+  }
+
+  return { errors, warnings }
+}
+
+// ── render ──────────────────────────────────────────────────────────────────
+
+const esc = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n+/g, ' ')
+
+function render(plan) {
+  const L = []
+  const p = (s = '') => L.push(s)
+
+  const openWaits = (plan.waiting_on_client ?? []).filter((w) => w.status === 'open')
+  const byStatus = (s) => (plan.tasks ?? []).filter((t) => t.status === s)
+
+  p('<!-- GENERATED from docs/plan.json by script/plan render. Do not edit by hand. -->')
+  p('')
+  p(`# Plan — ${plan.meta.project}`)
+  p('')
+  p(`**${plan.status.headline}**`)
+  p('')
+  p(`| | |`)
+  p(`|---|---|`)
+  p(`| Phase | ${esc(plan.status.phase)} |`)
+  p(`| Next action | ${esc(plan.status.next_action)} |`)
+  p(`| Waiting on client | ${openWaits.length} open |`)
+  p(`| Last contact | ${esc(plan.status.last_client_contact)} |`)
+  p(`| Next contact | ${esc(plan.status.next_client_contact_expected)} |`)
+  p(`| Updated | ${plan.meta.updated} (rev ${plan.meta.revision}) |`)
+  p('')
+  p('> Source of truth is `docs/plan.json`. This file is generated. Dashboard: http://admin.spree.local')
+  p('')
+
+  if (openWaits.length) {
+    p('## Waiting on the client')
+    p('')
+    p('| | Question | Asked | Why it matters | Blocks |')
+    p('|---|---|---|---|---|')
+    for (const w of openWaits) {
+      const mark = w.severity === 'high' ? '🔴' : w.severity === 'medium' ? '🟡' : '⚪'
+      const blocks = (w.blocks ?? []).map((b) => `\`${b}\``).join(', ') || '—'
+      p(`| ${mark} | ${esc(w.question)} | ${w.asked_on ?? '—'} | ${esc(w.why_it_matters)} | ${blocks} |`)
+    }
+    p('')
+  }
+
+  const answered = (plan.waiting_on_client ?? []).filter((w) => w.status === 'answered')
+  if (answered.length) {
+    p('### Answered')
+    p('')
+    for (const w of answered) {
+      p(`- **${esc(w.question)}** — ${esc(w.answer)}${w.follow_up ? ` _(still: ${esc(w.follow_up)})_` : ''}`)
+    }
+    p('')
+  }
+
+  p('## Now')
+  p('')
+  const active = [...byStatus('in_progress'), ...byStatus('todo'), ...byStatus('blocked')]
+  if (!active.length) p('_Nothing active._')
+  for (const t of active) {
+    const icon = { in_progress: '▶', todo: '○', blocked: '⛔' }[t.status] ?? '·'
+    p(`### ${icon} ${t.title}`)
+    p('')
+    p(esc(t.detail))
+    if (t.why) p(`\n**Why:** ${esc(t.why)}`)
+    if (t.promised) p(`\n**Promised:** ${esc(t.promised)}`)
+    if ((t.blocked_by ?? []).length) {
+      const names = t.blocked_by.map((b) => {
+        const w = (plan.waiting_on_client ?? []).find((x) => x.id === b)
+        return w ? esc(w.question) : b
+      })
+      p(`\n**Blocked by:** ${names.join(' · ')}`)
+      if (t.blocked_note) p(`\n${esc(t.blocked_note)}`)
+    }
+    if ((t.findings ?? []).length) {
+      p('')
+      for (const f of t.findings) p(`- ${esc(f)}`)
+    }
+    p('')
+  }
+
+  const parked = byStatus('parked')
+  if (parked.length) {
+    p('## Parked')
+    p('')
+    for (const t of parked) p(`- **${esc(t.title)}** — ${esc(t.parked_reason ?? t.detail)}`)
+    p('')
+  }
+
+  p('## Risks')
+  p('')
+  p('| | Risk | Mitigation | Status |')
+  p('|---|---|---|---|')
+  for (const r of [...(plan.risks ?? [])].sort((a, b) => SEVERITY.indexOf(b.severity) - SEVERITY.indexOf(a.severity))) {
+    const mark = r.severity === 'high' ? '🔴' : r.severity === 'medium' ? '🟡' : '⚪'
+    p(`| ${mark} | **${esc(r.title)}**<br>${esc(r.detail)} | ${esc(r.mitigation)} | ${esc(r.status)} |`)
+  }
+  p('')
+
+  p('## Decisions')
+  p('')
+  for (const d of plan.decisions ?? []) {
+    p(`### ${esc(d.decision)}`)
+    p('')
+    p(`${d.date} · ${esc(d.status)}`)
+    p('')
+    p(`**Why:** ${esc(d.rationale)}`)
+    if (d.evidence) p(`\n**Evidence:** ${esc(d.evidence)}`)
+    if (d.counterpoint) p(`\n**Counterpoint:** ${esc(d.counterpoint)}`)
+    p('')
+  }
+
+  p('## The client')
+  p('')
+  p(`**${esc(plan.client.name)}** — ${esc(plan.client.company)}. ${esc(plan.client.business)}`)
+  p('')
+  p(`${esc(plan.client.technical_level)}`)
+  p('')
+  p(`_${esc(plan.client.style_note)} ${esc(plan.client.timezone_note)}_`)
+  p('')
+
+  if ((plan.shops ?? []).length) {
+    p('### Their shops')
+    p('')
+    p('| Shop | Status | Spree | Docker | Notes |')
+    p('|---|---|---|---|---|')
+    for (const s of plan.shops) {
+      p(`| ${esc(s.name)} | ${esc(s.status)} | ${esc(s.spree_version)} | ${s.docker ? 'yes' : 'no'} | ${esc(s.notes)} |`)
+    }
+    p('')
+  }
+
+  if ((plan.servers ?? []).length) {
+    p('### Servers')
+    p('')
+    p('| Server | Owner | Status | Access |')
+    p('|---|---|---|---|')
+    for (const s of plan.servers) p(`| ${esc(s.name)} | ${esc(s.owner)} | ${esc(s.status)} | ${esc(s.access ?? '—')} |`)
+    p('')
+  }
+
+  p('## Conversation')
+  p('')
+  for (const e of [...(plan.timeline ?? [])].reverse()) {
+    const arrow = e.direction === 'in' ? '←' : '→'
+    p(`**${e.date} ${arrow} ${esc(e.summary)}**`)
+    p('')
+    if (e.detail) { p(esc(e.detail)); p('') }
+    if (e.significance) { p(`> ${esc(e.significance)}`); p('') }
+  }
+
+  if ((plan.open_questions_for_us ?? []).length) {
+    p('## Open on our side')
+    p('')
+    for (const q of plan.open_questions_for_us) p(`- **${esc(q.question)}** — ${esc(q.why)} _(${esc(q.status)})_`)
+    p('')
+  }
+
+  p('## Done')
+  p('')
+  for (const d of plan.done ?? []) p(`- **${esc(d.title)}** (${d.date}) — ${esc(d.detail)}`)
+  p('')
+
+  p('## Learned')
+  p('')
+  for (const l of plan.learnings ?? []) {
+    p(`**${esc(l.title)}**`)
+    p('')
+    p(esc(l.detail))
+    p('')
+  }
+
+  if (plan.environments) {
+    p('## Environments')
+    p('')
+    for (const [name, env] of Object.entries(plan.environments)) {
+      p(`**${name}**`)
+      p('')
+      for (const [k, v] of Object.entries(env)) p(`- ${k}: ${v}`)
+      p('')
+    }
+  }
+
+  if ((plan.docs_index ?? []).length) {
+    p('## Documents')
+    p('')
+    p('| File | Purpose |')
+    p('|---|---|')
+    for (const d of plan.docs_index) p(`| [${d.file}](../${d.file}) | ${esc(d.purpose)} |`)
+    p('')
+  }
+
+  return L.join('\n')
+}
+
+// ── status ──────────────────────────────────────────────────────────────────
+
+function status(plan) {
+  const openWaits = (plan.waiting_on_client ?? []).filter((w) => w.status === 'open')
+  const active = (plan.tasks ?? []).filter((t) => t.status === 'in_progress')
+  const highRisks = (plan.risks ?? []).filter((r) => r.severity === 'high' && r.status !== 'mitigated')
+
+  console.log('')
+  console.log(`${C.bold}${plan.meta.project}${C.off} ${C.dim}· ${plan.status.phase} · updated ${plan.meta.updated}${C.off}`)
+  console.log('')
+  console.log(`  ${plan.status.headline}`)
+  console.log('')
+  console.log(`${C.bold}NEXT${C.off}  ${plan.status.next_action}`)
+  console.log('')
+
+  if (active.length) {
+    console.log(`${C.bold}IN PROGRESS${C.off}`)
+    for (const t of active) console.log(`  ▶ ${t.title}`)
+    console.log('')
+  }
+
+  if (openWaits.length) {
+    console.log(`${C.bold}WAITING ON CLIENT${C.off} ${C.dim}(${openWaits.length})${C.off}`)
+    for (const w of openWaits) {
+      const col = w.severity === 'high' ? C.red : w.severity === 'medium' ? C.yellow : C.dim
+      console.log(`  ${col}●${C.off} ${w.question}`)
+      console.log(`    ${C.dim}asked ${w.asked_on}${C.off}`)
+    }
+    console.log('')
+  }
+
+  if (highRisks.length) {
+    console.log(`${C.bold}HIGH RISK${C.off}`)
+    for (const r of highRisks) console.log(`  ${C.red}▲${C.off} ${r.title}`)
+    console.log('')
+  }
+
+  const last = [...(plan.timeline ?? [])].sort((a, b) => a.date.localeCompare(b.date)).pop()
+  if (last) {
+    console.log(`${C.bold}LAST CONTACT${C.off}  ${last.date} ${last.direction === 'in' ? '←' : '→'} ${last.summary}`)
+    console.log('')
+  }
+  console.log(`${C.dim}  dashboard  http://admin.spree.local${C.off}`)
+  console.log(`${C.dim}  full plan  docs/PLAN.md${C.off}`)
+  console.log('')
+}
+
+// ── main ────────────────────────────────────────────────────────────────────
+
+const cmd = process.argv[2] ?? 'status'
+const plan = load()
+
+if (cmd === 'status') {
+  status(plan)
+} else if (cmd === 'validate' || cmd === 'check') {
+  const { errors, warnings } = validate(plan)
+  for (const w of warnings) console.log(`${C.yellow}warn${C.off}  ${w}`)
+  for (const e of errors) console.log(`${C.red}error${C.off} ${e}`)
+  if (cmd === 'check' && !errors.length) {
+    const fresh = render(plan)
+    const current = existsSync(MD_PATH) ? readFileSync(MD_PATH, 'utf8') : ''
+    if (fresh !== current) {
+      console.log(`${C.red}error${C.off} docs/PLAN.md is stale, run: script/plan render`)
+      process.exit(1)
+    }
+  }
+  if (errors.length) process.exit(1)
+  console.log(`${C.green}ok${C.off}    ${(plan.tasks ?? []).length} tasks, ${(plan.waiting_on_client ?? []).filter((w) => w.status === 'open').length} open questions, ${(plan.risks ?? []).length} risks${warnings.length ? `, ${warnings.length} warning(s)` : ''}`)
+} else if (cmd === 'render') {
+  const { errors } = validate(plan)
+  if (errors.length) {
+    for (const e of errors) console.log(`${C.red}error${C.off} ${e}`)
+    die('refusing to render an invalid plan')
+  }
+  writeFileSync(MD_PATH, render(plan))
+  console.log(`${C.green}wrote${C.off} docs/PLAN.md`)
+} else {
+  console.log('usage: script/plan [status|validate|render|check]')
+  process.exit(1)
+}

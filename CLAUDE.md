@@ -127,6 +127,33 @@ module Spree
 end
 ```
 
+## Where this project is right now
+
+**Read `docs/PLAN.md` first, before anything else.** It answers: what is the next
+action, what are we blocked on, what did we promise the client and when. When the
+user says "continue" with no other context, that file is the context.
+
+`docs/plan.json` is the single source of truth. `docs/PLAN.md` and the dashboard are
+both generated from it, so never edit the markdown by hand.
+
+```bash
+script/plan status     # one screen: doing / waiting / risks / last contact
+script/plan validate   # schema + referential integrity
+script/plan render     # regenerate docs/PLAN.md after editing plan.json
+script/plan check      # validate + fail if PLAN.md is stale
+```
+
+Update `plan.json` as work happens: a new client message goes in `timeline`, a new
+ask goes in `waiting_on_client`, a finished task moves to `done`. Then run
+`script/plan render`. Bump `meta.updated` and `meta.revision`.
+
+Dashboard: `http://admin.spree.local` (nginx vhost, re-reads the JSON every 10s).
+Verify it with `node script/check_dashboard.mjs`.
+
+> `docs/plan.json`, `docs/PLAN.md` and `tmp/client/` are gitignored on purpose. This
+> repo is public, and they name the client's shop domains and the Spree version each
+> shop runs. Never commit client material here.
+
 ## Project documentation
 
 Read these before making assumptions — they record what was verified against the
@@ -134,6 +161,7 @@ running system, not what the upstream docs claim. Index: `docs/README.md`.
 
 | | |
 |---|---|
+| `docs/PLAN.md` | **Start here.** Where the engagement is, what is blocked, what is next |
 | `docs/DESIGN.md` | Architecture, data model, B2B mechanism, extension points |
 | `docs/LOCAL.md` | Docker dev setup + the failures already hit, with root causes |
 | `docs/DEPLOY.md` | `script/deploy`, server survey, the memory situation |

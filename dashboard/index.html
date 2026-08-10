@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Nothing client-specific is hardcoded here: this file is committed to a public
+     repo, while docs/plan.json (which names the client and their shops) is not.
+     Every label comes from the JSON at runtime. -->
+<title>Project plan</title>
+<script>
+// Runs before first paint so the page never flashes the wrong theme. Explicit choice
+// wins; otherwise follow the OS.
+(function () {
+  try {
+    var saved = localStorage.getItem('plan-theme')
+    document.documentElement.setAttribute('data-theme',
+      saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'))
+  } catch (e) { document.documentElement.setAttribute('data-theme', 'dark') }
+})()
+</script>
+<style>
+:root[data-theme="dark"]{
+  --bg:#0d0f12; --bar:#13161b; --panel:#15181d; --panel2:#1b1f26; --hover:#1e222a;
+  --line:#242932; --line2:#2e3540;
+  --fg:#e7eaf0; --dim:#949cab; --faint:#616a79;
+  --accent:#5eead4; --accent-fg:#0d0f12;
+  --red:#f87171; --amber:#fbbf24; --green:#4ade80; --blue:#60a5fa; --violet:#a78bfa;
+}
+:root[data-theme="light"]{
+  --bg:#f6f7f9; --bar:#fff; --panel:#fff; --panel2:#f2f4f7; --hover:#eef1f5;
+  --line:#e3e6eb; --line2:#d3d8e0;
+  --fg:#11141a; --dim:#525c6b; --faint:#7d8794;
+  --accent:#0f766e; --accent-fg:#fff;
+  --red:#dc2626; --amber:#b45309; --green:#15803d; --blue:#2563eb; --violet:#7c3aed;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{background:var(--bg);color:var(--fg);font:14.5px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+code,.mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;font-size:.87em}
+button{font:inherit;cursor:pointer}
+
+/* ── top bar ───────────────────────────────────────────────────────────── */
+.bar{position:sticky;top:0;z-index:20;background:var(--bar);border-bottom:1px solid var(--line)}
+.bar .in{max-width:1240px;margin:0 auto;padding:12px 20px 0;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.title{font-size:15.5px;font-weight:650;letter-spacing:-.01em;margin:0}
+.phase{font:600 10px/1 ui-monospace,monospace;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--accent-fg);background:var(--accent);padding:5px 9px;border-radius:4px}
+.grow{flex:1}
+.sub{font:11.5px ui-monospace,monospace;color:var(--faint)}
+.live{display:inline-flex;align-items:center;gap:6px;font:11.5px ui-monospace,monospace;color:var(--faint)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--green)}
+.dot.stale{background:var(--amber)} .dot.err{background:var(--red)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
+.dot.beat{animation:pulse 2s ease-in-out infinite}
+.iconbtn{background:none;border:1px solid var(--line2);color:var(--dim);border-radius:6px;
+  width:30px;height:30px;display:grid;place-items:center;padding:0}
+.iconbtn:hover{color:var(--fg);border-color:var(--faint);background:var(--hover)}
+.iconbtn svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
+:root[data-theme="dark"] .i-sun{display:block} :root[data-theme="dark"] .i-moon{display:none}
+:root[data-theme="light"] .i-sun{display:none} :root[data-theme="light"] .i-moon{display:block}
+
+/* ── tabs ──────────────────────────────────────────────────────────────── */
+nav{max-width:1240px;margin:0 auto;padding:0 20px;display:flex;gap:2px;overflow-x:auto;scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+.tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--dim);
+  padding:11px 13px;font-size:13.5px;font-weight:520;white-space:nowrap;display:flex;align-items:center;gap:7px}
+.tab:hover{color:var(--fg)}
+.tab[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent)}
+.tab .b{font:600 10.5px/1 ui-monospace,monospace;background:var(--panel2);color:var(--dim);
+  border-radius:9px;padding:3px 6px;min-width:18px;text-align:center}
+.tab[aria-selected="true"] .b{background:var(--accent);color:var(--accent-fg)}
+.tab .b.alert{background:var(--red);color:#fff}
+
+/* ── layout ────────────────────────────────────────────────────────────── */
+main{max-width:1240px;margin:0 auto;padding:22px 20px 90px}
+section[hidden]{display:none}
+h2{font-size:12px;font-weight:650;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
+  margin:26px 0 10px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h2:first-child{margin-top:0}
+
+/* ── overview ──────────────────────────────────────────────────────────── */
+.hero{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:20px 22px;margin-bottom:12px}
+.headline{font-size:19px;line-height:1.42;font-weight:520;letter-spacing:-.012em;margin:0 0 16px}
+.next{display:flex;gap:12px;align-items:flex-start;background:var(--panel2);
+  border-left:3px solid var(--accent);border-radius:0 7px 7px 0;padding:13px 15px}
+.next .l{font:600 10px/1.65 ui-monospace,monospace;letter-spacing:.1em;color:var(--accent);flex:0 0 auto}
+.counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:9px;margin-bottom:12px}
+.count{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+  text-align:left;width:100%;display:block}
+.count:hover{background:var(--hover);border-color:var(--line2)}
+.count .n{font:650 24px/1.1 ui-monospace,monospace;letter-spacing:-.02em}
+.count .l{color:var(--faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;margin-top:3px}
+.count.red .n{color:var(--red)} .count.amber .n{color:var(--amber)}
+.count.green .n{color:var(--green)} .count.blue .n{color:var(--blue)}
+
+/* ── toolbar ───────────────────────────────────────────────────────────── */
+.tools{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.search{flex:1;min-width:180px;background:var(--panel);border:1px solid var(--line);border-radius:7px;
+  padding:7px 11px;color:var(--fg);font-size:13.5px}
+.search:focus{outline:none;border-color:var(--accent)}
+.search::placeholder{color:var(--faint)}
+.chip{background:var(--panel);border:1px solid var(--line);color:var(--dim);border-radius:20px;
+  padding:5px 12px;font-size:12.5px}
+.chip:hover{background:var(--hover)}
+.chip[aria-pressed="true"]{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);font-weight:560}
+
+/* ── tables ────────────────────────────────────────────────────────────── */
+.tw{border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13.5px;min-width:600px}
+th{text-align:left;font:600 10.5px/1 ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--faint);padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap;
+  background:var(--panel);position:sticky;top:0;user-select:none}
+th.s{cursor:pointer} th.s:hover{color:var(--fg)}
+th .a{opacity:.4;margin-left:3px}
+td{padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--dim)}
+tr.r{cursor:pointer} tr.r:hover td{background:var(--hover)}
+tr:last-child td{border-bottom:none}
+td.t{color:var(--fg);font-weight:530;max-width:520px}
+td.n{white-space:nowrap;font-family:ui-monospace,monospace;font-size:12px}
+.exp td{background:var(--panel2);padding:15px 18px 17px;color:var(--dim);font-size:13.5px}
+.exp p{margin:0 0 9px} .exp p:last-child{margin-bottom:0}
+.exp b{color:var(--fg);font-weight:600}
+.exp ul{margin:8px 0 0;padding-left:18px} .exp li{margin-bottom:5px}
+.caret{display:inline-block;width:9px;color:var(--faint);transition:transform .12s}
+tr.open .caret{transform:rotate(90deg)}
+
+/* pills */
+.p{display:inline-block;font:600 10.5px/1 ui-monospace,monospace;letter-spacing:.03em;
+  padding:4px 8px;border-radius:4px;text-transform:uppercase;white-space:nowrap}
+.p.red{background:color-mix(in srgb,var(--red) 17%,transparent);color:var(--red)}
+.p.amber{background:color-mix(in srgb,var(--amber) 17%,transparent);color:var(--amber)}
+.p.green{background:color-mix(in srgb,var(--green) 17%,transparent);color:var(--green)}
+.p.blue{background:color-mix(in srgb,var(--blue) 17%,transparent);color:var(--blue)}
+.p.violet{background:color-mix(in srgb,var(--violet) 17%,transparent);color:var(--violet)}
+.p.grey{background:var(--panel2);color:var(--faint)}
+.tag{display:inline-block;font:11px ui-monospace,monospace;color:var(--faint);background:var(--panel2);
+  border:1px solid var(--line);border-radius:4px;padding:2px 7px;margin:2px 4px 2px 0}
+.tag.warn{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 32%,transparent)}
+.tag.ok{color:var(--green);border-color:color-mix(in srgb,var(--green) 32%,transparent)}
+
+/* pagination — only rendered when a table exceeds PAGE_SIZE rows */
+.pg{display:flex;align-items:center;gap:8px;justify-content:flex-end;padding:10px 4px 0;
+  font:11.5px ui-monospace,monospace;color:var(--faint)}
+.pg button{background:var(--panel);border:1px solid var(--line);color:var(--dim);
+  border-radius:6px;padding:4px 10px;font:11.5px ui-monospace,monospace}
+.pg button:hover:not(:disabled){color:var(--fg);background:var(--hover)}
+.pg button:disabled{opacity:.35;cursor:default}
+
+/* Secondary prose under a row title. Deliberately NOT .sub — that is monospace,
+   which is right for dates and counts and unreadable for a sentence. */
+.note{color:var(--dim);font-size:12.8px;line-height:1.5;margin-top:4px;font-weight:400;max-width:96ch}
+.empty{color:var(--faint);padding:26px;text-align:center;font-size:13.5px}
+.err{background:color-mix(in srgb,var(--red) 12%,var(--panel));border:1px solid var(--red);
+  border-radius:10px;padding:16px 18px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:9px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:15px 17px}
+.card h3{margin:0 0 6px;font-size:14px;font-weight:600}
+.card p{margin:0 0 7px;color:var(--dim);font-size:13px} .card p:last-child{margin-bottom:0}
+.foot{color:var(--faint);font:11.5px ui-monospace,monospace;border-top:1px solid var(--line);
+  padding-top:14px;margin-top:36px}
+@media(max-width:640px){
+  main{padding:16px 13px 70px} .bar .in{padding:10px 13px 0} nav{padding:0 13px}
+  .headline{font-size:16.5px} .next{flex-direction:column;gap:5px}
+}
+</style>
+</head>
+<body>
+<div class="bar">
+  <div class="in">
+    <h1 class="title" id="pname">Project plan</h1>
+    <span class="phase" id="pphase"></span>
+    <span class="grow"></span>
+    <span class="live"><span class="dot beat" id="pulse"></span><span id="pulset">live</span></span>
+    <span class="sub" id="pmeta"></span>
+    <button class="iconbtn" id="theme" title="Toggle light / dark" aria-label="Toggle light or dark theme">
+      <svg class="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2M12 20v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M2 12h2M20 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>
+      <svg class="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>
+    </button>
+  </div>
+  <nav id="tabs" role="tablist"></nav>
+</div>
+<main id="app"><p class="sub">loading…</p></main>
+
+<script>
+'use strict'
+const PAGE_SIZE = 15
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+const SEV = ['low','medium','high','critical']
+
+let PLAN = null
+let tab = (location.hash || '#overview').slice(1)
+const ui = {}          // per-tab { q, sort, dir, page, open:Set }
+const uiFor = (id) => (ui[id] ??= { q:'', sort:null, dir:1, page:0, open:new Set() })
+
+/* ── data fetch ───────────────────────────────────────────────────────────
+   The page polls plan.json rather than being rebuilt. Editing docs/plan.json is
+   then the only step needed for this dashboard to be current. */
+let lastRaw = null, failures = 0
+async function tick() {
+  const dot = document.getElementById('pulse'), lbl = document.getElementById('pulset')
+  try {
+    const res = await fetch('plan.json?t=' + Date.now(), { cache: 'no-store' })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const text = await res.text()
+    let parsed
+    try { parsed = JSON.parse(text) }
+    catch (e) { throw new Error('plan.json is not valid JSON: ' + e.message) }
+    failures = 0
+    dot.className = 'dot beat'; lbl.textContent = 'live'
+    dot.title = 'last checked ' + new Date().toLocaleTimeString()
+    if (text !== lastRaw) { lastRaw = text; PLAN = parsed; render() }
+  } catch (e) {
+    failures++
+    dot.className = 'dot ' + (failures > 3 ? 'err' : 'stale')
+    lbl.textContent = failures > 3 ? 'offline' : 'retrying'
+    dot.title = String(e.message || e)
+    if (!PLAN) {
+      document.getElementById('app').innerHTML =
+        '<div class="err"><b>Cannot load plan.json</b><p style="margin:9px 0 0;color:var(--dim)">' +
+        esc(e.message) + '</p><p style="margin:9px 0 0;color:var(--dim)">This page must be served over http. ' +
+        'Opening the file directly gives it a null origin and the fetch is blocked. Try ' +
+        '<code>http://admin.spree.local</code>.</p></div>'
+    }
+  }
+}
+
+/* ── tab definitions ────────────────────────────────────────────────────── */
+const TABS = [
+  { id:'overview',  label:'Overview',     count: () => null },
+  { id:'waiting',   label:'Waiting',      count: (p) => open(p).length, alert: true },
+  { id:'work',      label:'Work',         count: (p) => (p.tasks ?? []).filter(t => t.status !== 'done').length },
+  { id:'risks',     label:'Risks',        count: (p) => (p.risks ?? []).filter(r => r.status !== 'mitigated').length },
+  { id:'timeline',  label:'Conversation', count: (p) => (p.timeline ?? []).length },
+  { id:'decisions', label:'Decisions',    count: (p) => (p.decisions ?? []).length },
+  { id:'shipped',   label:'Shipped',      count: (p) => (p.done ?? []).length },
+  { id:'reference', label:'Reference',    count: () => null },
+]
+const open = (p) => (p.waiting_on_client ?? []).filter(w => w.status === 'open')
+
+/* ── generic table ────────────────────────────────────────────────────────
+   cols: [{key,label,w?,cell(row),sortVal(row)?,cls?}]  detail: (row) => html */
+function table(tabId, rows, cols, detail, emptyMsg) {
+  const s = uiFor(tabId)
+  let data = rows.slice()
+
+  if (s.q) {
+    const q = s.q.toLowerCase()
+    data = data.filter(r => JSON.stringify(r).toLowerCase().includes(q))
+  }
+  if (s.sort) {
+    const col = cols.find(c => c.key === s.sort)
+    if (col) data.sort((a, b) => {
+      const va = col.sortVal ? col.sortVal(a) : String(col.cell(a)), vb = col.sortVal ? col.sortVal(b) : String(col.cell(b))
+      return (va > vb ? 1 : va < vb ? -1 : 0) * s.dir
+    })
+  }
+
+  const total = data.length
+  const paged = total > PAGE_SIZE
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  if (s.page >= pages) s.page = pages - 1
+  const view = paged ? data.slice(s.page * PAGE_SIZE, (s.page + 1) * PAGE_SIZE) : data
+
+  const H = []
+  H.push(`<div class="tools">
+    <input class="search" placeholder="Filter ${esc(tabId)}…" value="${esc(s.q)}" data-act="q" data-tab="${esc(tabId)}">
+    <span class="sub">${total}${total !== rows.length ? ' of ' + rows.length : ''}</span>
+  </div>`)
+
+  if (!view.length) return H.join('') + `<div class="tw"><p class="empty">${esc(emptyMsg ?? 'Nothing here.')}</p></div>`
+
+  H.push('<div class="tw"><table><thead><tr>')
+  H.push('<th style="width:22px"></th>')
+  for (const c of cols) {
+    const active = s.sort === c.key
+    H.push(`<th class="s" data-act="sort" data-tab="${esc(tabId)}" data-key="${esc(c.key)}"${c.w ? ` style="width:${c.w}"` : ''}>${esc(c.label)}<span class="a">${active ? (s.dir > 0 ? '↑' : '↓') : '↕'}</span></th>`)
+  }
+  H.push('</tr></thead><tbody>')
+  for (const r of view) {
+    const key = r.id ?? (r.date + r.summary)
+    const isOpen = s.open.has(key)
+    H.push(`<tr class="r${isOpen ? ' open' : ''}" data-act="row" data-tab="${esc(tabId)}" data-key="${esc(key)}">`)
+    H.push(`<td><span class="caret">▸</span></td>`)
+    for (const c of cols) H.push(`<td class="${c.cls ?? ''}">${c.cell(r)}</td>`)
+    H.push('</tr>')
+    if (isOpen) H.push(`<tr class="exp"><td colspan="${cols.length + 1}">${detail(r)}</td></tr>`)
+  }
+  H.push('</tbody></table></div>')
+
+  if (paged) {
+    H.push(`<div class="pg">
+      <span>page ${s.page + 1} / ${pages}</span>
+      <button data-act="pg" data-tab="${esc(tabId)}" data-to="0" ${s.page === 0 ? 'disabled' : ''}>«</button>
+      <button data-act="pg" data-tab="${esc(tabId)}" data-to="${s.page - 1}" ${s.page === 0 ? 'disabled' : ''}>prev</button>
+      <button data-act="pg" data-tab="${esc(tabId)}" data-to="${s.page + 1}" ${s.page >= pages - 1 ? 'disabled' : ''}>next</button>
+      <button data-act="pg" data-tab="${esc(tabId)}" data-to="${pages - 1}" ${s.page >= pages - 1 ? 'disabled' : ''}>»</button>
+    </div>`)
+  }
+  return H.join('')
+}
+
+const pill = (text, tone) => `<span class="p ${tone}">${esc(text)}</span>`
+const TASK_TONE = { in_progress:'blue', todo:'grey', blocked:'red', parked:'violet', done:'green' }
+const SEV_TONE  = { critical:'red', high:'red', medium:'amber', low:'grey' }
+
+/* ── views ───────────────────────────────────────────────────────────────── */
+function viewOverview(p) {
+  const w = open(p), tasks = p.tasks ?? []
+  const hiRisk = (p.risks ?? []).filter(r => r.severity === 'high' && r.status !== 'mitigated')
+  const H = []
+  H.push(`<div class="hero">
+    <p class="headline">${esc(p.status.headline)}</p>
+    <div class="next"><span class="l">NEXT</span><span>${esc(p.status.next_action)}</span></div>
+  </div>`)
+  H.push(`<div class="counts">
+    ${cnt('waiting', w.length, 'waiting on client', w.length ? 'red' : 'green')}
+    ${cnt('work', tasks.filter(t => t.status === 'in_progress').length, 'in progress', 'blue')}
+    ${cnt('work', tasks.filter(t => t.status === 'todo').length, 'to do', '')}
+    ${cnt('risks', hiRisk.length, 'high risk', hiRisk.length ? 'red' : 'green')}
+    ${cnt('shipped', (p.done ?? []).length, 'shipped', 'green')}
+  </div>`)
+
+  const promises = tasks.filter(t => t.promised)
+  if (promises.length) {
+    H.push('<h2>Promised to the client</h2><div class="cards">')
+    for (const t of promises) H.push(`<div class="card"><h3>${esc(t.title)}</h3><p>${esc(t.promised)}</p></div>`)
+    H.push('</div>')
+  }
+
+  H.push('<h2>Needs attention</h2>')
+  const rows = [
+    ...w.filter(x => x.severity === 'high').map(x => ({ k:'Waiting', t:x.question, d:x.why_it_matters, tone:'red' })),
+    ...hiRisk.map(x => ({ k:'Risk', t:x.title, d:x.detail, tone:'red' })),
+    ...tasks.filter(t => t.status === 'blocked').map(x => ({ k:'Blocked', t:x.title, d:x.detail, tone:'amber' })),
+  ]
+  if (!rows.length) H.push('<div class="tw"><p class="empty">Nothing urgent.</p></div>')
+  else {
+    H.push('<div class="tw"><table><thead><tr><th style="width:110px">Kind</th><th>What</th></tr></thead><tbody>')
+    for (const r of rows) H.push(`<tr><td>${pill(r.k, r.tone)}</td><td class="t">${esc(r.t)}<div class="note">${esc(r.d)}</div></td></tr>`)
+    H.push('</tbody></table></div>')
+  }
+
+  const last = [...(p.timeline ?? [])].sort((a, b) => a.date.localeCompare(b.date)).pop()
+  if (last) {
+    H.push('<h2>Last contact</h2>')
+    H.push(`<div class="card"><h3>${esc(last.date)} ${last.direction === 'in' ? '←' : '→'} ${esc(last.summary)}</h3><p>${esc(last.detail ?? '')}</p></div>`)
+  }
+  return H.join('')
+}
+const cnt = (to, n, l, c) => `<button class="count ${c}" data-act="go" data-to="${to}"><div class="n">${n}</div><div class="l">${esc(l)}</div></button>`
+
+function viewWaiting(p) {
+  const rows = p.waiting_on_client ?? []
+  return table('waiting', rows, [
+    { key:'status', label:'Status', w:'96px', cell:r => pill(r.status, r.status === 'open' ? (r.severity === 'high' ? 'red' : 'amber') : 'green'), sortVal:r => r.status },
+    { key:'question', label:'Question', cls:'t', cell:r => esc(r.question), sortVal:r => r.question },
+    { key:'asked_on', label:'Asked', w:'104px', cls:'n', cell:r => esc(r.asked_on ?? '—'), sortVal:r => r.asked_on ?? '' },
+    { key:'severity', label:'Sev', w:'80px', cell:r => pill(r.severity ?? 'low', SEV_TONE[r.severity] ?? 'grey'), sortVal:r => SEV.indexOf(r.severity) },
+  ], r => {
+    const H = [`<p><b>Why it matters.</b> ${esc(r.why_it_matters ?? '—')}</p>`]
+    if (r.answer) H.push(`<p><b>Answer.</b> ${esc(r.answer)}</p>`)
+    if (r.follow_up) H.push(`<p><b>Still open.</b> ${esc(r.follow_up)}</p>`)
+    if ((r.blocks ?? []).length) H.push(`<p>${r.blocks.map(b => `<span class="tag warn">blocks ${esc(taskName(b))}</span>`).join('')}</p>`)
+    return H.join('')
+  }, 'Nothing outstanding with the client.')
+}
+const taskName = (id) => ((PLAN?.tasks ?? []).find(t => t.id === id)?.title) ?? id
+
+function viewWork(p) {
+  return table('work', p.tasks ?? [], [
+    { key:'status', label:'Status', w:'110px', cell:r => pill(r.status.replace('_',' '), TASK_TONE[r.status] ?? 'grey'), sortVal:r => ['in_progress','blocked','todo','parked','done'].indexOf(r.status) },
+    { key:'title', label:'Task', cls:'t', cell:r => esc(r.title), sortVal:r => r.title },
+    { key:'phase', label:'Phase', w:'110px', cell:r => `<span class="tag">${esc(r.phase ?? '—')}</span>`, sortVal:r => r.phase ?? '' },
+    { key:'blocked', label:'Blocked by', w:'170px', cell:r => (r.blocked_by ?? []).length
+        ? (r.blocked_by ?? []).map(b => {
+            const w = (PLAN?.waiting_on_client ?? []).find(x => x.id === b)
+            const done = w && w.status === 'answered'
+            return `<span class="tag ${done ? 'ok' : 'warn'}">${done ? '✓' : '⛔'}</span>`
+          }).join('')
+        : '<span class="sub">—</span>',
+      sortVal:r => (r.blocked_by ?? []).length },
+  ], r => {
+    const H = [`<p>${esc(r.detail)}</p>`]
+    if (r.why) H.push(`<p><b>Why.</b> ${esc(r.why)}</p>`)
+    if (r.promised) H.push(`<p><b>Promised.</b> ${esc(r.promised)}</p>`)
+    if (r.parked_reason) H.push(`<p><b>Parked because.</b> ${esc(r.parked_reason)}</p>`)
+    if (r.value) H.push(`<p><b>Value.</b> ${esc(r.value)}</p>`)
+    if (r.impact) H.push(`<p><b>Impact.</b> ${esc(r.impact)}</p>`)
+    if (r.unknown) H.push(`<p><b>Unknown.</b> ${esc(r.unknown)}</p>`)
+    if (r.blocked_note) H.push(`<p>${esc(r.blocked_note)}</p>`)
+    if ((r.findings ?? []).length) H.push(`<ul>${r.findings.map(f => `<li>${esc(f)}</li>`).join('')}</ul>`)
+    if ((r.options ?? []).length) H.push(`<p><b>Options.</b></p><ul>${r.options.map(o => `<li>${esc(o)}</li>`).join('')}</ul>`)
+    if ((r.blocked_by ?? []).length) {
+      H.push('<p>' + r.blocked_by.map(b => {
+        const w = (PLAN?.waiting_on_client ?? []).find(x => x.id === b)
+        return `<span class="tag ${w && w.status === 'answered' ? 'ok' : 'warn'}">${esc(w ? w.question : b)}</span>`
+      }).join('') + '</p>')
+    }
+    return H.join('')
+  }, 'No tasks.')
+}
+
+function viewRisks(p) {
+  return table('risks', p.risks ?? [], [
+    { key:'severity', label:'Sev', w:'86px', cell:r => pill(r.severity, SEV_TONE[r.severity] ?? 'grey'), sortVal:r => SEV.indexOf(r.severity) },
+    { key:'title', label:'Risk', cls:'t', cell:r => esc(r.title), sortVal:r => r.title },
+    { key:'status', label:'Status', w:'130px', cell:r => pill(r.status, r.status === 'mitigated' ? 'green' : r.status === 'communicated' ? 'blue' : 'amber'), sortVal:r => r.status },
+  ], r => `<p>${esc(r.detail)}</p>${r.mitigation ? `<p><b>Mitigation.</b> ${esc(r.mitigation)}</p>` : ''}`,
+  'No risks recorded.')
+}
+
+function viewTimeline(p) {
+  return table('timeline', [...(p.timeline ?? [])].reverse(), [
+    { key:'date', label:'Date', w:'104px', cls:'n', cell:r => esc(r.date), sortVal:r => r.date },
+    { key:'direction', label:'', w:'70px', cell:r => pill(r.direction === 'in' ? '← in' : '→ out', r.direction === 'in' ? 'grey' : 'blue'), sortVal:r => r.direction },
+    { key:'summary', label:'Summary', cls:'t', cell:r => esc(r.summary), sortVal:r => r.summary },
+  ], r => {
+    const H = []
+    if (r.detail) H.push(`<p>${esc(r.detail)}</p>`)
+    if (r.significance) H.push(`<p><b>Why this matters.</b> ${esc(r.significance)}</p>`)
+    if ((r.artifacts ?? []).length) H.push(`<p>${r.artifacts.map(a => `<span class="tag">${esc(a)}</span>`).join('')}</p>`)
+    return H.join('') || '<p class="sub">No further detail recorded.</p>'
+  }, 'No conversation recorded.')
+}
+
+function viewDecisions(p) {
+  return table('decisions', p.decisions ?? [], [
+    { key:'date', label:'Date', w:'104px', cls:'n', cell:r => esc(r.date), sortVal:r => r.date },
+    { key:'decision', label:'Decision', cls:'t', cell:r => esc(r.decision), sortVal:r => r.decision },
+    { key:'status', label:'Status', w:'190px', cell:r => pill(r.status, r.status === 'done' || r.status === 'confirmed by client' ? 'green' : 'amber'), sortVal:r => r.status },
+  ], r => `<p><b>Why.</b> ${esc(r.rationale)}</p>${r.evidence ? `<p><b>Evidence.</b> ${esc(r.evidence)}</p>` : ''}${r.counterpoint ? `<p><b>Counterpoint.</b> ${esc(r.counterpoint)}</p>` : ''}`,
+  'No decisions recorded.')
+}
+
+function viewShipped(p) {
+  return table('shipped', p.done ?? [], [
+    { key:'date', label:'Date', w:'104px', cls:'n', cell:r => esc(r.date), sortVal:r => r.date },
+    { key:'title', label:'Delivered', cls:'t', cell:r => esc(r.title), sortVal:r => r.title },
+  ], r => `<p>${esc(r.detail)}</p>${r.evidence ? `<p><b>Evidence.</b> ${esc(r.evidence)}</p>` : ''}`,
+  'Nothing shipped yet.')
+}
+
+function viewReference(p) {
+  const H = []
+  if (p.client) {
+    H.push('<h2>Client</h2><div class="card">')
+    H.push(`<h3>${esc(p.client.name)} — ${esc(p.client.company)}</h3>`)
+    for (const k of ['business','channel','technical_level','style_note','timezone_note'])
+      if (p.client[k]) H.push(`<p>${esc(p.client[k])}</p>`)
+    H.push('</div>')
+  }
+  if ((p.shops ?? []).length) {
+    H.push('<h2>Their shops</h2><div class="tw"><table><thead><tr><th>Shop</th><th style="width:150px">Status</th><th style="width:130px">Spree</th><th style="width:80px">Docker</th><th>Notes</th></tr></thead><tbody>')
+    for (const s of p.shops) H.push(`<tr><td class="t">${esc(s.name)}</td><td>${esc(s.status)}</td><td class="n">${esc(s.spree_version)}</td><td>${s.docker ? 'yes' : 'no'}</td><td>${esc(s.notes)}</td></tr>`)
+    H.push('</tbody></table></div>')
+  }
+  if ((p.servers ?? []).length) {
+    H.push('<h2>Servers</h2><div class="tw"><table><thead><tr><th>Server</th><th style="width:90px">Owner</th><th>Status</th><th>Access</th></tr></thead><tbody>')
+    for (const s of p.servers) H.push(`<tr><td class="t">${esc(s.name)}</td><td>${esc(s.owner)}</td><td>${esc(s.status)}</td><td>${esc(s.access ?? '—')}</td></tr>`)
+    H.push('</tbody></table></div>')
+  }
+  if ((p.open_questions_for_us ?? []).length) {
+    H.push('<h2>Open on our side</h2><div class="cards">')
+    for (const q of p.open_questions_for_us) H.push(`<div class="card"><h3>${esc(q.question)}</h3><p>${esc(q.why)}</p><p><span class="tag warn">${esc(q.status)}</span></p></div>`)
+    H.push('</div>')
+  }
+  if ((p.learnings ?? []).length) {
+    H.push('<h2>Learned</h2><div class="cards">')
+    for (const l of p.learnings) H.push(`<div class="card"><h3>${esc(l.title)}</h3><p>${esc(l.detail)}</p></div>`)
+    H.push('</div>')
+  }
+  if (p.environments) {
+    H.push('<h2>Environments</h2><div class="cards">')
+    for (const [n, env] of Object.entries(p.environments)) {
+      H.push(`<div class="card"><h3>${esc(n)}</h3>`)
+      for (const [k, v] of Object.entries(env))
+        H.push(`<p><span class="mono" style="color:var(--faint)">${esc(k)}</span> ${/^https?:\/\//.test(String(v)) ? `<a href="${esc(v)}" rel="noreferrer">${esc(v)}</a>` : esc(v)}</p>`)
+      H.push('</div>')
+    }
+    H.push('</div>')
+  }
+  if (p.stack) {
+    H.push('<h2>Stack</h2><div class="tw"><table><thead><tr><th style="width:190px">Component</th><th>Version</th></tr></thead><tbody>')
+    for (const [k, v] of Object.entries(p.stack)) H.push(`<tr><td class="t">${esc(k)}</td><td>${esc(v)}</td></tr>`)
+    H.push('</tbody></table></div>')
+  }
+  if ((p.docs_index ?? []).length) {
+    H.push('<h2>Documents</h2><div class="tw"><table><thead><tr><th style="width:210px">File</th><th>Purpose</th></tr></thead><tbody>')
+    for (const d of p.docs_index) H.push(`<tr><td class="t mono">${esc(d.file)}</td><td>${esc(d.purpose)}</td></tr>`)
+    H.push('</tbody></table></div>')
+  }
+  return H.join('')
+}
+
+const VIEWS = { overview:viewOverview, waiting:viewWaiting, work:viewWork, risks:viewRisks,
+                timeline:viewTimeline, decisions:viewDecisions, shipped:viewShipped, reference:viewReference }
+
+/* ── render ───────────────────────────────────────────────────────────────── */
+function render() {
+  const p = PLAN
+  if (!p) return
+  document.title = p.meta.project + ' — plan'
+  document.getElementById('pname').textContent = p.meta.project
+  document.getElementById('pphase').textContent = p.status.phase
+  document.getElementById('pmeta').textContent = 'rev ' + p.meta.revision + ' · ' + p.meta.updated
+
+  if (!VIEWS[tab]) tab = 'overview'
+  document.getElementById('tabs').innerHTML = TABS.map(t => {
+    const n = t.count(p)
+    const alert = t.alert && n > 0
+    return `<button class="tab" role="tab" aria-selected="${t.id === tab}" data-act="go" data-to="${t.id}">${esc(t.label)}${
+      n != null ? `<span class="b${alert ? ' alert' : ''}">${n}</span>` : ''}</button>`
+  }).join('')
+
+  document.getElementById('app').innerHTML =
+    `<section>${VIEWS[tab](p)}</section>` +
+    `<div class="foot">source of truth: docs/plan.json · <code>script/plan render</code> regenerates docs/PLAN.md · this page re-reads the JSON every 10s</div>`
+}
+
+/* ── one delegated listener for every interaction ─────────────────────────── */
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-act]')
+  if (!el) return
+  const act = el.dataset.act
+  if (act === 'go') {
+    tab = el.dataset.to; location.hash = '#' + tab; render()
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  } else if (act === 'row') {
+    const s = uiFor(el.dataset.tab), k = el.dataset.key
+    s.open.has(k) ? s.open.delete(k) : s.open.add(k)
+    render()
+  } else if (act === 'sort') {
+    const s = uiFor(el.dataset.tab), k = el.dataset.key
+    if (s.sort === k) s.dir *= -1; else { s.sort = k; s.dir = 1 }
+    render()
+  } else if (act === 'pg') {
+    uiFor(el.dataset.tab).page = Number(el.dataset.to); render()
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+})
+document.addEventListener('input', (e) => {
+  const el = e.target.closest('[data-act="q"]')
+  if (!el) return
+  const s = uiFor(el.dataset.tab)
+  s.q = el.value; s.page = 0
+  render()
+  // innerHTML was replaced, so restore focus and caret to the new input.
+  const nu = document.querySelector('[data-act="q"]')
+  if (nu) { nu.focus(); nu.setSelectionRange(nu.value.length, nu.value.length) }
+})
+document.getElementById('theme').addEventListener('click', () => {
+  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'
+  document.documentElement.setAttribute('data-theme', next)
+  try { localStorage.setItem('plan-theme', next) } catch (e) {}
+})
+window.addEventListener('hashchange', () => { tab = (location.hash || '#overview').slice(1); render() })
+document.addEventListener('visibilitychange', () => { if (!document.hidden) tick() })
+
+tick()
+setInterval(tick, 10000)
+</script>
+</body>
+</html>
