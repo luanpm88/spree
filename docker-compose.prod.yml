@@ -13,7 +13,12 @@
 
 x-app: &app
   image: ${SPREE_IMAGE:-ghcr.io/luanpm88/spree:latest}
-  restart: unless-stopped
+  # `always`, not `unless-stopped`. On a host reboot the shutdown sequence stops
+  # the container; Docker records that as a deliberate stop and `unless-stopped`
+  # then refuses to bring it back when the daemon restarts. This box rebooted for
+  # a kernel upgrade on 2026-08-05 and Spree stayed down for five days because of
+  # exactly that.
+  restart: always
   env_file: .env
   environment:
     RAILS_ENV: production
@@ -61,7 +66,7 @@ x-app: &app
 services:
   postgres:
     image: postgres:18-alpine
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_HOST_AUTH_METHOD: trust   # only reachable on the compose network
       POSTGRES_DB: spree_production
@@ -126,7 +131,7 @@ services:
   # backend it points at therefore means a REBUILD, not an env change here.
   storefront:
     image: ${STOREFRONT_IMAGE:-ghcr.io/luanpm88/spree-storefront:latest}
-    restart: unless-stopped
+    restart: always
     depends_on:
       web:
         condition: service_healthy
