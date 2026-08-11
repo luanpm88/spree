@@ -59,6 +59,36 @@ namespace :commercial do
     store.save!
     puts "store    #{created_store ? 'created' : 'updated'}  #{store.name} (#{store.code}) url=#{store.url}"
 
+    # ── the market, which is what actually decides currency and locale ──────────
+    #
+    # Spree::Store#default_currency and #default_locale look like plain columns and
+    # are not: Spree::Stores::Markets overrides both readers to answer from the
+    # default MARKET. Setting the columns alone leaves the store reading USD from a
+    # seeded "United States" market while the column says NZD, and nothing warns.
+    # Verified on 5.6.1 by comparing read_attribute against the method.
+    country_iso = ENV['STORE_COUNTRY'].presence
+    if country_iso
+      country = Spree::Country.find_by(iso: country_iso) or abort "no country with iso #{country_iso}"
+      market = store.markets.find_by(default: true) || store.markets.build(default: true)
+      market.assign_attributes(
+        name: country.name,
+        currency: ENV.fetch('STORE_CURRENCY', 'USD'),
+        default_locale: ENV.fetch('STORE_LOCALE', 'en'),
+        supported_locales: ENV.fetch('STORE_LOCALE', 'en')
+      )
+      market.save!
+      # The market's countries decide who it serves. A market named New Zealand that
+      # still lists only the US serves nobody correctly.
+      unless market.market_countries.exists?(country_id: country.id)
+        market.market_countries.where.not(country_id: country.id).destroy_all
+        market.market_countries.create!(country: country)
+      end
+      store.reload
+      puts "market   #{market.name} (#{market.currency}) covering #{country.iso}"
+    end
+
+    puts "currency #{store.default_currency} effective, #{store.read_attribute(:default_currency)} on the column"
+
     # The channel carries the access rule. Setting it on the store as well means a
     # channel added later inherits the right posture instead of defaulting to
     # public, which on a trade shop would put prices in front of the world.
