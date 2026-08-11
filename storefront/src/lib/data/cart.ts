@@ -55,8 +55,13 @@ async function cartBelongsToSurface(
 export async function getCart(
   explicitCartId?: string,
   surface: Surface = DEFAULT_SURFACE,
+  explicitOrderToken?: string,
 ): Promise<Cart | null> {
-  const spreeToken = await getCartToken(surface);
+  // An order token supplied by the caller wins over the cookie. That is what makes
+  // an emailed payment link work: the recipient opens it on a phone that has never
+  // held this cart's cookie, and without the token the page finds nothing and shows
+  // an empty checkout with no explanation.
+  const spreeToken = explicitOrderToken || (await getCartToken(surface));
   const token = await getAccessToken();
   const cartId = explicitCartId ?? (await getCartId(surface));
   const client = getClientForSurface(surface);

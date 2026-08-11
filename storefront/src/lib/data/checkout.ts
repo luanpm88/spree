@@ -85,8 +85,19 @@ function cartTag(surface: Surface): string {
   return `cart${cacheTagSuffix(surface)}`;
 }
 
-export async function getCheckoutOrder(cartId: string): Promise<Cart | null> {
+export async function getCheckoutOrder(
+  cartId: string,
+  orderToken?: string,
+): Promise<Cart | null> {
   const surface = await resolveSurfaceForCart(cartId);
+
+  // With a token, ask for THIS cart by id rather than for whatever the cookie
+  // points at. Someone following a payment link from their email has no cookie,
+  // and asking for the cookie's cart first would return null and stop there.
+  if (orderToken) {
+    const byToken = await getCart(cartId, surface, orderToken);
+    if (byToken) return byToken;
+  }
 
   // Try active cart first (order may still be in checkout)
   const cart = await getCart(undefined, surface);

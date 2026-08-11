@@ -23,19 +23,24 @@ interface CheckoutPageProps {
     country: string;
     locale: string;
   }>;
+  // The order token, when the visitor arrived from an emailed payment link. Spree's
+  // payment_link_email appends it because the recipient's browser has never held
+  // this cart's cookie. account/reset-password already reads a token the same way.
+  searchParams?: Promise<{ token?: string }>;
 }
 
-async function CheckoutDataLoader({ params }: CheckoutPageProps) {
+async function CheckoutDataLoader({ params, searchParams }: CheckoutPageProps) {
   await connection();
 
   const { id: cartId, country: urlCountry } = await params;
+  const { token: orderToken } = (await searchParams) ?? {};
 
   // Check auth first so we can skip address fetch for guests
   const authStatus = await checkAuth();
 
   // Fetch initial data in parallel during SSR
   const [cartData, market, addressesData] = await Promise.all([
-    getCheckoutOrder(cartId),
+    getCheckoutOrder(cartId, orderToken),
     resolveMarket(urlCountry).catch(() => null),
     authStatus ? getAddresses() : Promise.resolve({ data: [] as Address[] }),
   ]);
@@ -77,10 +82,13 @@ async function CheckoutDataLoader({ params }: CheckoutPageProps) {
   );
 }
 
-export default function CheckoutPage({ params }: CheckoutPageProps) {
+export default function CheckoutPage({
+  params,
+  searchParams,
+}: CheckoutPageProps) {
   return (
     <Suspense>
-      <CheckoutDataLoader params={params} />
+      <CheckoutDataLoader params={params} searchParams={searchParams} />
     </Suspense>
   );
 }
