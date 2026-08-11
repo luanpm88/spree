@@ -92,3 +92,8 @@ app/views/spree/reimbursement_mailer/
 
 # Client-branded PDF covers. Names a client, and this repo is public.
 docs/.covers.local.json
+
+# Client-owned shipping code. luanpm88/spree is public; these calculators were
+# written for the client's business and their rates are commercially sensitive.
+app/models/spree/calculator/shipping/
+config/rural_postcodes.txt
