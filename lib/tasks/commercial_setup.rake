@@ -29,11 +29,22 @@ namespace :commercial do
       abort "STOREFRONT_ACCESS=#{access.inspect} is not one of #{valid.inspect}"
     end
 
-    # find_or_initialize on `code`, not on `url`. The url is the thing most likely
-    # to be corrected later (http to https, apex to www), and keying on it would
-    # silently create a second store the first time it changed.
+    # Keyed on `code`, not on `url`. The url is the value most likely to be
+    # corrected later (http to https, apex to www) and keying on it would silently
+    # create a second store the first time it changed.
+    #
+    # But a fresh Spree is not empty: db:prepare seeds a default store, and simply
+    # creating ours next to it left TWO stores answering to the same hostname.
+    # Spree resolves the current store BY URL, so which one a request got was down
+    # to row order. Adopt the seeded one instead of racing it.
     code = name.parameterize
-    store = Spree::Store.find_or_initialize_by(code: code)
+    store = Spree::Store.find_by(code: code)
+    if store.nil? && Spree::Store.count == 1
+      store = Spree::Store.first
+      puts "store    adopting the seeded default (#{store.code}) rather than adding a second"
+      store.code = code
+    end
+    store ||= Spree::Store.new(code: code)
     store.assign_attributes(
       name: name,
       url: host,
