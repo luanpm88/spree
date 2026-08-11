@@ -2,9 +2,12 @@
 #
 # Drive the client's commercial shop server.
 #
-#   script/commercial survey     read-only: what is on the box right now
-#   script/commercial prepare    swap, sysctl, certbot. Idempotent.
-#   script/commercial ssh        open a shell
+#   script/commercial survey        read-only: what is on the box right now
+#   script/commercial prepare       swap, sysctl, certbot. Idempotent.
+#   script/commercial ship <shop>   send HEAD to /srv/<shop>/app
+#   script/commercial up <shop>     build, start, wait for health
+#   script/commercial status        what is deployed and what revision
+#   script/commercial ssh           open a shell
 #   script/commercial run '<cmd>'   run one command
 #
 # Why not script/deploy: that one is built for OUR reference box and hardcodes it.
@@ -121,9 +124,75 @@ cmd_prepare() {
   info "  own server, so it is asked for rather than done."
 }
 
+# ── ship ────────────────────────────────────────────────────────────────────
+
+# Send the current commit to /srv/<shop>/app, plus the compose file.
+#
+# `git archive` rather than `git clone`: no push, no deploy key, no branch to
+# keep in step, and the tree that lands is exactly one commit with nothing
+# uncommitted smuggled in. The SHA is written next to it so the box can always
+# answer "what is actually running here".
+cmd_ship() {
+  local shop="${1:?usage: script/commercial ship <shop>}"
+  local dir="/srv/$shop"
+  local sha; sha="$(git -C "$ROOT" rev-parse HEAD)"
+
+  if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+    warn "working tree is dirty. Shipping HEAD ($(git -C "$ROOT" rev-parse --short HEAD)), not what is on disk."
+  fi
+
+  step "Shipping ${sha:0:7} to $dir/app"
+  host "mkdir -p '$dir/app'"
+  git -C "$ROOT" archive --format=tar HEAD | host "tar -x -C '$dir/app'"
+  host "echo '$sha' > '$dir/app/REVISION'"
+  ok "$(host "find '$dir/app' -type f | wc -l | tr -d ' '") files"
+
+  step "Compose file"
+  host "cat > '$dir/docker-compose.yml'" < "$ROOT/deploy/commercial/docker-compose.yml"
+  ok "installed"
+}
+
+# ── build and run ───────────────────────────────────────────────────────────
+
+cmd_up() {
+  local shop="${1:?usage: script/commercial up <shop>}"
+  local dir="/srv/$shop"
+
+  host "test -f '$dir/.env'" || die "no $dir/.env yet. Create it first."
+
+  step "Building (this box has the cores for it, so no registry is involved)"
+  host "cd '$dir' && docker compose build --progress plain web 2>&1 | tail -20"
+
+  step "Starting"
+  host "cd '$dir' && docker compose up -d"
+
+  step "Waiting for health"
+  host "cd '$dir' && for i in \$(seq 1 60); do
+      s=\$(docker compose ps web --format '{{.Health}}' 2>/dev/null)
+      [ \"\$s\" = healthy ] && { echo \"healthy after \${i}0s\"; exit 0; }
+      [ \"\$s\" = unhealthy ] && { echo 'UNHEALTHY'; docker compose logs web --tail 40; exit 1; }
+      sleep 10
+    done
+    echo 'TIMED OUT waiting for health'; docker compose logs web --tail 40; exit 1"
+  ok "$shop is up"
+}
+
+cmd_status() {
+  host 'for d in /srv/*/; do
+      n=$(basename "$d")
+      [ -f "$d/docker-compose.yml" ] || { printf "  %-24s not deployed\n" "$n"; continue; }
+      rev=$(cat "$d/app/REVISION" 2>/dev/null | cut -c1-7)
+      st=$(cd "$d" && docker compose ps web --format "{{.State}}/{{.Health}}" 2>/dev/null | head -1)
+      printf "  %-24s %-22s rev %s\n" "$n" "${st:-down}" "${rev:-?}"
+    done'
+}
+
 case "${1:-help}" in
   survey)  shift; cmd_survey "$@" ;;
   prepare) shift; cmd_prepare "$@" ;;
+  ship)    shift; cmd_ship "$@" ;;
+  up)      shift; cmd_up "$@" ;;
+  status)  shift; cmd_status "$@" ;;
   ssh)     shift; exec ssh -i "$KEY" -p "$COMMERCIAL_PORT" "$COMMERCIAL_USER@$COMMERCIAL_HOST" ;;
   run)     shift; host "$@" ;;
   *) sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//' ;;

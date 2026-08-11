@@ -1,0 +1,115 @@
+# One shop, one stack, one directory under /srv.
+#
+#   /srv/<shop>/app                 the checkout, shipped by `git archive`
+#   /srv/<shop>/docker-compose.yml  this file
+#   /srv/<shop>/.env                that shop's settings and secrets
+#
+# Deliberately different from docker-compose.prod.yml in four ways, each because
+# the target box is different:
+#
+#   1. It BUILDS. The reference box has 1.9 GB and shares a CPU with 28 other
+#      sites, so it pulls a prebuilt image from a registry. This box has 8 cores
+#      and 15 GB and nothing else on it, so building in place removes a registry,
+#      a token and a CI round trip from the loop.
+#   2. Memory limits are real limits, not survival rations. The reference box was
+#      tuned down until it stopped swapping. Here the cap exists to stop one shop
+#      eating the others, not to fit in RAM.
+#   3. Every published port is namespaced per shop through SPREE_PORT, because
+#      several shops share this host and 3010 can only belong to one of them.
+#   4. No storefront service. The Next.js image bakes SPREE_API_URL in at build
+#      time, so it cannot be pointed at a new shop by changing an env var here.
+#      The backend stands up first; the storefront is built per shop afterwards.
+#
+# Still loopback-only. nginx on the host terminates TLS and proxies in. Binding
+# 0.0.0.0 would put the app straight on the internet, because Docker writes its
+# NAT rules ahead of the firewall.
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: always
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust   # reachable only on this shop's network
+      POSTGRES_DB: ${POSTGRES_DB:-spree_production}
+      PGDATA: /var/lib/postgresql/18/docker
+    command: >
+      postgres
+        -c shared_buffers=256MB
+        -c effective_cache_size=768MB
+        -c work_mem=8MB
+        -c maintenance_work_mem=128MB
+        -c max_connections=60
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: pg_isready -U postgres
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  web:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    image: spree-${SHOP:?set SHOP in .env}:latest
+    # `always`, not `unless-stopped`. On a host reboot the shutdown stops the
+    # container, Docker records that as deliberate, and `unless-stopped` then
+    # refuses to start it again when the daemon comes back.
+    restart: always
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RAILS_ENV: production
+      DATABASE_URL: postgres://postgres@postgres:5432/${POSTGRES_DB:-spree_production}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?generate one with openssl rand -hex 64}
+
+      # Every generated URL comes from this: image URLs in API responses, links
+      # inside emails. Wrong here means broken links in real customer mail.
+      RAILS_HOST: ${RAILS_HOST:?set RAILS_HOST in .env}
+
+      # nginx already terminated TLS and already redirected. ASSUME_SSL makes
+      # Rails write https:// URLs; FORCE_SSL must stay false or the two of them
+      # redirect at each other forever.
+      RAILS_ASSUME_SSL: "true"
+      RAILS_FORCE_SSL: "false"
+      RAILS_LOG_LEVEL: ${RAILS_LOG_LEVEL:-info}
+
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      RAILS_MAX_THREADS: ${RAILS_MAX_THREADS:-5}
+      JOB_THREADS: ${JOB_THREADS:-3}
+
+      MISSION_CONTROL_USER: ${MISSION_CONTROL_USER:?set in .env}
+      MISSION_CONTROL_PASSWORD: ${MISSION_CONTROL_PASSWORD:?set in .env}
+
+      # With SMTP_HOST unset Spree only LOGS mail and the customer gets nothing.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+    ports:
+      - "127.0.0.1:${SPREE_PORT:?set SPREE_PORT in .env, one per shop}:3000"
+    volumes:
+      - storage_data:/rails/storage
+    healthcheck:
+      test: curl -f http://localhost:3000/up || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          # Image processing can transiently want ~890MB, and a bulk product
+          # import will find that ceiling. 2G is headroom, not a target.
+          memory: 2G
+
+volumes:
+  postgres_data:
+  storage_data:
