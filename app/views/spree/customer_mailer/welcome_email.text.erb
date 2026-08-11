@@ -1,0 +1,14 @@
+<%# A text part matters more than usual here. This mail carries the only link that
+    lets the customer in, and some corporate mail gateways strip HTML entirely. %>
+<%= Spree.t('customer_mailer.welcome_email.heading', store: @current_store.name) %>
+
+<%= Spree.t('customer_mailer.welcome_email.greeting', name: @user.first_name.presence || @user.email) %>
+
+<%= Spree.t('customer_mailer.welcome_email.body', store: @current_store.name) %>
+
+<%= Spree.t('customer_mailer.welcome_email.cta') %>:
+<%= @reset_url %>
+
+<%= Spree.t('customer_mailer.welcome_email.expiry') %>
+
+<%= Spree.t('customer_mailer.welcome_email.signoff', store: @current_store.name) %>

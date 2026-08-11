@@ -13,9 +13,26 @@ import MarkdownIt from 'markdown-it';
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-// Which document to render. Defaults to the user guide; pass a name to build
-// another one:  node script/build_guide.mjs HANDOVER
-const DOC = (process.argv[2] || 'USER_GUIDE').replace(/\.md$/i, '');
+// Which document to render. Defaults to the user guide; pass a name to build another
+// one from docs/:
+//
+//   node script/build_guide.mjs HANDOVER
+//
+// Or pass a path to render something outside docs/, which is how client-facing notes
+// get built without putting them in a public repo:
+//
+//   node script/build_guide.mjs tmp/client/WELCOME_EMAIL.md
+const ARG = process.argv[2] || 'USER_GUIDE';
+const IS_PATH = ARG.includes('/');
+const DOC = path.basename(ARG).replace(/\.md$/i, '');
+
+// Built once per run rather than hardcoded: the cover used to carry a literal
+// "30/07/2026", which every regenerated PDF then claimed as its date.
+const TODAY = new Date();
+const dmy = `${String(TODAY.getDate()).padStart(2, '0')}/${String(TODAY.getMonth() + 1).padStart(2, '0')}/${TODAY.getFullYear()}`;
+const dMonthY = TODAY.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+
+const STACK = 'Rails 8.1.3 · Ruby 4.0.1 · PostgreSQL 18';
 
 const COVERS = {
   USER_GUIDE: {
@@ -25,6 +42,14 @@ const COVERS = {
     foot: 'Ảnh chụp trong tài liệu được lấy trực tiếp từ hệ thống đã dựng.',
     running: 'Spree — Hướng dẫn toàn tập',
     pageLabel: 'trang',
+    lang: 'vi',
+    meta: [
+      ['Spree', '5.6.1 Community Edition'],
+      ['Nền tảng', STACK],
+      ['Hạ tầng', 'Docker'],
+      ['Repository', 'github.com/luanpm88/spree'],
+      ['Cập nhật', dmy],
+    ],
   },
   HANDOVER: {
     eyebrow: 'Project handover · b-teka',
@@ -33,20 +58,49 @@ const COVERS = {
     foot: 'Every screenshot in this document is taken from the live production system.',
     running: 'Spree Commerce — Project Handover',
     pageLabel: 'page',
+    lang: 'en',
+    // English labels: this document is client-facing and standalone. It used to
+    // print Vietnamese ones. No repository link either — that repo is public and
+    // is ours, not something to hand a client.
+    meta: [
+      ['Spree', '5.6.1 Community Edition'],
+      ['Stack', STACK],
+      ['Infrastructure', 'Docker'],
+      ['Updated', dMonthY],
+    ],
+  },
+  WELCOME_EMAIL: {
+    eyebrow: 'the client',
+    title: 'Welcome email',
+    sub: 'Built and verified on Spree 5.6.1',
+    foot: 'Every screenshot is taken from the running system, by the script that verifies it.',
+    running: 'Welcome email · Spree 5.6.1',
+    pageLabel: 'page',
+    lang: 'en',
+    meta: [
+      ['Spree', '5.6.1'],
+      ['Stack', STACK],
+      ['Verified by', 'script/e2e_welcome.mjs · 9 of 9 steps'],
+      ['Date', dMonthY],
+    ],
   },
 };
 
-const DOCS = path.resolve('docs');
-const SRC = path.join(DOCS, `${DOC}.md`);
+// Relative image paths inside the markdown resolve against the document's own
+// directory, not against docs/, so a file in tmp/ can reference ../welcome/shot.png.
+const DOCS = IS_PATH ? path.resolve(path.dirname(ARG)) : path.resolve('docs');
+const SRC = IS_PATH ? path.resolve(ARG) : path.join(DOCS, `${DOC}.md`);
 const OUT_PDF = path.join(DOCS, `${DOC}.pdf`);
 const OUT_HTML = path.join(DOCS, `.${DOC.toLowerCase()}.build.html`);
 const COVER = COVERS[DOC] || {
-  eyebrow: 'b-teka',
+  eyebrow: '',
   title: DOC.replace(/_/g, ' '),
   sub: '',
   foot: '',
   running: DOC,
   pageLabel: 'page',
+  lang: 'en',
+  meta: [['Spree', '5.6.1'], ['Stack', STACK], ['Date', dMonthY]],
 };
 
 const md = new MarkdownIt({ html: true, linkify: true, typographer: false });
@@ -226,17 +280,13 @@ const run = async () => {
       <div class="eyebrow">${COVER.eyebrow}</div>
       <h1>${COVER.title}</h1>
       <div class="sub">${COVER.sub}</div>
-      <dl>
-        <dt>Spree</dt><dd>5.6.1 Community Edition</dd>
-        <dt>Nền tảng</dt><dd>Rails 8.1.3 · Ruby 4.0.1 · PostgreSQL 18</dd>
-        <dt>Hạ tầng</dt><dd>Docker</dd>
-        <dt>Repository</dt><dd>github.com/luanpm88/spree</dd>
-        <dt>Cập nhật</dt><dd>30/07/2026</dd>
+      <dl>${COVER.meta.map(([k, v]) => `
+        <dt>${k}</dt><dd>${v}</dd>`).join('')}
       </dl>
       <div class="foot">${COVER.foot}</div>
     </div>`;
 
-  const doc = `<!doctype html><html lang="vi"><head><meta charset="utf-8">
+  const doc = `<!doctype html><html lang="${COVER.lang || 'vi'}"><head><meta charset="utf-8">
     <title>${COVER.running}</title><style>${CSS}</style></head>
     <body>${cover}${html}</body></html>`;
 
@@ -279,7 +329,9 @@ const run = async () => {
 
   const { size } = await stat(OUT_PDF);
   const imgCount = [...doc.matchAll(/<img /g)].length;
-  console.log(`\nPDF: docs/${DOC}.pdf  (${(size / 1024 / 1024).toFixed(1)} MB, ${imgCount} images)`);
+  // Report the real path, not a hardcoded docs/ prefix — the output directory follows
+  // the source document now.
+  console.log(`\nPDF: ${path.relative(process.cwd(), OUT_PDF)}  (${(size / 1024 / 1024).toFixed(1)} MB, ${imgCount} images)`);
   if (missing.length) {
     console.log(`\nWARNING — ${missing.length} screenshot(s) missing, rendered as placeholders:`);
     missing.forEach((m) => console.log(`  ${m}`));

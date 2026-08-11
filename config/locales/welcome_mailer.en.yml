@@ -1,0 +1,23 @@
+# Copy for the welcome email that Spree 5.6 does not ship.
+#
+# Ours, not the client's, so this one IS committed — unlike the client's own locale files
+# which carries his brand copy and stays out of a public repo. When his own welcome
+# template and wording arrive, these keys are what his file overrides.
+#
+# Wording aimed at the wholesale-approval case, since that is what needs it: the
+# customer applied, was approved, and the account already exists. It deliberately does
+# not say "thanks for signing up" — nobody signed up, and telling an approved trade
+# customer they registered themselves reads as a mistake.
+
+en:
+  spree:
+    customer_mailer:
+      welcome_email:
+        subject: "Welcome to %{store}, set your password"
+        heading: "Welcome to %{store}"
+        greeting: "Hi %{name},"
+        body: "Your account is ready. Set a password using the link below and you can sign in and start ordering."
+        cta: "Set your password"
+        expiry: "The link is valid for a limited time. If it has expired by the time you get to it, use the forgot password option on the sign-in page and a new one is sent straight away."
+        fallback: "If the button does not work, copy this into your browser:"
+        signoff: "The %{store} team"

@@ -107,6 +107,54 @@ Spree::Store.default returning a new unpersisted store when no default store
 exists is deprecated and will be removed in Spree 6.0
 ```
 
+### 1.13 Có HAI cơ chế reset mật khẩu, và chúng không hiểu nhau
+
+Đây là phát hiện tốn nhiều thời gian nhất khi làm email chào mừng.
+
+| | Cơ chế | Tạo token | Đọc token |
+|---|---|---|---|
+| Rails/Devise | `reset_password_token` (lưu digest) | `set_reset_password_token` | `reset_password_by_token` |
+| **Store API** | `generates_token_for` của Rails 7.1 | `generate_token_for(:password_reset)` | `find_by_password_reset_token` |
+
+Storefront Next.js **chỉ dùng cơ chế thứ hai**. Nó gọi
+`PATCH /api/v3/store/password_resets/:id`, và controller đó đọc bằng
+`find_by_password_reset_token`.
+
+Nếu email nhúng token Devise thì mọi bước đều trông đúng:
+
+```
+link mở ra trang đúng           ✓
+form 2 ô mật khẩu hiện ra        ✓
+bấm submit, không lỗi mạng       ✓
+→ "Password reset token is invalid or has expired"
+```
+
+Token Devise vẫn hợp lệ nếu kiểm bằng `reset_password_by_token` trong console, nên
+unit test kiểu đó **pass mà tính năng vẫn hỏng**. Chỉ có test đi hết đường
+(mail → click → đặt mật khẩu → đăng nhập lại) mới bắt được. Xem
+`script/e2e_welcome.mjs`.
+
+Kết luận: mọi link reset gửi cho khách qua storefront **phải** dùng
+`generate_token_for(:password_reset)`.
+
+### 1.14 `append_token` dùng `?token=`, và không tự thêm đường dẫn
+
+`Spree::BaseMailer#append_token` chỉ gắn `?token=` / `&token=` vào URL bạn đưa nó.
+Email reset mặc định không cần lo, vì storefront gửi kèm `redirect_url` khi khách bấm
+"quên mật khẩu". Email chào mừng thì **không có request nào phía trước**, nên nếu chỉ
+truyền `store.storefront_url` thì khách rơi vào trang chủ với một token trong URL và
+không biết làm gì.
+
+Đừng tự đoán tiền tố `/{country}/{locale}`. Next.js **tự chuyển hướng** và giữ nguyên
+query:
+
+```
+/account/reset-password?token=…  →  /us/en/account/reset-password?token=…
+```
+
+Bản đầu mình lấy country từ market mặc định và ra `/ca/en/`, vì market tên "US" liệt kê
+Canada trước theo bảng chữ cái.
+
 ---
 
 ## 2. Về Docker / môi trường
