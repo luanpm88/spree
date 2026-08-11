@@ -39,6 +39,20 @@ set -a; . "$ENV_FILE"; set +a
 KEY="${COMMERCIAL_KEY/#\~/$HOME}"
 [ -f "$KEY" ] || die "ssh key not found at $KEY"
 
+# Paths that belong to the CLIENT and are gitignored on purpose, so `git archive` can
+# never carry them. Shipped separately by cmd_ship. Anything added to .gitignore that
+# the running app actually needs has to be listed here too, or the shop silently falls
+# back to Spree's defaults.
+CLIENT_ASSETS=(
+  "app/views/spree/order_mailer"
+  "app/views/spree/shipment_mailer"
+  "app/views/spree/reimbursement_mailer"
+  "app/models/spree/calculator/shipping"
+  "config/rural_postcodes.txt"
+)
+# Locale files are a glob, so they are collected at ship time rather than listed.
+while IFS= read -r f; do CLIENT_ASSETS+=("$f"); done < <(cd "$ROOT" && ls config/locales/*.yml 2>/dev/null | grep -vE "/(en|ar|bg|ca|cs|da|de|el|es|et|fa|fi|fr|he|hi|hr|hu|id|it|ja|ko|lt|lv|mk|nb|nl|pl|pt|ro|ru|sk|sl|sq|sr|sv|th|tr|uk|vi|zh)\.yml$" || true)
+
 # BatchMode so a wrong key fails immediately instead of hanging on a password prompt.
 host() {
   ssh -i "$KEY" -p "$COMMERCIAL_PORT" -o BatchMode=yes -o ConnectTimeout=15 \
@@ -151,6 +165,29 @@ cmd_ship() {
   step "Compose file"
   host "cat > '$dir/docker-compose.yml'" < "$ROOT/deploy/commercial/docker-compose.yml"
   ok "installed"
+
+  # git archive ships HEAD, and HEAD deliberately excludes the client's own files:
+  # this repo is public and their email designs, brand copy and shipping rates are
+  # theirs. Which means a shop deployed from the archive alone runs Spree's stock
+  # emails instead of the client's, with no error and nothing to notice. Found that
+  # by looking, after telling the client the shop was up.
+  step "Client assets"
+  local sent=0
+  local tmpf; tmpf="$(mktemp)"
+  : > "$tmpf"
+  for p in "${CLIENT_ASSETS[@]}"; do
+    [ -e "$ROOT/$p" ] || continue
+    echo "$p" >> "$tmpf"
+    sent=$((sent + 1))
+  done
+
+  if [ "$sent" -eq 0 ]; then
+    warn "no client assets found locally. The shop will send stock Spree emails."
+  else
+    tar -C "$ROOT" -cf - -T "$tmpf" | host "tar -x -C '$dir/app'"
+    ok "$(host "find '$dir/app/app/views/spree' '$dir/app/config/locales' '$dir/app/app/models/spree/calculator' -type f 2>/dev/null | wc -l | tr -d ' '") client files in place"
+  fi
+  rm -f "$tmpf"
 }
 
 # ── build and run ───────────────────────────────────────────────────────────
