@@ -110,6 +110,60 @@ services:
           # import will find that ceiling. 2G is headroom, not a target.
           memory: 2G
 
+  # The shop customers see. Next.js, because Spree 5.5 dropped the Rails storefront
+  # and 5.6 has no replacement for it.
+  #
+  # SPREE_API_URL and SPREE_PUBLISHABLE_KEY are BUILD arguments, not runtime ones.
+  # The app prerenders category and product pages against the Spree API while it
+  # builds, so pointing it at a different backend means rebuilding the image, not
+  # editing an env var. That is why this service is per-shop rather than shared.
+  #
+  # Started with `--profile storefront`, so the backend can stand up on its own
+  # before the front end exists, which is the order the work actually happens in.
+  storefront:
+    profiles: ["storefront"]
+    build:
+      context: ./app/storefront
+      dockerfile: Dockerfile
+      args:
+        # The PUBLIC url, not http://web:3000. Spree returns Active Storage image
+        # URLs on the store's own host, and next/image only accepts hosts in its
+        # remotePatterns allowlist, so an internal address produces broken images
+        # on pages that otherwise render perfectly.
+        SPREE_API_URL: ${SPREE_API_URL:?set SPREE_API_URL in .env}
+        SPREE_PUBLISHABLE_KEY: ${SPREE_PUBLISHABLE_KEY:?set SPREE_PUBLISHABLE_KEY in .env}
+    image: storefront-${SHOP:?}:latest
+    restart: always
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      PORT: "3001"
+      HOSTNAME: 0.0.0.0
+      SPREE_API_URL: ${SPREE_API_URL}
+      SPREE_PUBLISHABLE_KEY: ${SPREE_PUBLISHABLE_KEY}
+      NEXT_PUBLIC_SITE_URL: ${STOREFRONT_URL:-}
+      NEXT_PUBLIC_STORE_NAME: ${SHOP_NAME:-Shop}
+      NEXT_PUBLIC_DEFAULT_COUNTRY: ${STORE_COUNTRY:-nz}
+      NEXT_PUBLIC_DEFAULT_LOCALE: ${STORE_LOCALE:-en}
+    ports:
+      - "127.0.0.1:${STOREFRONT_PORT:?set STOREFRONT_PORT in .env, one per shop}:3001"
+    healthcheck:
+      # 127.0.0.1, NOT localhost. This image maps localhost to ::1 only while Next
+      # binds IPv4, so `localhost` reports connection refused on a container that is
+      # serving traffic perfectly well.
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3001/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
 volumes:
   postgres_data:
   storage_data:
