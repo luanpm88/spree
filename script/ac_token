@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+#
+# Issue an ActiveCollab API token.
+#
+#   script/ac_token
+#
+# Self-hosted ActiveCollab exchanges an email + password for a long-lived API token
+# via POST /api/v1/issue-token. Verified against ActiveCollab 8.0.21.
+#
+# The password is read with `read -s`, passed to python through the environment rather
+# than argv (argv is visible in `ps` to every user on the machine), and never written
+# to disk or to shell history. Nothing here stores the token either — that is a
+# deliberate decision the caller makes, see the note printed at the end.
+set -euo pipefail
+
+HOST="${AC_HOST:?set AC_HOST to your ActiveCollab base URL}"
+
+read -rp  "ActiveCollab email: "    AC_EMAIL
+read -rsp "ActiveCollab password: " AC_PASS; echo
+echo
+
+AC_EMAIL="$AC_EMAIL" AC_PASS="$AC_PASS" AC_HOST="$HOST" python3 - <<'PY'
+import json, os, sys, urllib.error, urllib.request
+
+host = os.environ["AC_HOST"].rstrip("/")
+body = json.dumps({
+    "username": os.environ["AC_EMAIL"],
+    "password": os.environ["AC_PASS"],
+    "client_name": "spree-plan-sync",
+    "client_vendor": "internal",
+}).encode()
+
+req = urllib.request.Request(
+    f"{host}/api/v1/issue-token",
+    data=body,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+
+try:
+    raw = urllib.request.urlopen(req, timeout=20).read().decode()
+except urllib.error.HTTPError as e:
+    # ActiveCollab returns the real reason in the body, not in the status line.
+    print(f"HTTP {e.code}", file=sys.stderr)
+    print(e.read().decode()[:1000], file=sys.stderr)
+    sys.exit(1)
+except urllib.error.URLError as e:
+    print(f"cannot reach {host}: {e.reason}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError:
+    print("unexpected non-JSON response:", file=sys.stderr)
+    print(raw[:1000], file=sys.stderr)
+    sys.exit(1)
+
+token = data.get("token")
+if not data.get("is_ok") or not token:
+    print("no token issued:", file=sys.stderr)
+    print(json.dumps(data, indent=2)[:1000], file=sys.stderr)
+    sys.exit(1)
+
+print(token)
+print("", file=sys.stderr)
+print("Store it, do NOT commit it. .env* is gitignored:", file=sys.stderr)
+print(f"  echo 'ACTIVECOLLAB_URL={host}'      >> .env.activecollab", file=sys.stderr)
+print( "  echo 'ACTIVECOLLAB_TOKEN=<token>'   >> .env.activecollab", file=sys.stderr)
+PY

@@ -1,0 +1,271 @@
+#!/usr/bin/env node
+// Pull the client's ActiveCollab tasks into docs/plan.json.
+//
+//   script/ac_sync              fetch, merge, write, print what changed
+//   script/ac_sync --dry-run    fetch and print what WOULD change, write nothing
+//   script/ac_sync --watch      the same, every 120s, until killed
+//
+// Read-only against ActiveCollab. Nothing here creates, edits or comments on
+// anything in the client's system — the token can do all three, and posting is
+// deliberately kept in a separate script that will not send without being shown
+// the text first (script/ac_comment).
+//
+// The merge rule is the whole design. Two kinds of field live in client_tasks:
+//
+//   machine  number title url task_list assignee created completed comments_count
+//            last_comment_by last_comment_on ac_id
+//            -> always overwritten from the API, it is the authority
+//
+//   human    status asks our_reply waiting_for artifact
+//            -> never touched once written. These are judgement, not data. A sync
+//               that clobbered our_reply would quietly destroy the one part of the
+//               plan that cannot be refetched.
+//
+// docs/plan.json is gitignored, so git cannot undo a bad write. Hence the .bak.
+
+import { readFileSync, writeFileSync, existsSync, copyFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const JSON_PATH = join(ROOT, 'docs/plan.json')
+const ENV_PATH = join(ROOT, '.env.activecollab')
+const PROJECT_ID = process.env.ACTIVECOLLAB_PROJECT_ID || '264'
+const DRY = process.argv.includes('--dry-run')
+const WATCH = process.argv.includes('--watch')
+const INTERVAL = Number(process.env.AC_SYNC_INTERVAL || 120) * 1000
+
+const MACHINE = ['ac_id', 'number', 'title', 'url', 'task_list', 'assignee', 'created',
+  'completed', 'comments_count', 'last_comment_by', 'last_comment_on', 'ball_in_court']
+const HUMAN = ['status', 'asks', 'our_reply', 'waiting_for', 'artifact']
+
+const C = process.stdout.isTTY
+  ? { dim: '\x1b[2m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', bold: '\x1b[1m', off: '\x1b[0m' }
+  : { dim: '', red: '', green: '', yellow: '', bold: '', off: '' }
+
+function die(msg) {
+  console.error(`${C.red}error${C.off} ${msg}`)
+  process.exit(1)
+}
+
+// ── credentials ─────────────────────────────────────────────────────────────
+
+function env() {
+  if (!existsSync(ENV_PATH)) {
+    die(`missing ${ENV_PATH}\n  create it with: script/ac_token`)
+  }
+  const out = {}
+  for (const line of readFileSync(ENV_PATH, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*)$/)
+    if (m) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, '')
+  }
+  if (!out.ACTIVECOLLAB_TOKEN) die(`${ENV_PATH} has no ACTIVECOLLAB_TOKEN`)
+  if (!out.ACTIVECOLLAB_URL) die(`${ENV_PATH} has no ACTIVECOLLAB_URL`)
+  out.ACTIVECOLLAB_URL = out.ACTIVECOLLAB_URL.replace(/\/$/, '')
+  return out
+}
+
+const E = env()
+
+async function api(path) {
+  const res = await fetch(`${E.ACTIVECOLLAB_URL}/api/v1${path}`, {
+    headers: { 'X-Angie-AuthApiToken': E.ACTIVECOLLAB_TOKEN },
+    signal: AbortSignal.timeout(30_000),
+  })
+  const text = await res.text()
+  // Thrown, not die()d: under --watch a 502 while their server restarts must be a
+  // retry, not the end of the watcher. A dead token is the one thing worth quitting
+  // over, because no amount of retrying fixes it.
+  if (res.status === 401 || res.status === 403) {
+    die(`GET ${path} -> HTTP ${res.status}: token rejected. Reissue with script/ac_token`)
+  }
+  if (!res.ok) throw new Error(`GET ${path} -> HTTP ${res.status}: ${text.slice(0, 200)}`)
+  try {
+    return JSON.parse(text)
+  } catch {
+    // A 200 carrying an HTML login page is what an expired token looks like.
+    throw new Error(`GET ${path} returned non-JSON (expired token?): ${text.slice(0, 200)}`)
+  }
+}
+
+// ── shaping ─────────────────────────────────────────────────────────────────
+
+// ActiveCollab stores comment and task bodies as HTML. The plan is read as text, in
+// a terminal and in the dashboard, so flatten it. Block tags become spaces rather
+// than nothing, otherwise "</div><div>" welds two sentences into one word.
+function toText(html) {
+  return String(html || '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// ActiveCollab timestamps are unix seconds. The plan writes plain calendar dates.
+const day = (ts) => (ts ? new Date(ts * 1000).toISOString().slice(0, 10) : null)
+
+const clip = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s)
+
+// ── fetch ───────────────────────────────────────────────────────────────────
+
+async function sync() {
+console.log(`${C.dim}fetching project ${PROJECT_ID} from ${E.ACTIVECOLLAB_URL}${C.off}`)
+
+const [payload, users, session] = await Promise.all([
+  api(`/projects/${PROJECT_ID}/tasks`),
+  api('/users'),
+  api('/user-session'),
+])
+
+// Who "we" are is read from the session rather than hardcoded to a display name.
+// The token belongs to whoever issued it; a name comparison would break the day a
+// second person runs this.
+const ME = session.logged_user_id
+const names = new Map(users.map((u) => [u.id, u.display_name || u.email]))
+const lists = new Map((payload.task_lists || []).map((l) => [l.id, l.name]))
+const tasks = payload.tasks || []
+if (!tasks.length) console.log(`${C.yellow}warning${C.off} project ${PROJECT_ID} returned no open tasks`)
+
+// One comment fetch per task, in parallel. Two tasks today; this stays fine at 50.
+const comments = new Map(
+  await Promise.all(tasks.map(async (t) => [t.id, await api(`/comments/task/${t.id}`)]))
+)
+
+// ── merge ───────────────────────────────────────────────────────────────────
+
+if (!existsSync(JSON_PATH)) die(`missing ${JSON_PATH}`)
+const plan = JSON.parse(readFileSync(JSON_PATH, 'utf8'))
+plan.client_tasks ||= []
+
+const changes = []
+const existing = new Map(plan.client_tasks.map((t) => [t.id, t]))
+
+for (const t of tasks) {
+  const id = `ac_task_${t.task_number}`
+  const cs = (comments.get(t.id) || []).filter((c) => !c.is_trashed)
+    .sort((a, b) => (a.created_on || 0) - (b.created_on || 0))
+  const last = cs[cs.length - 1]
+
+  // The single most useful thing the dashboard can say about a task: is anyone
+  // waiting on me right now. Derived, not stored, so it can never go stale — the
+  // moment we post a reply our comment becomes the last one and it flips itself.
+  const ball = t.completed_on ? 'closed'
+    : !last ? 'us'                       // they opened it and said nothing since
+    : last.created_by_id === ME ? 'them'  // we answered last
+    : 'us'
+
+  const fresh = {
+    ac_id: t.id,
+    number: `Task #${t.task_number} (${t.id})`,
+    title: t.name,
+    url: `${E.ACTIVECOLLAB_URL}/projects/${PROJECT_ID}?modal=Task-${t.id}-${PROJECT_ID}`,
+    task_list: lists.get(t.task_list_id) || null,
+    assignee: names.get(t.assignee_id) || null,
+    created: day(t.created_on),
+    completed: !!t.completed_on,
+    comments_count: cs.length,
+    last_comment_by: last ? (names.get(last.created_by_id) || last.created_by_name || null) : null,
+    last_comment_on: last ? day(last.created_on) : null,
+    ball_in_court: ball,
+  }
+
+  const row = existing.get(id)
+  if (!row) {
+    // A task we have never seen. Fill only what the API knows and leave the human
+    // fields blank — blank is the signal that it still needs a person to read it.
+    const created = { id, ...fresh, asks: clip(toText(t.body), 400), status: 'new, unread', our_reply: '', waiting_for: '', artifact: '' }
+    plan.client_tasks.push(created)
+    changes.push(`${C.green}new${C.off}     ${id}  ${t.name}`)
+    continue
+  }
+
+  for (const k of MACHINE) {
+    if (JSON.stringify(row[k]) !== JSON.stringify(fresh[k])) {
+      changes.push(`${C.yellow}update${C.off}  ${id}.${k}: ${JSON.stringify(row[k])} -> ${JSON.stringify(fresh[k])}`)
+      row[k] = fresh[k]
+    }
+  }
+  for (const k of HUMAN) if (!(k in row)) row[k] = ''
+
+  // The point of syncing at all: notice that the client said something new. Compared
+  // against what we recorded last run, not against our_reply, so our own comments do
+  // not read as an unanswered client message.
+  if (last && last.created_by_id !== ME && row.last_seen_comment_id !== last.id) {
+    changes.push(`${C.bold}${C.red}CLIENT REPLIED${C.off}  ${id}  ${names.get(last.created_by_id)} on ${day(last.created_on)}: ${clip(toText(last.body), 160)}`)
+  }
+  if (last) row.last_seen_comment_id = last.id
+}
+
+// A task closed on their side, or moved out of the project, stops coming back in the
+// open-tasks payload. Say so rather than leaving a stale row looking live.
+for (const row of plan.client_tasks) {
+  const stillThere = tasks.some((t) => `ac_task_${t.task_number}` === row.id)
+  if (!stillThere && row.completed !== true) {
+    changes.push(`${C.dim}gone${C.off}    ${row.id} is no longer in the open task list (completed or moved)`)
+    row.completed = true
+  }
+}
+
+// ── report and write ────────────────────────────────────────────────────────
+
+// Always stamped, even when nothing changed. The dashboard needs to tell "in sync"
+// apart from "this loop died an hour ago", and only a fresh timestamp does that.
+const stamp = new Date().toISOString().replace(/\.\d+Z$/, 'Z')
+
+console.log('')
+for (const c of changes) console.log('  ' + c)
+if (!changes.length) console.log(`${C.dim}no change — ${plan.client_tasks.length} task(s) already match ActiveCollab${C.off}`)
+console.log('')
+
+if (DRY) {
+  console.log(`${C.dim}--dry-run, nothing written${C.off}`)
+  return changes.length
+}
+
+plan.meta ||= {}
+plan.meta.ac_synced_at = stamp
+plan.meta.ac_project_id = Number(PROJECT_ID)
+
+// Only back up when something real changed. The heartbeat rewrites this file every
+// two minutes, and a .bak that is always one heartbeat old is worth nothing.
+if (changes.length) copyFileSync(JSON_PATH, JSON_PATH + '.bak')
+writeFileSync(JSON_PATH, JSON.stringify(plan, null, 2) + '\n')
+
+if (changes.length) {
+  console.log(`wrote docs/plan.json ${C.dim}(previous copy at docs/plan.json.bak)${C.off}`)
+  // Keep the markdown in step. The dashboard reads the JSON directly and does not
+  // need this, but `script/plan check` fails on a stale PLAN.md, and a watcher that
+  // quietly breaks that check every two minutes would be worse than no watcher.
+  const r = spawnSync(join(ROOT, 'script/plan'), ['render'], { encoding: 'utf8' })
+  if (r.status === 0) console.log(`${C.dim}${(r.stdout || '').trim()}${C.off}`)
+  else console.error(`${C.yellow}plan render failed${C.off} ${(r.stderr || '').trim()}`)
+}
+return changes.length
+}
+
+// ── run ─────────────────────────────────────────────────────────────────────
+
+if (!WATCH) {
+  try {
+    await sync()
+  } catch (e) {
+    die(e.message)
+  }
+} else {
+  console.log(`${C.dim}watching every ${INTERVAL / 1000}s — ctrl-c to stop${C.off}`)
+  for (;;) {
+    try {
+      await sync()
+    } catch (e) {
+      // A laptop that slept, or their server rebooting, must not kill the watcher.
+      // Log it and try again on the next tick.
+      console.error(`${C.red}sync failed${C.off} ${e.message}`)
+    }
+    await new Promise((r) => setTimeout(r, INTERVAL))
+  }
+}

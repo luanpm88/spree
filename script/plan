@@ -56,7 +56,7 @@ function validate(plan) {
   // Collect every id in the file and reject duplicates. Two things sharing an id
   // means a reference silently resolves to the wrong one.
   const ids = new Map()
-  const collections = ['shops', 'servers', 'waiting_on_client', 'decisions', 'tasks', 'done', 'risks', 'open_questions_for_us', 'learnings']
+  const collections = ['shops', 'servers', 'waiting_on_client', 'decisions', 'tasks', 'done', 'risks', 'open_questions_for_us', 'learnings', 'client_tasks']
   for (const coll of collections) {
     for (const item of plan[coll] ?? []) {
       if (!item.id) { errors.push(`${coll}: an entry has no id`); continue }
@@ -169,6 +169,23 @@ function render(plan) {
       p(`- **${esc(w.question)}** — ${esc(w.answer)}${w.follow_up ? ` _(still: ${esc(w.follow_up)})_` : ''}`)
     }
     p('')
+  }
+
+  // The client's own tracker. Kept distinct from `tasks`: those are ours and we control
+  // their state, these are his and we only get to answer them.
+  if ((plan.client_tasks ?? []).length) {
+    p(`## Their tracker${plan.collaboration ? ` — ${esc(plan.collaboration.system)}` : ''}`)
+    p('')
+    if (plan.collaboration?.note) { p(`> ${esc(plan.collaboration.note)}`); p('') }
+    for (const t of plan.client_tasks) {
+      p(`### ${esc(t.number)} · ${esc(t.title)}`)
+      p('')
+      p(`${esc(t.status)}${t.task_list ? ` · list: ${esc(t.task_list)}` : ''}${t.url ? ` · [open](${t.url})` : ''}`)
+      p('')
+      if (t.asks) { p(`**They asked.** ${esc(t.asks)}`); p('') }
+      if (t.our_reply) { p(`**We answered.** ${esc(t.our_reply)}`); p('') }
+      if (t.waiting_for) { p(`**Waiting on.** ${esc(t.waiting_for)}`); p('') }
+    }
   }
 
   p('## Now')

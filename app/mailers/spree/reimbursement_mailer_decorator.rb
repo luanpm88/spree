@@ -1,9 +1,9 @@
 module Spree
-  module OrderMailerDecorator
+  module ReimbursementMailerDecorator
     def self.prepended(base)
       base.include Spree::FullDocumentTemplates
     end
   end
 
-  OrderMailer.prepend OrderMailerDecorator
+  ReimbursementMailer.prepend ReimbursementMailerDecorator
 end

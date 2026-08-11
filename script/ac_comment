@@ -1,0 +1,188 @@
+#!/usr/bin/env node
+// Post a comment to an ActiveCollab task, from a file, after showing it to you.
+//
+//   script/ac_comment 1 draft.md           preview only, sends nothing
+//   script/ac_comment 1 draft.md --send    actually post it
+//
+// Without --send this is a dry run. That is deliberate and not negotiable in the
+// flags: this writes into the client's project under a real person's name, and the
+// text has to be read by a human before it goes.
+//
+// It converts markdown to HTML because ActiveCollab does NOT render markdown in
+// comments. A comment posted as raw markdown arrives with literal ** and - visible
+// to the client, which is how the first one went out. See docs/DISCOVERIES.md.
+
+import { readFileSync, existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { createInterface } from 'node:readline/promises'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const ENV_PATH = join(ROOT, '.env.activecollab')
+const PROJECT_ID = process.env.ACTIVECOLLAB_PROJECT_ID || '264'
+
+const C = process.stdout.isTTY
+  ? { dim: '\x1b[2m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', bold: '\x1b[1m', off: '\x1b[0m' }
+  : { dim: '', red: '', green: '', yellow: '', bold: '', off: '' }
+
+const die = (m) => { console.error(`${C.red}error${C.off} ${m}`); process.exit(1) }
+
+const args = process.argv.slice(2)
+const SEND = args.includes('--send')
+const [task, file] = args.filter((a) => !a.startsWith('--'))
+if (!task || !file) die('usage: script/ac_comment <task-number|task-id> <file.md> [--send]')
+if (!existsSync(file)) die(`no such file: ${file}`)
+
+// ── credentials ─────────────────────────────────────────────────────────────
+
+function env() {
+  if (!existsSync(ENV_PATH)) die(`missing ${ENV_PATH} — create it with: script/ac_token`)
+  const out = {}
+  for (const line of readFileSync(ENV_PATH, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*)$/)
+    if (m) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, '')
+  }
+  if (!out.ACTIVECOLLAB_TOKEN) die(`${ENV_PATH} has no ACTIVECOLLAB_TOKEN`)
+  if (!out.ACTIVECOLLAB_URL) die(`${ENV_PATH} has no ACTIVECOLLAB_URL`)
+  out.ACTIVECOLLAB_URL = out.ACTIVECOLLAB_URL.replace(/\/$/, '')
+  return out
+}
+const E = env()
+
+async function api(path, init = {}) {
+  const res = await fetch(`${E.ACTIVECOLLAB_URL}/api/v1${path}`, {
+    ...init,
+    headers: {
+      'X-Angie-AuthApiToken': E.ACTIVECOLLAB_TOKEN,
+      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...init.headers,
+    },
+    signal: AbortSignal.timeout(30_000),
+  })
+  const text = await res.text()
+  if (!res.ok) die(`${init.method || 'GET'} ${path} -> HTTP ${res.status}\n${text.slice(0, 500)}`)
+  try { return JSON.parse(text) } catch { die(`${path} returned non-JSON:\n${text.slice(0, 300)}`) }
+}
+
+// ── markdown -> the HTML ActiveCollab actually renders ──────────────────────
+
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+// Inline marks are applied AFTER escaping, so a literal < in the source stays literal
+// and only our own tags survive.
+function inline(s) {
+  return esc(s)
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+}
+
+function toHtml(md) {
+  const out = []
+  let list = null
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null } }
+
+  for (const raw of md.split('\n')) {
+    const line = raw.trimEnd()
+
+    if (!line.trim()) { closeList(); continue }
+    if (/^---+$/.test(line.trim())) { closeList(); out.push('<hr>'); continue }
+
+    // Headings become bold paragraphs. ActiveCollab renders <h2> at a size that looks
+    // shouty next to the client's own comments.
+    const h = line.match(/^(#{1,6})\s+(.*)$/)
+    if (h) { closeList(); out.push(`<p><strong>${inline(h[2])}</strong></p>`); continue }
+
+    const ul = line.match(/^\s*[-*]\s+(.*)$/)
+    if (ul) {
+      if (list !== 'ul') { closeList(); out.push('<ul>'); list = 'ul' }
+      out.push(`<li>${inline(ul[1])}</li>`)
+      continue
+    }
+
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/)
+    if (ol) {
+      if (list !== 'ol') { closeList(); out.push('<ol>'); list = 'ol' }
+      out.push(`<li>${inline(ol[1])}</li>`)
+      continue
+    }
+
+    closeList()
+    out.push(`<p>${inline(line)}</p>`)
+  }
+  closeList()
+  return out.join('\n')
+}
+
+// ── resolve the task ────────────────────────────────────────────────────────
+
+const payload = await api(`/projects/${PROJECT_ID}/tasks`)
+const tasks = payload.tasks || []
+const target = tasks.find((t) => String(t.task_number) === String(task)) ||
+               tasks.find((t) => String(t.id) === String(task))
+if (!target) {
+  die(`no open task matching "${task}" in project ${PROJECT_ID}\n  open tasks: ` +
+      tasks.map((t) => `#${t.task_number} (${t.id}) ${t.name}`).join('\n              '))
+}
+
+const md = readFileSync(file, 'utf8')
+const html = toHtml(md)
+
+// ── show it ─────────────────────────────────────────────────────────────────
+
+const bar = '─'.repeat(72)
+console.log('')
+console.log(`${C.bold}to${C.off}      Task #${target.task_number} (${target.id})  ${target.name}`)
+console.log(`${C.bold}url${C.off}     ${E.ACTIVECOLLAB_URL}/projects/${PROJECT_ID}?modal=Task-${target.id}-${PROJECT_ID}`)
+console.log(`${C.bold}from${C.off}    ${file}  ${C.dim}(${md.trim().length} chars)${C.off}`)
+console.log('')
+console.log(`${C.dim}${bar}${C.off}`)
+console.log(md.trim())
+console.log(`${C.dim}${bar}${C.off}`)
+console.log('')
+
+// The one thing a preview must prove, because it is the failure we already shipped
+// once: no markdown syntax survives into what the client sees.
+// Tables are not converted, on purpose: ActiveCollab comments have no table styling
+// worth the effort. But an unconverted table emits raw pipes to the client, so it is
+// caught here rather than discovered in the thread.
+if (/^\s*\|.*\|\s*$/m.test(md)) {
+  console.log(`${C.yellow}warning${C.off} markdown table detected. Tables are not converted and will show as raw pipes. Rewrite as a list.`)
+  console.log('')
+}
+
+const leaked = (html.replace(/<[^>]+>/g, '').match(/\*\*|^\s*[-*]\s|^#{1,6}\s/gm) || [])
+if (leaked.length) {
+  console.log(`${C.yellow}warning${C.off} markdown that will show literally to the client: ${[...new Set(leaked)].join(' ')}`)
+  console.log('')
+}
+
+if (!SEND) {
+  console.log(`${C.dim}preview only. nothing sent.${C.off}`)
+  console.log(`to post it:  script/ac_comment ${task} ${file} --send`)
+  process.exit(0)
+}
+
+// ── send ────────────────────────────────────────────────────────────────────
+
+const rl = createInterface({ input: process.stdin, output: process.stdout })
+const answer = await rl.question(`${C.yellow}post this to the client's task? ${C.off}[y/N] `)
+rl.close()
+if (!/^y(es)?$/i.test(answer.trim())) {
+  console.log('not sent.')
+  process.exit(0)
+}
+
+const res = await api(`/comments/task/${target.id}`, {
+  method: 'POST',
+  body: JSON.stringify({ body: html }),
+})
+
+// ActiveCollab wraps a created object in { single: ... } on some endpoints and returns
+// it bare on others. Reading res.id alone printed "comment undefined" for a comment
+// that had in fact posted, which is the worst way to be wrong about a write.
+const created = res.single ?? res
+
+console.log('')
+console.log(`${C.green}posted${C.off} comment ${created.id ?? '(id not returned)'} on Task #${target.task_number}`)
+console.log(`${C.dim}run script/ac_sync to fold it back into the plan${C.off}`)

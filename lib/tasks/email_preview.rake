@@ -19,9 +19,9 @@ namespace :email do
     # Self-healing. If a previous run created the order and then failed partway, a
     # plain find_by would return that wreck forever and every preview would render an
     # empty, address-less order without ever saying why. Rebuild anything incomplete.
-    if order && (order.line_items.empty? || order.ship_address.nil?)
+    if order && (order.line_items.empty? || order.ship_address.nil? || order.inventory_units.empty?)
       warn "preview order #{order.number} is incomplete (items=#{order.line_items.size} " \
-           "ship_address=#{!order.ship_address.nil?}) — rebuilding"
+           "ship_address=#{!order.ship_address.nil?} units=#{order.inventory_units.size}) — rebuilding"
       order.destroy
       order = nil
     end
@@ -70,7 +70,20 @@ namespace :email do
       # A shipment so shipments.first.stock_location resolves, and a payment so
       # payments.first.number and .payment_method.name do.
       if (location = Spree::StockLocation.first)
-        order.shipments.create!(stock_location: location, state: 'shipped')
+        shipment = order.shipments.create!(stock_location: location, state: 'shipped')
+
+        # Inventory units do not appear just because a shipment exists. Spree creates
+        # them while allocating stock during a real checkout, and this order skips
+        # that. Without them a customer return cannot be built at all, which is what
+        # reimbursement_email needs, so create one per unit of each line item.
+        order.line_items.each do |line_item|
+          line_item.quantity.times do
+            Spree::InventoryUnit.create!(
+              variant: line_item.variant, order: order, line_item: line_item,
+              shipment: shipment, state: 'shipped'
+            )
+          end
+        end
       end
       # Must be a method with source_required? == false. The seeded StoreCredit and
       # Bogus gateway both demand a payment source, and creating one just to render an
@@ -92,5 +105,85 @@ namespace :email do
     end
 
     puts order.number
+  end
+
+  # payment_link_email refuses a completed order by design — it exists to chase an
+  # unpaid one. So it needs its own fixture rather than the shared preview order.
+  desc 'Find or build the incomplete order used for payment-link previews'
+  task preview_cart: :environment do
+    number = 'R-EMAIL-CART'
+    cart = Spree::Order.find_by(number: number)
+
+    if cart.nil? || cart.line_items.empty?
+      cart&.destroy
+      store = Spree::Store.default
+      cart = Spree::Order.create!(
+        number: number, store: store, currency: store.default_currency,
+        email: 'preview@example.com', locale: store.default_locale
+      )
+      variant = Spree::Variant.joins(:prices).first
+      cart.line_items.create!(variant: variant, quantity: 1, currency: cart.currency) if variant
+      cart.update_with_updater!
+    end
+
+    puts cart.number
+  end
+
+  # reimbursement_email needs a Spree::Reimbursement, which hangs off a customer return
+  # and its return items. Nothing in the sample data creates one.
+  desc 'Find or build a reimbursement used for previews'
+  task preview_reimbursement: :environment do
+    order = Spree::Order.find_by(number: PREVIEW_NUMBER)
+    raise 'run email:preview_order first' if order.nil?
+
+    # Scoped to the preview order, not "the newest reimbursement anywhere". The
+    # sample data ships one against a seeded order, and that order carries locale
+    # "en" while the preview order carries the client's "en-CA". Reusing it made
+    # reimbursement_email render with 12 keys missing and pointed the blame at the
+    # template, which was fine. The fixture has to match the order the other
+    # previews use, or the locale silently differs from every other email.
+    existing = Spree::Reimbursement.find_by(order_id: order.id)
+    if existing
+      puts existing.number
+      next
+    end
+
+    inventory_unit = order.inventory_units.first
+    raise 'preview order has no inventory units, so no return can be built' if inventory_unit.nil?
+
+    stock_location = Spree::StockLocation.first
+
+    # A CustomerReturn validates that every item it carries is already covered by a
+    # ReturnAuthorization. Building the return on its own fails with "Missing Return
+    # Authorization for <product>", which reads like a data problem but is really the
+    # normal Spree flow: the merchant authorises a return, then the goods arrive.
+    reason = Spree::ReturnAuthorizationReason.first ||
+             Spree::ReturnAuthorizationReason.create!(name: 'Preview')
+    authorization = Spree::ReturnAuthorization.create!(
+      order: order, stock_location: stock_location, reason: reason
+    )
+    return_item = Spree::ReturnItem.create!(
+      inventory_unit: inventory_unit, return_authorization: authorization
+    )
+
+    customer_return = Spree::CustomerReturn.new(
+      stock_location: stock_location, store: order.store
+    )
+    customer_return.return_items = [return_item]
+    customer_return.save!
+
+    reimbursement = Spree::Reimbursement.create!(
+      order: order,
+      customer_return: customer_return,
+      return_items: [return_item]
+    )
+
+    # A reimbursement only gets a total once it is performed, and performing one needs
+    # real payments to refund against. The templates compare total against the order
+    # total to decide "partial refund" or "full refund", so a nil total raises. Set it
+    # directly: this fixture exists to render an email, not to move money.
+    reimbursement.update_columns(total: (order.total / 2).round(2)) if reimbursement.total.nil?
+
+    puts "#{reimbursement.number} total=#{reimbursement.reload.total}"
   end
 end

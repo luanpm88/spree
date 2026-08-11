@@ -19,7 +19,9 @@ import { mkdirSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 
 const OUT = 'tmp/dashboard'
-const TABS = ['overview', 'waiting', 'work', 'risks', 'timeline', 'decisions', 'shipped', 'reference']
+// Must match the TABS in dashboard/index.html. A tab missing here is a tab nothing
+// checks, which is how a broken one ships looking fine.
+const TABS = ['overview', 'waiting', 'their', 'work', 'risks', 'timeline', 'decisions', 'shipped', 'reference']
 
 mkdirSync(OUT, { recursive: true })
 const plan = JSON.parse(readFileSync('docs/plan.json', 'utf8'))

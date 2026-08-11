@@ -12,6 +12,7 @@ import { chromium } from 'playwright';
 import MarkdownIt from 'markdown-it';
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import fsSync from 'node:fs';
 
 // Which document to render. Defaults to the user guide; pass a name to build another
 // one from docs/:
@@ -69,21 +70,6 @@ const COVERS = {
       ['Updated', dMonthY],
     ],
   },
-  WELCOME_EMAIL: {
-    eyebrow: 'the client',
-    title: 'Welcome email',
-    sub: 'Built and verified on Spree 5.6.1',
-    foot: 'Every screenshot is taken from the running system, by the script that verifies it.',
-    running: 'Welcome email · Spree 5.6.1',
-    pageLabel: 'page',
-    lang: 'en',
-    meta: [
-      ['Spree', '5.6.1'],
-      ['Stack', STACK],
-      ['Verified by', 'script/e2e_welcome.mjs · 9 of 9 steps'],
-      ['Date', dMonthY],
-    ],
-  },
 };
 
 // Relative image paths inside the markdown resolve against the document's own
@@ -92,6 +78,19 @@ const DOCS = IS_PATH ? path.resolve(path.dirname(ARG)) : path.resolve('docs');
 const SRC = IS_PATH ? path.resolve(ARG) : path.join(DOCS, `${DOC}.md`);
 const OUT_PDF = path.join(DOCS, `${DOC}.pdf`);
 const OUT_HTML = path.join(DOCS, `.${DOC.toLowerCase()}.build.html`);
+// Client-facing covers live OUTSIDE this file. It carries a client's brand name and
+// this repo is public, so docs/.covers.local.json (gitignored) is merged in when
+// present. {{STACK}} and {{DATE}} are substituted so a JSON file can still reach the
+// values computed above.
+const LOCAL_COVERS = path.join(path.resolve('docs'), '.covers.local.json');
+if (fsSync.existsSync(LOCAL_COVERS)) {
+  const raw = fsSync.readFileSync(LOCAL_COVERS, 'utf8')
+    .replaceAll('{{STACK}}', STACK)
+    .replaceAll('{{DATE}}', dMonthY)
+    .replaceAll('{{DMY}}', dmy);
+  Object.assign(COVERS, JSON.parse(raw));
+}
+
 const COVER = COVERS[DOC] || {
   eyebrow: '',
   title: DOC.replace(/_/g, ' '),
@@ -109,6 +108,13 @@ const md = new MarkdownIt({ html: true, linkify: true, typographer: false });
 const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.svg': 'image/svg+xml' };
 const missing = [];
 
+// PNG width and height live in the IHDR chunk at a fixed offset: 8 byte signature,
+// 4 byte length, 4 byte "IHDR", then two big-endian uint32s. No image library needed.
+function pngSize(buf) {
+  if (buf.length < 24 || buf.toString('ascii', 12, 16) !== 'IHDR') return null;
+  return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+}
+
 async function inlineImages(html) {
   const srcs = [...new Set([...html.matchAll(/<img[^>]+src="([^"]+)"/g)].map((m) => m[1]))];
   for (const src of srcs) {
@@ -119,6 +125,17 @@ async function inlineImages(html) {
       const buf = await readFile(file);
       const mime = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
       const uri = `data:${mime};base64,${buf.toString('base64')}`;
+      // Mark figures whose image is taller than a printable A4 area is wide-ish, so
+      // the CSS can cap them to one page. Decided from the real pixels rather than
+      // per-document, because the same builder prints wide dashboard captures and
+      // very tall email renders.
+      const dim = pngSize(buf);
+      if (dim && dim.h / dim.w > 1.35) {
+        html = html.replace(
+          new RegExp(`<figure>(?=<img[^>]+src="${src.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}")`, 'g'),
+          '<figure class="tall">'
+        );
+      }
       html = html.replaceAll(`src="${src}"`, `src="${uri}"`);
     } catch {
       missing.push(src);
@@ -247,6 +264,14 @@ const CSS = `
      figures explicitly instead — see wrapImages(). */
   figure { margin: 0 0 5mm; page-break-inside: avoid; }
   figure img { margin-bottom: 1.5mm; }
+  /* An email screenshot is a tall, narrow page and is usually taller than A4. Left
+     alone it breaks wherever the page ends, which put a heading on one page, most of
+     the image on the next, and a 20mm sliver of footer alone on a third. Capping the
+     height to the printable area makes each screenshot land whole on one page.
+     Width follows from height:auto above, so nothing is squashed.
+     205mm and not the full 261mm of printable area, because the heading above and
+     the caption below need the difference, or the heading is stranded alone. */
+  figure.tall img { max-height: 205mm; width: auto; max-width: 100%; margin-inline: auto; }
   figcaption { font-size: 8.4pt; color: var(--muted); font-style: italic; }
 
   hr { border: 0; border-top: 1px solid var(--line); margin: 7mm 0; }
@@ -319,7 +344,7 @@ const run = async () => {
     // the number, the slash and the total to opposite ends of the page.
     footerTemplate: `<div style="font-size:7.5pt;color:#8b94a3;width:100%;padding:0 14mm;
       font-family:-apple-system,sans-serif;display:flex;justify-content:space-between;">
-      <span>github.com/luanpm88/spree</span>
+      <span>${COVER.footerLeft ?? 'github.com/luanpm88/spree'}</span>
       <span>${COVER.pageLabel} <span class="pageNumber"></span> / <span class="totalPages"></span></span>
       </div>`,
     margin: { top: '18mm', bottom: '18mm', left: '14mm', right: '14mm' },

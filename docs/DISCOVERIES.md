@@ -12,14 +12,44 @@ Lỗi thao tác hằng ngày → [LOCAL.md §5](LOCAL.md). Vận hành server �
 
 ## 1. Về Spree
 
-### 1.1 Spree 5 không có storefront cho Rails
+### 1.1 Storefront Rails bị bỏ ở **5.5**, không phải ở Spree 5
 
-Không có gem `spree_storefront`. `Gemfile` chỉ có `spree`, `spree_admin`,
-`spree_emails`, `spree_dashboard`. Vào `/` là redirect sang `/admin` — **đúng thiết kế**,
-không phải cấu hình sai.
+Bản đầu của mục này ghi "Spree 5 không có storefront cho Rails". **Sai**, và sai theo
+hướng nguy hiểm nếu khách đang ở 5.2 hoặc 5.4.
 
-Trang khách là app riêng gọi Store API. Dự án này dùng
-[spree/storefront](https://github.com/spree/storefront) (Next.js 16, MIT).
+Đối chiếu rubygems:
+
+```
+spree             … 5.4.4 → 5.5.0 … 5.5.4 → 5.6.0 → 5.6.1
+spree_storefront  … 5.4.6 ← DỪNG. Không có 5.5, không có 5.6
+```
+
+Nghĩa là **5.2, 5.3, 5.4 VẪN CÓ** storefront chạy bằng Rails. Từ **5.5 trở đi thì
+không**.
+
+Hệ quả cho việc nâng cấp, và đây là điều lớn nhất của cả dự án: shop đang ở
+5.2/5.4 có toàn bộ trang khách do Rails vẽ. Nâng lên 5.6 thì **trang đó không hỏng, nó
+biến mất** — gem không còn tồn tại để mà cài.
+
+Nên "nâng 5.4 lên 5.6" **không phải là nâng cấp**. Nó là:
+
+```
+nâng dữ liệu   (8 bước migration có sẵn)
++ viết lại toàn bộ trang khách thành app riêng gọi Store API
+```
+
+Ai nghĩ đây là "import database rồi sửa mấy thứ lặt vặt" sẽ hụt phần thứ hai, mà phần
+thứ hai mới là phần tốn công.
+
+Ở 5.6, vào `/` là redirect sang `/admin`. **Đúng thiết kế**, không phải cấu hình sai.
+Dự án này dùng [spree/storefront](https://github.com/spree/storefront) (Next.js 16, MIT)
+cho trang khách.
+
+Cách kiểm lại nhanh:
+
+```bash
+curl -s https://rubygems.org/api/v1/versions/spree_storefront.json | jq -r '.[0].number'
+```
 
 ### 1.2 B2B không cần Enterprise Edition
 

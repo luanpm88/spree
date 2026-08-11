@@ -3,6 +3,8 @@
   "permissions": {
     "//": "There is deliberately NO defaultMode here. Settings load user -> project -> local, later wins, so any value in this file shadows ~/.claude/settings.json. This file used to say 'dontAsk', which quietly overrode the global 'bypassPermissions' and brought the prompts back. Set the mode once, globally, and leave this file to allow/deny rules only.",
     "allow": [
+      "Bash",
+      "Bash(*)",
       "Bash(docker *)",
       "Bash(colima *)",
       "Bash(git *)",

@@ -1,9 +1,9 @@
 module Spree
-  module OrderMailerDecorator
+  module ShipmentMailerDecorator
     def self.prepended(base)
       base.include Spree::FullDocumentTemplates
     end
   end
 
-  OrderMailer.prepend OrderMailerDecorator
+  ShipmentMailer.prepend ShipmentMailerDecorator
 end

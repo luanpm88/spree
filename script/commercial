@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+#
+# Drive the client's commercial shop server.
+#
+#   script/commercial survey     read-only: what is on the box right now
+#   script/commercial prepare    swap, sysctl, certbot. Idempotent.
+#   script/commercial ssh        open a shell
+#   script/commercial run '<cmd>'   run one command
+#
+# Why not script/deploy: that one is built for OUR reference box and hardcodes it.
+# It assumes a single app in ~/spree, a shared LEMP host with 28 other sites, 1.9 GB
+# of RAM, and it protects mysqld from the OOM killer. Every one of those is false
+# here: this box is 15 GB, runs nothing but our containers, and holds one shop per
+# directory under /srv. Reusing it would have carried over guards that protect a
+# database that does not exist while missing the multi-shop layout that does.
+#
+# The host lives in .env.commercial, which is gitignored. This repo is public and
+# the address, user and key path are the client's, not ours.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="$ROOT/.env.commercial"
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_BLD=$'\e[1m'; C_OFF=$'\e[0m'
+step() { printf '\n%s==>%s %s\n' "$C_BLD" "$C_OFF" "$*"; }
+ok()   { printf '  %sok%s   %s\n' "$C_GRN" "$C_OFF" "$*"; }
+warn() { printf '  %swarn%s %s\n' "$C_YEL" "$C_OFF" "$*"; }
+info() { printf '  %s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
+die()  { printf '%serror%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+
+[ -f "$ENV_FILE" ] || die "missing $ENV_FILE"
+# shellcheck disable=SC1090
+set -a; . "$ENV_FILE"; set +a
+: "${COMMERCIAL_HOST:?}" "${COMMERCIAL_USER:?}" "${COMMERCIAL_PORT:=22}" "${COMMERCIAL_KEY:?}"
+KEY="${COMMERCIAL_KEY/#\~/$HOME}"
+[ -f "$KEY" ] || die "ssh key not found at $KEY"
+
+# BatchMode so a wrong key fails immediately instead of hanging on a password prompt.
+host() {
+  ssh -i "$KEY" -p "$COMMERCIAL_PORT" -o BatchMode=yes -o ConnectTimeout=15 \
+      -o StrictHostKeyChecking=accept-new "$COMMERCIAL_USER@$COMMERCIAL_HOST" "$@"
+}
+
+# ── survey ──────────────────────────────────────────────────────────────────
+
+cmd_survey() {
+  step "Connecting to $COMMERCIAL_HOST:$COMMERCIAL_PORT"
+  host 'true' || die "cannot connect. If the ssh port has changed, update COMMERCIAL_PORT in .env.commercial"
+  ok "connected"
+
+  host '
+    echo "--- identity ---"
+    echo "host      $(hostname)"
+    . /etc/os-release; echo "os        $PRETTY_NAME"
+    echo "kernel    $(uname -r)"
+    echo "cpu       $(nproc) cores"
+    echo "ram       $(free -h | awk "/Mem:/{print \$2}") total, $(free -h | awk "/Mem:/{print \$7}") available"
+    echo "swap      $(free -h | awk "/Swap:/{print \$2}")"
+    echo "disk      $(df -h / | awk "NR==2{print \$4\" free of \"\$2}")"
+    echo "--- tooling ---"
+    echo "docker    $(docker --version 2>/dev/null || echo MISSING)"
+    echo "compose   $(docker compose version --short 2>/dev/null || echo MISSING)"
+    echo "nginx     $(nginx -v 2>&1 | sed "s|nginx version: ||" || echo MISSING)"
+    echo "certbot   $(certbot --version 2>/dev/null || echo MISSING)"
+    echo "--- exposure ---"
+    echo "ssh       port $(sshd -T 2>/dev/null | awk "/^port /{print \$2}" | paste -sd, -), rootlogin $(sshd -T 2>/dev/null | awk "/^permitrootlogin/{print \$2}"), passwordauth $(sshd -T 2>/dev/null | awk "/^passwordauthentication/{print \$2}")"
+    echo "ufw       $(ufw status 2>/dev/null | head -1 | sed "s/Status: //")"
+    echo "vhosts    $(ls -1 /etc/nginx/sites-enabled/ 2>/dev/null | paste -sd, - || echo none)"
+    echo "--- shops ---"
+    for d in /srv/*/; do
+      n=$(basename "$d")
+      f=$(ls -A "$d" 2>/dev/null | wc -l)
+      printf "%-26s %s\n" "$n" "$([ "$f" -eq 0 ] && echo "empty" || echo "$f entries")"
+    done
+    echo "--- containers ---"
+    docker ps -a --format "{{.Names}}  {{.Image}}  {{.Status}}" 2>/dev/null | sed "s/^/  /" || true
+    [ -z "$(docker ps -aq 2>/dev/null)" ] && echo "  none"
+  ' | sed 's/^/  /'
+}
+
+# ── prepare ─────────────────────────────────────────────────────────────────
+
+cmd_prepare() {
+  step "Swap"
+  # 4 GB on a 15 GB box is insurance, not virtual memory. Spree's asset build is the
+  # spike that matters. NOTE: never swapoff an active swapfile to resize it; pulling
+  # those pages back into RAM is itself enough to invoke the OOM killer. If more is
+  # needed later, add a SECOND file. See docs/DEPLOY.md.
+  host 'if swapon --show --noheadings | grep -q .; then
+      echo "already on: $(swapon --show --noheadings --raw | tr "\n" " ")"
+    else
+      fallocate -l 4G /swapfile
+      chmod 600 /swapfile
+      mkswap /swapfile >/dev/null
+      swapon /swapfile
+      grep -q "^/swapfile " /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+      echo "created 4G /swapfile and persisted it in fstab"
+    fi
+    sysctl -qw vm.swappiness=10
+    grep -q "^vm.swappiness" /etc/sysctl.conf || echo "vm.swappiness=10" >> /etc/sysctl.conf
+    echo "swappiness now $(cat /proc/sys/vm/swappiness)"' | sed 's/^/  /'
+
+  step "certbot"
+  host 'if command -v certbot >/dev/null; then
+      echo "already installed: $(certbot --version 2>&1)"
+    else
+      DEBIAN_FRONTEND=noninteractive apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot python3-certbot-nginx >/dev/null
+      echo "installed $(certbot --version 2>&1)"
+    fi' | sed 's/^/  /'
+
+  step "Verifying"
+  host 'test -n "$(swapon --show --noheadings)" && echo "swap active" || echo "SWAP MISSING"
+    command -v certbot >/dev/null && echo "certbot present" || echo "CERTBOT MISSING"
+    grep -q "^/swapfile " /etc/fstab && echo "swap survives reboot" || echo "SWAP NOT IN FSTAB"' | sed 's/^/  /'
+  ok "prepare finished"
+
+  warn "not done here, and deliberately:"
+  info "  ssh hardening belongs to whoever owns the box. Moving the port and setting"
+  info "  PasswordAuthentication no from here risks locking the owner out of their"
+  info "  own server, so it is asked for rather than done."
+}
+
+case "${1:-help}" in
+  survey)  shift; cmd_survey "$@" ;;
+  prepare) shift; cmd_prepare "$@" ;;
+  ssh)     shift; exec ssh -i "$KEY" -p "$COMMERCIAL_PORT" "$COMMERCIAL_USER@$COMMERCIAL_HOST" ;;
+  run)     shift; host "$@" ;;
+  *) sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac

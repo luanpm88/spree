@@ -74,7 +74,11 @@ deploy.env
 # shop domains and the Spree versions each one runs. Publishing "these shops are
 # on 5.2.3" is a roadmap for anyone looking for an unpatched target.
 # Make the repo private if this needs version history.
-docs/plan.json
+# The glob matters. script/ac_sync writes docs/plan.json.bak before every change,
+# and a bare `docs/plan.json` rule does not cover it. The .bak is a full copy of the
+# same file: shop domains, server address, key paths. It sat untracked and would have
+# gone in on the next `git add -A`, which is exactly how 67cda60 happened.
+docs/plan.json*
 docs/PLAN.md
 
 # Client-owned email design assets. luanpm88/spree is a public repo; these are
@@ -83,3 +87,8 @@ docs/PLAN.md
 # assuming it, so a checkout without them still sends correct stock emails.
 app/views/spree/order_mailer/
 the client's own locale files
+app/views/spree/shipment_mailer/
+app/views/spree/reimbursement_mailer/
+
+# Client-branded PDF covers. Names a client, and this repo is public.
+docs/.covers.local.json

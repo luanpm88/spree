@@ -150,6 +150,9 @@ tr.open .caret{transform:rotate(90deg)}
 /* Secondary prose under a row title. Deliberately NOT .sub — that is monospace,
    which is right for dates and counts and unreadable for a sentence. */
 .note{color:var(--dim);font-size:12.8px;line-height:1.5;margin-top:4px;font-weight:400;max-width:96ch}
+.copyable{cursor:pointer;background:var(--panel);border:1px solid var(--line);border-radius:5px;
+  padding:2px 6px;display:inline-block;user-select:all}
+.copyable:hover{border-color:var(--accent)}
 .empty{color:var(--faint);padding:26px;text-align:center;font-size:13.5px}
 .err{background:color-mix(in srgb,var(--red) 12%,var(--panel));border:1px solid var(--red);
   border-radius:10px;padding:16px 18px}
@@ -157,6 +160,8 @@ tr.open .caret{transform:rotate(90deg)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:15px 17px}
 .card h3{margin:0 0 6px;font-size:14px;font-weight:600}
 .card p{margin:0 0 7px;color:var(--dim);font-size:13px} .card p:last-child{margin-bottom:0}
+.card.warn{border-color:color-mix(in srgb,var(--amber) 40%,var(--line))}
+.dim{color:var(--faint)}
 .foot{color:var(--faint);font:11.5px ui-monospace,monospace;border-top:1px solid var(--line);
   padding-top:14px;margin-top:36px}
 @media(max-width:640px){
@@ -229,6 +234,10 @@ async function tick() {
 const TABS = [
   { id:'overview',  label:'Overview',     count: () => null },
   { id:'waiting',   label:'Waiting',      count: (p) => open(p).length, alert: true },
+  // Counts the ones waiting on US, not the total, and alerts on them. Same rule as
+  // Work and Risks: the badge is a to-do count, not an inventory.
+  { id:'their',     label:'Their tracker', alert: true,
+    count: (p) => (p.client_tasks ?? []).filter(t => !t.completed && t.ball_in_court !== 'them').length },
   { id:'work',      label:'Work',         count: (p) => (p.tasks ?? []).filter(t => t.status !== 'done').length },
   { id:'risks',     label:'Risks',        count: (p) => (p.risks ?? []).filter(r => r.status !== 'mitigated').length },
   { id:'timeline',  label:'Conversation', count: (p) => (p.timeline ?? []).length },
@@ -350,8 +359,20 @@ function viewOverview(p) {
 }
 const cnt = (to, n, l, c) => `<button class="count ${c}" data-act="go" data-to="${to}"><div class="n">${n}</div><div class="l">${esc(l)}</div></button>`
 
+// Tables render in the order they are handed, and plan.json appends. Past PAGE_SIZE
+// rows that means the NEWEST item, which is usually the one that just started blocking
+// something, falls onto page two and reads as absent. Pre-sorting by urgency puts what
+// matters on page one; the column headers still re-sort on click.
+const rank = (list, v) => { const i = list.indexOf(v); return i === -1 ? list.length : i }
+const byUrgency = (rows, statusOrder, statusOf, sevOf) =>
+  [...rows].sort((a, b) =>
+    rank(statusOrder, statusOf(a)) - rank(statusOrder, statusOf(b)) ||
+    rank(SEV_DESC, sevOf?.(a)) - rank(SEV_DESC, sevOf?.(b)))
+const SEV_DESC = ['high', 'medium', 'low']
+
 function viewWaiting(p) {
-  const rows = p.waiting_on_client ?? []
+  const rows = byUrgency(p.waiting_on_client ?? [], ['open', 'dropped', 'answered'],
+    (r) => r.status, (r) => r.severity)
   return table('waiting', rows, [
     { key:'status', label:'Status', w:'96px', cell:r => pill(r.status, r.status === 'open' ? (r.severity === 'high' ? 'red' : 'amber') : 'green'), sortVal:r => r.status },
     { key:'question', label:'Question', cls:'t', cell:r => esc(r.question), sortVal:r => r.question },
@@ -367,8 +388,71 @@ function viewWaiting(p) {
 }
 const taskName = (id) => ((PLAN?.tasks ?? []).find(t => t.id === id)?.title) ?? id
 
+// The client's own tracker. Separate from Work on purpose: those tasks are ours and we
+// set their state, these are his and all we control is whether we have answered.
+function viewTheir(p) {
+  const c = p.collaboration
+  const head = c
+    ? `<div class="card" style="margin-bottom:10px"><h3>${esc(c.system)} · ${esc(c.project)}</h3>
+         ${c.project_url ? `<p><a href="${esc(c.project_url)}" rel="noreferrer">${esc(c.project_url)}</a></p>` : ''}
+         ${(c.members ?? []).length ? `<p>${c.members.map((m) => `<span class="tag">${esc(m)}</span>`).join('')}</p>` : ''}
+         ${c.note ? `<p><b>Note.</b> ${esc(c.note)}</p>` : ''}</div>`
+    : ''
+  return head + syncBanner(p) + table('their', p.client_tasks ?? [], [
+    // ball_in_court, not status. It is recomputed from the real comment thread on every
+    // sync, so it cannot drift; status is prose someone typed and may be a week old.
+    { key:'ball', label:'Waiting on', w:'116px',
+      cell:r => r.completed ? pill('closed','grey')
+        : r.ball_in_court === 'us' ? pill('us','red')
+        : r.ball_in_court === 'them' ? pill('them','amber')
+        : pill(r.status ?? '—','grey'),
+      sortVal:r => r.completed ? 'z' : r.ball_in_court ?? '' },
+    { key:'number', label:'Task', w:'130px', cls:'n', cell:r => esc(r.number), sortVal:r => r.number },
+    { key:'title', label:'Title', cls:'t', cell:r => esc(r.title), sortVal:r => r.title },
+    { key:'last', label:'Last word', w:'150px', cls:'n',
+      cell:r => r.last_comment_by ? `${esc(r.last_comment_by.split(' ')[0])} <span class="dim">${esc(r.last_comment_on ?? '')}</span>` : '<span class="dim">no replies</span>',
+      sortVal:r => r.last_comment_on ?? '' },
+    { key:'created', label:'Created', w:'104px', cls:'n', cell:r => esc(r.created ?? '—'), sortVal:r => r.created ?? '' },
+  ], r => {
+    const H = []
+    if (r.status) H.push(`<p><b>Where it stands.</b> ${esc(r.status)}</p>`)
+    if (r.asks) H.push(`<p><b>They asked.</b> ${esc(r.asks)}</p>`)
+    if (r.our_reply) H.push(`<p><b>We answered.</b> ${esc(r.our_reply)}</p>`)
+    if (r.waiting_for) H.push(`<p><b>Waiting on.</b> ${esc(r.waiting_for)}</p>`)
+    const tags = []
+    if (r.task_list) tags.push(`<span class="tag">${esc(r.task_list)}</span>`)
+    if (r.assignee) tags.push(`<span class="tag">${esc(r.assignee)}</span>`)
+    if (typeof r.comments_count === 'number') tags.push(`<span class="tag">${r.comments_count} comment${r.comments_count === 1 ? '' : 's'}</span>`)
+    if (r.artifact) tags.push(`<span class="tag">${esc(r.artifact)}</span>`)
+    if (tags.length) H.push(`<p>${tags.join('')}</p>`)
+    if (r.url) H.push(`<p><a href="${esc(r.url)}" rel="noreferrer">open in ${esc(c?.system ?? 'tracker')}</a></p>`)
+    if (r.ac_id) H.push(`<p class="dim">reply from here: <code>script/ac_comment ${esc(String(r.number ?? '').replace(/\D+/g,'').slice(0,2))} tmp/client/reply.md</code></p>`)
+    return H.join('')
+  }, 'No tasks on their side yet.')
+}
+
+// Whether the tracker data on this screen is live or a corpse. Without this the page
+// looks identical whether script/ac_sync --watch is running or died an hour ago, and
+// a stale "waiting on them" is worse than no answer at all.
+function syncBanner(p) {
+  const at = p.meta?.ac_synced_at
+  if (!at) {
+    return `<div class="card warn" style="margin-bottom:10px"><p><b>Not syncing.</b>
+      These rows were typed by hand. Start the live feed with <code>script/ac_sync --watch</code>.</p></div>`
+  }
+  const age = Math.max(0, Math.round((Date.now() - Date.parse(at)) / 1000))
+  const ago = age < 90 ? `${age}s ago` : age < 5400 ? `${Math.round(age / 60)}m ago` : `${Math.round(age / 3600)}h ago`
+  // The watcher ticks every 120s, so anything past ~5 min means it is not running.
+  const dead = age > 300
+  return `<div class="card${dead ? ' warn' : ''}" style="margin-bottom:10px"><p>
+    <span class="tag ${dead ? 'warn' : 'ok'}">${dead ? 'stale' : 'live'}</span>
+    synced from ActiveCollab <b>${ago}</b>
+    ${dead ? '— the watcher is not running. <code>script/ac_sync --watch</code>' : ''}</p></div>`
+}
+
 function viewWork(p) {
-  return table('work', p.tasks ?? [], [
+  const rows = byUrgency(p.tasks ?? [], ['in_progress', 'blocked', 'todo', 'parked', 'done'], (r) => r.status)
+  return table('work', rows, [
     { key:'status', label:'Status', w:'110px', cell:r => pill(r.status.replace('_',' '), TASK_TONE[r.status] ?? 'grey'), sortVal:r => ['in_progress','blocked','todo','parked','done'].indexOf(r.status) },
     { key:'title', label:'Task', cls:'t', cell:r => esc(r.title), sortVal:r => r.title },
     { key:'phase', label:'Phase', w:'110px', cell:r => `<span class="tag">${esc(r.phase ?? '—')}</span>`, sortVal:r => r.phase ?? '' },
@@ -456,8 +540,19 @@ function viewReference(p) {
     H.push('</tbody></table></div>')
   }
   if ((p.servers ?? []).length) {
-    H.push('<h2>Servers</h2><div class="tw"><table><thead><tr><th>Server</th><th style="width:90px">Owner</th><th>Status</th><th>Access</th></tr></thead><tbody>')
-    for (const s of p.servers) H.push(`<tr><td class="t">${esc(s.name)}</td><td>${esc(s.owner)}</td><td>${esc(s.status)}</td><td>${esc(s.access ?? '—')}</td></tr>`)
+    // The connect line is rendered as code and shown in full rather than summarised.
+    // The point of this row is that nobody has to go and find it again.
+    H.push('<h2>Servers</h2><div class="tw"><table><thead><tr><th>Server</th><th style="width:88px">Owner</th><th style="width:150px">Status</th><th>How to get in</th></tr></thead><tbody>')
+    for (const s of p.servers) {
+      const access = []
+      if (s.connect) access.push(`<div><code class="copyable" title="click to copy">${esc(s.connect)}</code></div>`)
+      if (s.host) access.push(`<div class="note">host ${esc(s.host)}${s.ssh_port ? ` · port ${esc(String(s.ssh_port))}` : ''}${s.ssh_key ? ` · key ${esc(s.ssh_key)}` : ''}</div>`)
+      if (!s.connect && s.access) access.push(`<div>${esc(s.access)}</div>`)
+      if (s.spec) access.push(`<div class="note">${esc(s.spec)}</div>`)
+      if (s.paths) access.push(`<div class="note">${esc(s.paths)}</div>`)
+      H.push(`<tr><td class="t">${esc(s.name)}${s.notes ? `<div class="note">${esc(s.notes)}</div>` : ''}</td>` +
+             `<td>${esc(s.owner)}</td><td>${esc(s.status)}</td><td>${access.join('') || '—'}</td></tr>`)
+    }
     H.push('</tbody></table></div>')
   }
   if ((p.open_questions_for_us ?? []).length) {
@@ -493,7 +588,7 @@ function viewReference(p) {
   return H.join('')
 }
 
-const VIEWS = { overview:viewOverview, waiting:viewWaiting, work:viewWork, risks:viewRisks,
+const VIEWS = { overview:viewOverview, waiting:viewWaiting, their:viewTheir, work:viewWork, risks:viewRisks,
                 timeline:viewTimeline, decisions:viewDecisions, shipped:viewShipped, reference:viewReference }
 
 /* ── render ───────────────────────────────────────────────────────────────── */
@@ -519,6 +614,19 @@ function render() {
 }
 
 /* ── one delegated listener for every interaction ─────────────────────────── */
+// Click a connect command to copy it. The whole reason the server rows carry the full
+// ssh line is so nobody has to reconstruct it, and retyping it by hand is the same
+// cost as looking it up.
+document.addEventListener('click', (e) => {
+  const c = e.target.closest('.copyable')
+  if (!c) return
+  navigator.clipboard?.writeText(c.textContent).then(() => {
+    const was = c.textContent
+    c.textContent = 'copied'
+    setTimeout(() => { c.textContent = was }, 900)
+  }).catch(() => {})
+})
+
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]')
   if (!el) return
