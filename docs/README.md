@@ -6,7 +6,7 @@
 | [HANDOVER.md](HANDOVER.md) · [PDF](HANDOVER.pdf) | **khách hàng** | Biên bản bàn giao (tiếng Anh). Đứng độc lập — đăng nhập ở đâu, có gì, chưa có gì. |
 | [DESIGN.md](DESIGN.md) | lập trình viên | Kiến trúc, 153 bảng, data model, cơ chế B2B, điểm mở rộng. |
 | [LOCAL.md](LOCAL.md) | lập trình viên | Dựng máy cá nhân bằng Docker + 11 lỗi đã gặp và nguyên nhân gốc. |
-| [DEPLOY.md](DEPLOY.md) | vận hành | `script/deploy`, khảo sát server, chuyện RAM, backup, rollback. |
+| [DEPLOY.md](DEPLOY.md) | vận hành | Hai công cụ: `script/deploy` cho máy tham chiếu, `script/commercial` cho máy khách nhiều shop. Khảo sát server, chuyện RAM, backup, rollback. |
 | [DISCOVERIES.md](DISCOVERIES.md) | lập trình viên | Toàn bộ phát hiện không hiển nhiên, kể cả về tooling. Đọc trước khi tin một giả định. |
 | [TOOLING.md](TOOLING.md) | lập trình viên | Các script tự động: screenshot, PDF, audit quyền, verify handover. |
 

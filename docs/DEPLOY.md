@@ -14,6 +14,55 @@ https://shop.b-teka.com
 
 ---
 
+## 0. Hai công cụ, hai loại máy
+
+Có **hai** script deploy và chúng không thay thế nhau.
+
+| | `script/deploy` | `script/commercial` |
+|---|---|---|
+| Máy | máy tham chiếu của mình | máy của khách, nhiều shop |
+| Bố cục | một app ở `~/spree` | một shop mỗi thư mục `/srv/<shop>` |
+| RAM | 1.9 GB, dùng chung 28 site | 15 GB, không có gì khác |
+| Build | **không build nổi**, phải nạp image | build ngay tại chỗ |
+| Bảo vệ OOM | có, để cứu MySQL của 28 site kia | không cần |
+
+Đừng dùng `script/deploy` cho máy khách. Nó hardcode địa chỉ máy tham chiếu và bảo vệ
+một MySQL không tồn tại ở đó, đồng thời **không biết** bố cục nhiều shop.
+
+```bash
+script/commercial survey            # máy đang có gì
+script/commercial prepare           # swap, sysctl, certbot. Chạy lại được nhiều lần
+script/commercial ship <shop>       # HEAD + file của khách → /srv/<shop>/app
+script/commercial up <shop>         # build, khởi động, chờ healthy
+script/commercial nginx <shop> [backend|storefront]
+script/commercial status            # shop nào đang chạy, revision nào
+```
+
+Địa chỉ máy nằm trong `.env.commercial`, **gitignored**. Repo này public và đó là máy
+của khách.
+
+### `ship` gửi hai gói, không phải một
+
+`git archive` gửi HEAD. Nhưng file của khách nằm trong `.gitignore` — chính vì repo
+public và chúng là tài sản của họ — nên **chúng không thể đi cùng commit**.
+
+Thiếu chúng thì app vẫn chạy và **rơi về mặc định của Spree** mà không báo gì: email
+sai thiết kế, thiếu file ngôn ngữ, thiếu code tính cước.
+
+Nên `ship` gửi thêm gói thứ hai theo danh sách `CLIENT_ASSETS` trong script. **Thêm gì
+vào `.gitignore` mà app cần chạy thì phải thêm vào danh sách đó**, không có gì tự kiểm.
+
+### Mỗi shop hai vhost
+
+`store.<domain>` cho API và admin, `<domain>` cho cửa hàng. Cùng một template, khác
+upstream. `nginx -t` là cửa chặn cứng: config sai thì symlink bị gỡ ra ngay, vì một
+vhost hỏng làm sập **mọi** site khác trên máy khi reload.
+
+certbot cấp chứng chỉ riêng từng tên, và lệnh kiểm DNS **trước** khi ghi gì — biết
+tên miền chưa trỏ đúng sau khi vhost đã live là biết quá muộn.
+
+---
+
 ## 1. Tóm tắt
 
 ```bash
