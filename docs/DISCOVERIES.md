@@ -185,6 +185,91 @@ query:
 Bản đầu mình lấy country từ market mặc định và ra `/ca/en/`, vì market tên "US" liệt kê
 Canada trước theo bảng chữ cái.
 
+### 1.15 `Store#default_currency` và `#default_locale` KHÔNG phải cột
+
+Cả hai trông như cột trong bảng và không phải. `Spree::Stores::Markets` ghi đè cả hai
+reader để trả lời từ **Market mặc định**:
+
+```ruby
+store.read_attribute(:default_currency)   # "NZD"  ← cột, mình vừa ghi
+store.default_currency                    # "USD"  ← Market trả lời
+store.method(:default_currency).owner     # Spree::Stores::Markets
+```
+
+Một cài đặt mới có sẵn Market tên "United States" với USD. Đặt cột thành NZD **không
+báo lỗi, không cảnh báo**, admin chỉ đơn giản hiện dấu `$`.
+
+Phải sửa Market, và sửa cả danh sách quốc gia của nó — một Market tên "New Zealand"
+mà vẫn liệt kê US thì không phục vụ đúng ai cả.
+
+Cách phát hiện: **đọc lại giá trị sau khi ghi**. `lib/tasks/commercial_setup.rake` in
+giá trị thật cạnh giá trị cột mỗi lần chạy, để hai cái không thể lệch nhau trong im
+lặng.
+
+### 1.16 Admin không có role trên store nào thì lặp vô hạn, không báo lỗi
+
+Tài khoản admin xác thực đúng nhưng không có `Spree::RoleUser` trên store nào sẽ:
+
+```
+302 POST /admin_user/sign_in  →  /admin_user/sign_in
+302 GET  /admin_user/sign_in  →  /admin_user/sign_in     (lặp mãi)
+```
+
+Trình duyệt bỏ cuộc với `ERR_TOO_MANY_REDIRECTS`. **Log không nói gì.**
+
+Nhớ là `admin.stores << store` sẽ raise `Role can't be blank` — `Spree::RoleUser`
+không phải bảng nối thuần, nó mang theo quyền. 5.6 ship sẵn: `admin`, `manager`,
+`catalog`, `fulfillment`, `sales_b2b`, `support`.
+
+### 1.17 `BackfillFriendlyIdSlugLocale` phá dữ liệu đa ngôn ngữ
+
+```ruby
+FriendlyId::Slug.unscoped.update_all(locale: Spree::Store.default.default_locale)
+```
+
+Không điều kiện gì cả. Nó sinh ra để điền `NULL` cho shop đời cũ. Chạy nó trên shop
+đã có locale đúng thì **ép hết về một giá trị**, đụng unique index mà 5.6 mới thêm, và
+xoá sạch URL của những locale còn lại.
+
+Kiểm trước khi migrate:
+
+```sql
+SELECT locale, count(*) FROM friendly_id_slugs GROUP BY 1;
+```
+
+Không có dòng `NULL` nào thì migration này **không cần chạy**, và chạy là hỏng.
+
+### 1.18 5.6 bỏ `Spree::Property` và `Spree::ProductProperty`
+
+Thay bằng `Spree::Metafield` + `Spree::MetafieldDefinition`, bảng khác, hình dạng
+khác, và **không có script chuyển đổi nào đi kèm**.
+
+Bảng cũ không bị xoá, nên nhìn database vẫn thấy dữ liệu và tưởng ổn. Nhưng 5.6 không
+đọc chúng nữa, nên mọi thông số sản phẩm biến mất khỏi trang mà không có lỗi nào.
+
+Chọn `LongText` chứ không phải `ShortText` nếu giá trị là danh sách nhiều dòng.
+
+### 1.19 5.6 không có email chào mừng nào cả
+
+`Spree::UserMailer` **không tồn tại**. Toàn bộ mailer còn lại:
+
+```
+Spree::BaseMailer  CustomerMailer  OrderMailer  ReimbursementMailer  ShipmentMailer
+```
+
+Và `CustomerMailer` chỉ có `password_reset_email`. Shop 5.2/5.4 gửi welcome email qua
+`Spree::UserMailer.welcome_email` sẽ **lặng lẽ ngừng gửi** sau khi nâng cấp.
+
+### 1.20 `payment_link_email` hỏng trong chính 5.6.1
+
+`spree_emails` gọi `spree.checkout_state_url`, mà helper đó thuộc `spree_storefront`
+— gem dừng ở 5.4.6. Trên 5.6 engine có **0 route helper checkout**, nên gọi là
+`NoMethodError` và mail không bao giờ gửi.
+
+Xem `app/mailers/spree/order_mailer_payment_link_decorator.rb`.
+
+---
+
 ---
 
 ## 2. Về Docker / môi trường
@@ -287,6 +372,56 @@ node: ../deps/uv/src/unix/linux.c:1430: uv__io_poll:
 Đây là lỗi giả lập QEMU, không phải lỗi code. **Chưa giải quyết được.** Hệ quả thực tế:
 mọi bản vá đều không lên được production, kể cả bản sửa `solid_cable` ở §1.10. Hai
 hướng: `colima --vz-rosetta` (phải tạo lại VM), hoặc build ngay trên một máy amd64.
+
+### 2.12 `git archive` đánh mất đúng những file quan trọng nhất
+
+Deploy bằng `git archive` gửi HEAD, nên **mọi thứ trong `.gitignore` không đi theo**.
+Với repo public thì đó chính là tài sản của khách: template email, file ngôn ngữ, code
+tính cước.
+
+App vẫn chạy. Nó chỉ **rơi về mặc định của framework** và trông bình thường.
+
+> Lý do một file bị gitignore chính là lý do deploy dựa trên git đánh mất nó.
+
+Bất kỳ deploy nào tôn trọng `.gitignore` đều cần **một kênh thứ hai**. Xem
+`CLIENT_ASSETS` trong `script/commercial`.
+
+Cách kiểm: đừng tin cây thư mục trên máy mình, hỏi thẳng server.
+
+### 2.13 `NEXT_PUBLIC_*` là biến lúc BUILD, không phải lúc chạy
+
+Next nhúng chúng vào bundle khi build. Đặt trong `environment:` của compose thì
+**không có tác dụng gì, và không báo gì cả** — nhìn như đã cấu hình mà chưa.
+
+Phải khai `ARG` trong Dockerfile và truyền qua `build.args`.
+
+### 2.14 Storefront ghi cứng logo Spree
+
+`Header.tsx` để `src="/spree.png"`, nên **mọi shop** dựng từ storefront này đều đeo
+logo của framework. Hero và footer cũng mang nội dung demo, phần lớn được chính tác
+giả Spree đánh dấu `{/* Demo-only: Remove for production. */}`.
+
+Hai bẫy khi gỡ:
+
+- Dòng bản quyền là **JSX hardcode**, không dùng khoá dịch. Sửa file ngôn ngữ không
+  đổi được gì trên trang.
+- Xoá chữ trong file dịch để lại **nút trống**. Phải xoá cả khối.
+
+Và kiểm tra bằng `innerText` **không nhìn thấy logo**, vì logo là ảnh. Xem
+`script/check_storefront.mjs`, nó đọc cả `src` và `alt`.
+
+### 2.15 Trang checkout không đọc token từ URL
+
+Link trong `payment_link_email` được mở bởi người **chưa đăng nhập, trên máy chưa từng
+giữ cookie giỏ hàng**. Trang checkout chỉ tìm giỏ qua cookie, nên đúng người mà email
+nhắm tới lại là người duy nhất nó không phục vụ được.
+
+Sửa ở `getCart` (nhận token tường minh, thắng cookie) và `getCheckoutOrder` (hỏi đúng
+giỏ đó theo id **trước**, vì hỏi cookie trước sẽ trả `null` rồi dừng).
+
+Cách kiểm duy nhất đáng tin: mở link trong context trình duyệt **không có cookie nào**.
+
+---
 
 ---
 
