@@ -151,6 +151,14 @@ if (/^\s*\|.*\|\s*$/m.test(md)) {
   console.log('')
 }
 
+// Em dashes read as machine-written and get flagged every time. Cheaper to catch here
+// than to notice after it is posted under a real person's name.
+const dashes = (md.match(/[—–]/g) || []).length
+if (dashes) {
+  console.log(`${C.yellow}warning${C.off} ${dashes} em/en dash(es). They read as AI. Use a comma or a full stop.`)
+  console.log('')
+}
+
 const leaked = (html.replace(/<[^>]+>/g, '').match(/\*\*|^\s*[-*]\s|^#{1,6}\s/gm) || [])
 if (leaked.length) {
   console.log(`${C.yellow}warning${C.off} markdown that will show literally to the client: ${[...new Set(leaked)].join(' ')}`)

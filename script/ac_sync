@@ -154,9 +154,12 @@ for (const t of tasks) {
   // The single most useful thing the dashboard can say about a task: is anyone
   // waiting on me right now. Derived, not stored, so it can never go stale — the
   // moment we post a reply our comment becomes the last one and it flips itself.
+  // A task with no comments sits with whoever did NOT open it. Reading "no comments"
+  // as always-ours was wrong the moment we started creating tasks: the handover task
+  // we raised for the client showed up as waiting on us the second it was posted.
   const ball = t.completed_on ? 'closed'
-    : !last ? 'us'                       // they opened it and said nothing since
-    : last.created_by_id === ME ? 'them'  // we answered last
+    : !last ? (t.created_by_id === ME ? 'them' : 'us')
+    : last.created_by_id === ME ? 'them'   // we spoke last
     : 'us'
 
   const fresh = {
