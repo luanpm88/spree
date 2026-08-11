@@ -6,7 +6,7 @@
 #   script/commercial prepare       swap, sysctl, certbot. Idempotent.
 #   script/commercial ship <shop>   send HEAD to /srv/<shop>/app
 #   script/commercial up <shop>     build, start, wait for health
-#   script/commercial nginx <shop>  vhost, nginx -t, reload, then certbot
+#   script/commercial nginx <shop> [backend|storefront]   vhost, nginx -t, certbot
 #   script/commercial status        what is deployed and what revision
 #   script/commercial ssh           open a shell
 #   script/commercial run '<cmd>'   run one command
@@ -223,13 +223,25 @@ cmd_up() {
 # site on the box the moment nginx is reloaded, so the symlink comes out again
 # rather than being left in place to be fixed later.
 cmd_nginx() {
-  local shop="${1:?usage: script/commercial nginx <shop>}"
+  local shop="${1:?usage: script/commercial nginx <shop> [backend|storefront]}"
+  local which="${2:-backend}"
   local dir="/srv/$shop"
 
+  # Two vhosts per shop: the API and admin on store.<domain>, and the shop customers
+  # see on <domain>. Same template, different upstream, because nothing about the
+  # proxying differs. certbot handles each name separately.
   local domain port
-  domain="$(host "grep -E '^RAILS_HOST=' '$dir/.env' | cut -d= -f2-")"
-  port="$(host "grep -E '^SPREE_PORT=' '$dir/.env' | cut -d= -f2-")"
-  [ -n "$domain" ] && [ -n "$port" ] || die "could not read RAILS_HOST and SPREE_PORT from $dir/.env"
+  case "$which" in
+    backend)
+      domain="$(host "grep -E '^RAILS_HOST=' '$dir/.env' | cut -d= -f2-")"
+      port="$(host "grep -E '^SPREE_PORT=' '$dir/.env' | cut -d= -f2-")" ;;
+    storefront)
+      # STOREFRONT_URL carries a scheme; the vhost wants a bare hostname.
+      domain="$(host "grep -E '^STOREFRONT_URL=' '$dir/.env' | cut -d= -f2-" | sed -E 's|^https?://||; s|/.*$||')"
+      port="$(host "grep -E '^STOREFRONT_PORT=' '$dir/.env' | cut -d= -f2-")" ;;
+    *) die "second argument must be backend or storefront" ;;
+  esac
+  [ -n "$domain" ] && [ -n "$port" ] || die "could not read the host and port for $which from $dir/.env"
   local slug="${domain//./_}"
 
   step "Checking DNS before anything else"
