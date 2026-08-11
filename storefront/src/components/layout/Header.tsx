@@ -65,6 +65,7 @@ export async function Header({
   mobileNavigation,
 }: HeaderProps) {
   const t = await getTranslations({ locale, namespace: "header" });
+  const logoUrl = process.env.NEXT_PUBLIC_LOGO_URL || "";
   const wholesaleEnabled = isWholesaleEnabled();
 
   return (
@@ -73,16 +74,26 @@ export async function Header({
       left={mobileNavigation}
       center={
         <Link href={basePath || "/"} className="flex items-center min-w-0">
-          <Image
-            src="/spree.png"
-            alt={storeName}
-            width={90}
-            height={32}
-            className="max-w-full object-contain"
-            style={{ width: "auto", height: "auto" }}
-            fetchPriority="high"
-            loading="eager"
-          />
+          {/* The logo used to be hardcoded to /spree.png, so every shop built from
+              this storefront wore the framework's logo. Falls back to the shop's own
+              name as text, which is never wrong, rather than to somebody else's mark.
+              Set NEXT_PUBLIC_LOGO_URL and drop the file in public/ to use an image. */}
+          {logoUrl ? (
+            <Image
+              src={logoUrl}
+              alt={storeName}
+              width={90}
+              height={32}
+              className="max-w-full object-contain"
+              style={{ width: "auto", height: "auto" }}
+              fetchPriority="high"
+              loading="eager"
+            />
+          ) : (
+            <span className="text-lg font-bold tracking-tight truncate">
+              {storeName}
+            </span>
+          )}
         </Link>
       }
       rightStart={

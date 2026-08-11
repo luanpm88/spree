@@ -57,6 +57,16 @@ ARG SPREE_PUBLISHABLE_KEY
 ENV SPREE_API_URL=$SPREE_API_URL \
     SPREE_PUBLISHABLE_KEY=$SPREE_PUBLISHABLE_KEY
 
+# NEXT_PUBLIC_* is inlined into the bundle at BUILD time, not read at runtime.
+# Passing these only in the compose `environment:` block does nothing at all, and
+# does it silently, which is the sort of setting that looks configured and is not.
+ARG NEXT_PUBLIC_LOGO_URL=""
+ARG NEXT_PUBLIC_STORE_NAME=""
+ARG NEXT_PUBLIC_SITE_URL=""
+ENV NEXT_PUBLIC_LOGO_URL=$NEXT_PUBLIC_LOGO_URL \
+    NEXT_PUBLIC_STORE_NAME=$NEXT_PUBLIC_STORE_NAME \
+    NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+
 # Optional Sentry release/source-map upload. When SENTRY_DSN is empty,
 # next.config.ts skips withSentryConfig entirely, so the build still works.
 # SENTRY_AUTH_TOKEN is intentionally not declared as ARG/ENV — it's mounted

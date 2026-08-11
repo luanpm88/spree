@@ -16,9 +16,9 @@
 #      eating the others, not to fit in RAM.
 #   3. Every published port is namespaced per shop through SPREE_PORT, because
 #      several shops share this host and 3010 can only belong to one of them.
-#   4. No storefront service. The Next.js image bakes SPREE_API_URL in at build
-#      time, so it cannot be pointed at a new shop by changing an env var here.
-#      The backend stands up first; the storefront is built per shop afterwards.
+#   4. The storefront sits behind a compose profile. The Next.js image bakes
+#      SPREE_API_URL in at build time and cannot be repointed with an env var, so
+#      it is built per shop, and the backend can stand up without it.
 #
 # Still loopback-only. nginx on the host terminates TLS and proxies in. Binding
 # 0.0.0.0 would put the app straight on the internet, because Docker writes its
@@ -132,6 +132,11 @@ services:
         # on pages that otherwise render perfectly.
         SPREE_API_URL: ${SPREE_API_URL:?set SPREE_API_URL in .env}
         SPREE_PUBLISHABLE_KEY: ${SPREE_PUBLISHABLE_KEY:?set SPREE_PUBLISHABLE_KEY in .env}
+        # Build args, not runtime env. Next inlines NEXT_PUBLIC_* into the bundle
+        # while building, so setting them below only would do nothing and say nothing.
+        NEXT_PUBLIC_LOGO_URL: ${LOGO_URL:-}
+        NEXT_PUBLIC_STORE_NAME: ${SHOP_NAME:-Shop}
+        NEXT_PUBLIC_SITE_URL: ${STOREFRONT_URL:-}
     image: storefront-${SHOP:?}:latest
     restart: always
     depends_on:
