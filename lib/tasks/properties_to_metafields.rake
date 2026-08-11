@@ -75,7 +75,10 @@ namespace :properties do
     # LongText, not ShortText. Their values run to 485 characters and nearly all of
     # them are multi-line bullet lists; ShortText is for a word or two.
     type = 'Spree::Metafields::LongText'
-    namespace = ENV.fetch('METAFIELD_NAMESPACE', 'specs')
+    # 'properties', because that is the namespace the client's own half-finished
+    # conversion already used. Inventing a new one produced a second copy of every
+    # value sitting beside the first, which is worse than not converting at all.
+    namespace = ENV.fetch('METAFIELD_NAMESPACE', 'properties')
 
     definitions = {}
     created_defs = 0
@@ -117,6 +120,10 @@ namespace :properties do
 
     puts "definitions: #{created_defs} created, #{definitions.size} in total"
     puts "metafields:  #{created} created, #{updated} updated"
+    # created vs updated is the whole story on a shop that already converted part of
+    # this by hand: created is the gap nobody knew about, updated is what was already
+    # there. Reported separately for that reason.
+    puts "  #{created} of these had no metafield at all before this ran" if created.positive?
     unless missing.empty?
       puts "MISSING PRODUCTS (#{missing.uniq.size}):"
       missing.uniq.first(20).each { |m| puts "  #{m}" }
