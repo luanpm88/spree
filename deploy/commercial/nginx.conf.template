@@ -1,0 +1,64 @@
+# nginx vhost template for one shop backend on the commercial server.
+#
+# Installed by `script/commercial nginx <shop>`, which substitutes:
+#   __DOMAIN__  the API and admin hostname, e.g. store.example.com
+#   __PORT__    the loopback port from that shop's .env (SPREE_PORT)
+#   __SLUG__    a log-file-safe name
+#
+# Plain HTTP only. certbot rewrites this file to add `listen 443 ssl` and the
+# redirect, so the TLS block is never hand-written: a hand-rolled one drifts from
+# what certbot expects and the next renewal silently fails.
+#
+# The app is bound to 127.0.0.1 by compose, so this proxy is the only route in.
+
+upstream spree___SLUG__ {
+    server 127.0.0.1:__PORT__ fail_timeout=0;
+    keepalive 8;
+}
+
+server {
+    listen 80;
+    server_name __DOMAIN__;
+
+    access_log /var/log/nginx/__SLUG__.access.log;
+    error_log  /var/log/nginx/__SLUG__.error.log;
+
+    # Product images and CSV imports come through here.
+    client_max_body_size 64M;
+
+    location / {
+        proxy_pass http://spree___SLUG__;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        # Required. The app runs with RAILS_ASSUME_SSL=true and reads this to
+        # decide the scheme for every generated URL, including the links inside
+        # customer emails. Drop it and the emails go out with http:// links.
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        # ActionCable and Turbo Streams.
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $http_upgrade;
+
+        proxy_redirect off;
+        proxy_buffering off;
+
+        proxy_connect_timeout 30s;
+        proxy_send_timeout    300s;
+        proxy_read_timeout    300s;
+    }
+
+    # Health endpoint. Kept out of the access log because uptime monitors are noisy.
+    location = /up {
+        proxy_pass http://spree___SLUG__;
+        proxy_set_header Host $host;
+        access_log off;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+}

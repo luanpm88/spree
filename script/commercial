@@ -6,6 +6,7 @@
 #   script/commercial prepare       swap, sysctl, certbot. Idempotent.
 #   script/commercial ship <shop>   send HEAD to /srv/<shop>/app
 #   script/commercial up <shop>     build, start, wait for health
+#   script/commercial nginx <shop>  vhost, nginx -t, reload, then certbot
 #   script/commercial status        what is deployed and what revision
 #   script/commercial ssh           open a shell
 #   script/commercial run '<cmd>'   run one command
@@ -177,6 +178,53 @@ cmd_up() {
   ok "$shop is up"
 }
 
+# ── nginx + TLS ─────────────────────────────────────────────────────────────
+
+# Install the vhost, test it, reload, then let certbot add TLS.
+#
+# `nginx -t` is a hard gate. A vhost that fails to parse takes down every OTHER
+# site on the box the moment nginx is reloaded, so the symlink comes out again
+# rather than being left in place to be fixed later.
+cmd_nginx() {
+  local shop="${1:?usage: script/commercial nginx <shop>}"
+  local dir="/srv/$shop"
+
+  local domain port
+  domain="$(host "grep -E '^RAILS_HOST=' '$dir/.env' | cut -d= -f2-")"
+  port="$(host "grep -E '^SPREE_PORT=' '$dir/.env' | cut -d= -f2-")"
+  [ -n "$domain" ] && [ -n "$port" ] || die "could not read RAILS_HOST and SPREE_PORT from $dir/.env"
+  local slug="${domain//./_}"
+
+  step "Checking DNS before anything else"
+  # certbot cannot issue for a name that does not point here, and finding that
+  # out after the vhost is live is a worse place to learn it.
+  local resolved; resolved="$(dig +short "$domain" A | tail -1)"
+  if [ "$resolved" != "$COMMERCIAL_HOST" ]; then
+    die "$domain resolves to ${resolved:-nothing}, not $COMMERCIAL_HOST. Fix DNS first."
+  fi
+  ok "$domain -> $resolved"
+
+  step "Installing the vhost"
+  sed -e "s|__DOMAIN__|$domain|g" -e "s|__PORT__|$port|g" -e "s|__SLUG__|$slug|g" \
+      "$ROOT/deploy/commercial/nginx.conf.template" \
+    | host "cat > /etc/nginx/sites-available/$domain"
+  host "ln -sf /etc/nginx/sites-available/$domain /etc/nginx/sites-enabled/$domain"
+
+  step "nginx -t"
+  if ! host "nginx -t"; then
+    host "rm -f /etc/nginx/sites-enabled/$domain"
+    die "config rejected, symlink removed and nginx left untouched"
+  fi
+  host "systemctl reload nginx"
+  ok "vhost live on http://$domain"
+
+  step "certbot"
+  host "certbot --nginx -d '$domain' --non-interactive --agree-tos --register-unsafely-without-email --redirect" \
+    || warn "certbot failed. The site still works over http; run it again once the cause is fixed."
+  host "nginx -t && systemctl reload nginx" >/dev/null 2>&1 || true
+  ok "done"
+}
+
 cmd_status() {
   host 'for d in /srv/*/; do
       n=$(basename "$d")
@@ -192,6 +240,7 @@ case "${1:-help}" in
   prepare) shift; cmd_prepare "$@" ;;
   ship)    shift; cmd_ship "$@" ;;
   up)      shift; cmd_up "$@" ;;
+  nginx)   shift; cmd_nginx "$@" ;;
   status)  shift; cmd_status "$@" ;;
   ssh)     shift; exec ssh -i "$KEY" -p "$COMMERCIAL_PORT" "$COMMERCIAL_USER@$COMMERCIAL_HOST" ;;
   run)     shift; host "$@" ;;
