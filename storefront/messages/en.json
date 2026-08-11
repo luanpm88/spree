@@ -53,10 +53,7 @@
     "updatePreferencesFailed": "We couldn't update your region preferences. Please try again."
   },
   "footer": {
-    "description": "Open-source ecommerce powered by Spree REST API, TypeScript SDK, and Next.js. Self-host it. Own your data. Zero platform fees.",
-    "forkOnGithub": "Fork this storefront on GitHub",
-    "quickstartGuide": "Quickstart guide",
-    "learnMore": "Learn more about Spree Commerce",
+    "description": "Quality you can feel, made to last and made to be used every day.",
     "shop": "Shop",
     "allProducts": "All Products",
     "categories": "Categories",
@@ -65,16 +62,13 @@
     "orderHistory": "Order History",
     "cart": "Cart",
     "policies": "Policies",
-    "poweredBy": "Powered by",
-    "copyright": "© {year} {storeName}. Powered by Spree Commerce.",
-    "wholesale": "Trade & Wholesale"
+    "wholesale": "Trade & Wholesale",
+    "allRightsReserved": "All rights reserved."
   },
   "home": {
     "welcome": "{storeName} Storefront",
-    "heroDescription": "A production-ready, open-source storefront built with Next.js, React, and the Spree TypeScript SDK. Self-host it. Own your stack. No vendor lock-in. Zero platform fees.",
+    "heroDescription": "Browse the range and find what suits you.",
     "shopNow": "Shop All",
-    "forkOnGithub": "Fork on GitHub",
-    "quickstartGuide": "Quickstart Guide",
     "featuredProducts": "Featured Products",
     "viewAll": "View all",
     "qualityProducts": "Quality Products",
