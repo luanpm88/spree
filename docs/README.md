@@ -8,6 +8,7 @@
 | [LOCAL.md](LOCAL.md) | lập trình viên | Dựng máy cá nhân bằng Docker + 11 lỗi đã gặp và nguyên nhân gốc. |
 | [DEPLOY.md](DEPLOY.md) | vận hành | Hai công cụ: `script/deploy` cho máy tham chiếu, `script/commercial` cho máy khách nhiều shop. Khảo sát server, chuyện RAM, backup, rollback. |
 | [DISCOVERIES.md](DISCOVERIES.md) | lập trình viên | Toàn bộ phát hiện không hiển nhiên, kể cả về tooling. Đọc trước khi tin một giả định. |
+| [MIGRATION_RUNBOOK.md](MIGRATION_RUNBOOK.md) | lập trình viên | Đưa một shop từ 5.2/5.4 lên 5.6.1, chạy 7 lần. Ba quả mìn đã biết, thứ tự bắt buộc, và §11 nói rõ chỗ chưa kiểm được. |
 | [TOOLING.md](TOOLING.md) | lập trình viên | Các script tự động: screenshot, PDF, audit quyền, verify handover. |
 
 ## Đọc theo tình huống
@@ -19,6 +20,7 @@
 | Biết Spree lưu dữ liệu thế nào | DESIGN §2–3 |
 | Dựng bán sỉ B2B | USER_GUIDE §5, DESIGN §4 |
 | Deploy / vận hành | DEPLOY |
+| Migrate một shop cũ lên 5.6 | MIGRATION_RUNBOOK |
 | Giao cho khách | HANDOVER (bản PDF) |
 | Gặp lỗi lạ | LOCAL §5, DEPLOY §11, DISCOVERIES |
 
