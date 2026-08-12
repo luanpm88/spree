@@ -57,7 +57,10 @@ if (!shown || shown.status() !== 200) await fail(`${showUrl} answered ${shown &&
 if (!page.url().includes(CUSTOMER)) await fail(`redirected off the customer page to ${page.url()} — is that a prefixed id?`)
 
 // The Edit button opens the drawer that holds the form.
-const editLink = page.locator('a[href*="/edit"][data-turbo-frame="drawer"]').first()
+// The users edit link specifically. There are TWO drawer links on a customer page and
+// the other one is Metafields, which is invisible until its section is opened — a bare
+// [data-turbo-frame="drawer"] selector picked that one and timed out clicking it.
+const editLink = page.locator(`a[href="/admin/users/${CUSTOMER}/edit"][data-turbo-frame="drawer"]`).first()
 if (!(await editLink.count())) await fail('no Edit link with data-turbo-frame=drawer on the show page')
 await editLink.click()
 
@@ -88,11 +91,36 @@ await page.screenshot({ path: `${OUT}/drawer.png`, fullPage: true })
 
 // Round-trip it, which also proves private_metadata was merged and not replaced.
 const NOTE = 'your GST number and a delivery contact'
+// Fill the required fields first. The form marks email, first_name and last_name
+// required, and requestSubmit() honours HTML5 validation by doing NOTHING at all when the
+// form is invalid: no request, no error, no clue. This customer had no name, so the save
+// was being refused by the browser rather than by Rails.
+for (const [sel, val] of [
+  ['input[name="user[first_name]"]', 'Dana'],
+  ['input[name="user[last_name]"]', 'Whitcombe'],
+]) {
+  const f = page.locator(sel)
+  if ((await f.count()) && !(await f.inputValue())) await f.fill(val)
+}
+const invalid = await page.evaluate(() => {
+  const form = document.querySelector('turbo-frame#drawer form')
+  return [...form.querySelectorAll(':invalid')].map((e) => e.getAttribute('name'))
+})
+if (invalid.length) await fail(`form still invalid, cannot save: ${invalid.join(', ')}`)
+
 await box.fill(NOTE)
-await page.locator('form[id^="edit_user"] button[type="submit"], .drawer-footer button[type="submit"]').first().click()
-await page.waitForTimeout(2500)
+// requestSubmit() rather than clicking Save. The Save button is a visible type=submit
+// inside the drawer form, and clicking it in headless Chromium fired no request at all —
+// verified by logging every POST/PATCH on the page. requestSubmit is what the button is
+// supposed to do, and it goes through Turbo the same way.
+await page.evaluate(() => document.querySelector('turbo-frame#drawer form').requestSubmit())
+await page.waitForResponse(
+  (r) => ['POST', 'PATCH', 'PUT'].includes(r.request().method()) && r.url().includes('/admin/users/'),
+  { timeout: 15000 },
+)
+await page.waitForTimeout(1200)
 await page.goto(showUrl, { waitUntil: 'domcontentloaded' })
-await page.locator('a[href*="/edit"][data-turbo-frame="drawer"]').first().click()
+await page.locator(`a[href="/admin/users/${CUSTOMER}/edit"][data-turbo-frame="drawer"]`).first().click()
 await page.locator('textarea[name="user[approval_note]"]').waitFor({ state: 'visible', timeout: 15000 })
 const saved = await page.locator('textarea[name="user[approval_note]"]').inputValue()
 if (saved !== NOTE) await fail(`the note did not round-trip, got ${JSON.stringify(saved)}`)
