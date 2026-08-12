@@ -153,3 +153,25 @@ Rails.application.config.to_prepare do
 end
 
 Devise.parent_controller = 'Spree::BaseController' if defined?(Devise) && Devise.respond_to?(:parent_controller)
+
+# Customer emails that Spree 5.6 does not ship.
+#
+# to_prepare rather than after_initialize: the flag lives on Spree::User, which is
+# reloadable in development, and an after_initialize assignment is lost on the first
+# code reload. The symptom is an email that works until you edit a file.
+Rails.application.config.to_prepare do
+  # Off unless the store asks for it. It fires on after_create_commit for EVERY user
+  # row, which includes seeds, sample data and a bulk customer import. A CSV import
+  # that silently emails five thousand people is not a sensible default.
+  Spree.user_class.send_welcome_emails = ENV['SEND_WELCOME_EMAILS'] == 'true'
+end
+
+# Tell the shop when somebody signs up and is waiting to be approved.
+#
+# Registered rather than switched by an env var, because it needs no switch: it does
+# nothing at all unless the store has an address in "New Order Notifications Email",
+# and it skips anyone who already belongs to a customer group. A seed or a bulk import
+# of already-approved trade customers is silent by construction.
+Rails.application.config.after_initialize do
+  Spree.subscribers << SpreeStarter::SignupNotificationSubscriber
+end

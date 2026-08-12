@@ -1,0 +1,16 @@
+<%# The client's own mail runs through a corporate gateway, and this one carries the
+    approval link. If the HTML part is stripped the text part is the whole email. %>
+<%= Spree.t('customer_mailer.store_signup_notification.heading') %>
+
+<%= Spree.t('customer_mailer.store_signup_notification.body', store: @current_store.name) %>
+
+<%= Spree.t('customer_mailer.store_signup_notification.label_email') %> <%= @user.email %>
+<% if @user.name.present? -%>
+<%= Spree.t('customer_mailer.store_signup_notification.label_name') %> <%= @user.name %>
+<% end -%>
+<%= Spree.t('customer_mailer.store_signup_notification.label_signed_up') %> <%= l(@user.created_at, format: :long) rescue @user.created_at %>
+
+<%= Spree.t('customer_mailer.store_signup_notification.cta') %>:
+<%= @customer_admin_url %>
+
+<%= Spree.t('customer_mailer.store_signup_notification.how_to') %>

@@ -1,0 +1,21 @@
+# Copy for the email that tells the shop somebody has signed up and is waiting.
+#
+# Ours, not the client's, so this one IS committed, unlike the client's own locale files
+# which carries his brand copy and stays out of a public repo.
+#
+# Written as an internal note. The reader is the shop, they already know what the shop
+# is, and the only thing they have to do is open one screen and add the person to a
+# group. Every line here is either that instruction or the detail needed to decide.
+en:
+  spree:
+    customer_mailer:
+      store_signup_notification:
+        subject: "New customer awaiting approval: %{email}"
+        heading: "Someone has signed up and is waiting for approval"
+        body: "A new customer registered on %{store}. Until you approve them they can browse the catalogue, but every price reads Awaiting Approval instead of a number."
+        label_email: "Email"
+        label_name: "Name"
+        label_signed_up: "Signed up"
+        cta: "Open this customer"
+        how_to: "To approve: open the customer, add them to the Bulk Orders group, and save. Their prices appear straight away. To decline, do nothing."
+        fallback: "If the button does not work, copy this into your browser:"

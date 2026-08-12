@@ -47,6 +47,67 @@ module Spree
         )
       end
     end
+
+    # Tells the shop that somebody has signed up and is waiting to be approved.
+    #
+    # Spree publishes nothing at all when a customer account is created, so without
+    # this the wholesale flow has a silent gap in the middle: an applicant sits at
+    # "Awaiting Approval" prices and the only way anyone finds out is by opening the
+    # customer list and noticing a new row.
+    #
+    # Goes to the store's new_order_notifications_email. That field is what the admin
+    # labels "New Order Notifications Email", and in 5.6.1 core the only thing that
+    # actually reads it is WebhookMailer, with OrderMailer#store_owner_notification_email
+    # in spree_emails the one real user. Reusing it keeps the shop's "where do we get
+    # told about things" answer in one box rather than adding a second.
+    #
+    # The link points at the ADMIN host, not the storefront. store.formatted_url is
+    # the backend; store.storefront_url is where customers go, and a customer record
+    # does not exist there.
+    #
+    # @param user [Spree.user_class] the customer who just signed up
+    # @param store [Spree::Store]
+    def store_signup_notification(user, store)
+      # Both decisions live here rather than in the subscriber, and that is the whole
+      # design. A mailer body is rendered when the JOB runs, not when it is enqueued,
+      # and the subscriber enqueues this with a two minute delay. Here is therefore the
+      # only place that sees the world as it is by the time the email would go out.
+      #
+      # Returning early yields ActionMailer::Base::NullMail, and deliver_later on a
+      # NullMail is a no-op.
+
+      # No address means the shop has not said where to send this. There is no sensible
+      # fallback: mail_from_address would post it to the shop's own noreply mailbox.
+      # Guarding is not optional, because reaching `mail(to: nil)` raises
+      #   ArgumentError: SMTP To address may not be blank: []
+      # and lands in the failed queue, which is a strange way to learn that a setting
+      # was cleared.
+      return if store.new_order_notifications_email.blank?
+
+      # Somebody who belongs to a group has already been approved, which is what has
+      # happened when the shop creates a trade customer and assigns them in one sitting.
+      # Nothing to approve, nothing to announce.
+      #
+      # This is exactly why the send is delayed. user.created fires on the account's own
+      # commit, and a group attached a moment later in a second transaction is not
+      # visible yet. Checked at enqueue time this loses the race every time: measured,
+      # not assumed. A customer created and approved together still got announced as
+      # waiting.
+      return if user.respond_to?(:customer_groups) && user.reload.customer_groups.any?
+
+      @user = user
+      @current_store = store
+      @customer_admin_url = "#{store.formatted_url.to_s.chomp('/')}/admin/users/#{user.id}/edit"
+
+      with_store_locale(store) do
+        mail(
+          to: store.new_order_notifications_email,
+          subject: Spree.t('customer_mailer.store_signup_notification.subject',
+                           email: user.email, store: store.name),
+          store_url: store.storefront_url
+        )
+      end
+    end
   end
 
   CustomerMailer.prepend CustomerMailerDecorator

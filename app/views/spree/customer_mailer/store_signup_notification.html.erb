@@ -1,0 +1,45 @@
+<%# Goes to the shop, not to a customer, so it is written as an internal note rather
+    than as marketing. It still renders inside Spree's mailer layout so the client sees
+    the same header and footer as everything else the shop sends.
+
+    The point of the email is the button. The whole approval step is: open this
+    customer, add them to the Bulk Orders group, and their prices appear. Anything
+    that makes the reader go and find the customer list instead has failed. %>
+
+<%= render layout: 'spree/shared/mailer_hero' do %>
+  <h1><%= Spree.t('customer_mailer.store_signup_notification.heading') %></h1>
+
+  <p><%= Spree.t('customer_mailer.store_signup_notification.body', store: @current_store.name) %></p>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+         style="margin: 16px 0;">
+    <tr>
+      <td style="padding: 4px 0;"><strong><%= Spree.t('customer_mailer.store_signup_notification.label_email') %></strong></td>
+      <td style="padding: 4px 0;"><%= @user.email %></td>
+    </tr>
+    <% if @user.name.present? %>
+      <tr>
+        <td style="padding: 4px 0;"><strong><%= Spree.t('customer_mailer.store_signup_notification.label_name') %></strong></td>
+        <td style="padding: 4px 0;"><%= @user.name %></td>
+      </tr>
+    <% end %>
+    <tr>
+      <td style="padding: 4px 0;"><strong><%= Spree.t('customer_mailer.store_signup_notification.label_signed_up') %></strong></td>
+      <td style="padding: 4px 0;"><%= l(@user.created_at, format: :long) rescue @user.created_at %></td>
+    </tr>
+  </table>
+
+  <%= render 'spree/shared/mailer_button',
+             url: @customer_admin_url,
+             label: Spree.t('customer_mailer.store_signup_notification.cta') %>
+
+  <p class="sub"><%= Spree.t('customer_mailer.store_signup_notification.how_to') %></p>
+
+  <%# Same reasoning as the welcome email: a client eats the button and the raw URL is
+      the only way through. %>
+  <p class="sub">
+    <%= Spree.t('customer_mailer.store_signup_notification.fallback') %>
+    <br>
+    <span style="word-break: break-all;"><%= @customer_admin_url %></span>
+  </p>
+<% end %>

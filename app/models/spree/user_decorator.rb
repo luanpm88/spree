@@ -12,9 +12,19 @@ module Spree
   # the existing hook is looking for, and a trigger for the admin path.
   #
   # A callback rather than a subscriber, against the usual order of preference in
-  # CLAUDE.md, because Spree publishes no user or customer lifecycle event to subscribe
-  # to. The only events near this are invitation.created / .accepted / .resent, which
-  # are about admin users being invited to a store, not customers being created.
+  # CLAUDE.md.
+  #
+  # An earlier version of this note claimed Spree publishes no customer lifecycle event
+  # to subscribe to. That was wrong. Spree::Publishable is included in Spree::Base, so
+  # Spree::User publishes user.created on after_commit like every other model, and
+  # SpreeStarter::SignupNotificationSubscriber uses exactly that.
+  #
+  # The callback stays here anyway, for a reason that does not apply to the subscriber.
+  # This email carries a password-reset token minted for this specific send. A
+  # subscriber runs later, in another process, from a payload; it would have to mint a
+  # second token, and the account-creation path is precisely where a token has to
+  # belong to the mail that went out. Anything reachable from the event alone belongs
+  # in a subscriber instead.
   module UserDecorator
     def self.prepended(base)
       # Off by default, deliberately. This fires on EVERY user row that gets created,
