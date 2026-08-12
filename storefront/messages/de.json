@@ -620,7 +620,9 @@
     },
     "hiddenPrice": {
       "signInForPricing": "Zur Preisanzeige anmelden",
-      "signInToOrder": "Zum Bestellen anmelden"
+      "signInToOrder": "Zum Bestellen anmelden",
+      "awaitingApproval": "Warten auf Freigabe",
+      "awaitingApprovalHint": "Preise erscheinen, sobald Ihr Konto freigegeben ist."
     }
   }
 }

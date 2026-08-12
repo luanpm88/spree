@@ -620,7 +620,9 @@
     },
     "hiddenPrice": {
       "signInForPricing": "Sign in for pricing",
-      "signInToOrder": "Sign in to order"
+      "signInToOrder": "Sign in to order",
+      "awaitingApproval": "Awaiting Approval",
+      "awaitingApprovalHint": "Prices appear once your account is approved."
     }
   }
 }

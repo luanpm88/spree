@@ -6,6 +6,7 @@ import { isWholesaleApproved } from "@/lib/wholesale";
 import { WholesaleApplicationPending } from "./WholesaleApplicationPending";
 import { WholesaleGuestBrowse } from "./WholesaleGuestBrowse";
 import { WholesaleHeader } from "./WholesaleHeader";
+import { WholesalePendingBrowse } from "./WholesalePendingBrowse";
 import { WholesaleSignInWall } from "./WholesaleSignInWall";
 
 interface WholesaleGateProps {
@@ -38,8 +39,11 @@ interface WholesaleGateProps {
  *   catalog fetch anyway, so nothing behind the wall would render)
  * - guest, `prices_hidden` → the catalog renders with prices replaced by a
  *   "sign in for pricing" prompt; ordering is gated behind sign-in
- * - authenticated, not approved → application-pending state (approval, not just
- *   login, unlocks trade pricing and ordering — same for both postures)
+ * - authenticated, not approved, browse surface on `prices_hidden` → the catalog
+ *   renders with "Awaiting Approval" where each price goes. Signing in is not
+ *   approval, and the server agrees: it returns null money fields for a
+ *   signed-in customer who belongs to no customer group
+ * - authenticated, not approved, ordering surface → application-pending state
  * - approved member → the portal chrome + `children`, with the wholesale cart
  *   bound via <CartProvider surface="wholesale">
  *
@@ -79,22 +83,40 @@ export async function WholesaleGate({
     );
   }
 
+  const displayName =
+    [customer.first_name, customer.last_name].filter(Boolean).join(" ") ||
+    customer.email;
+
   if (!isWholesaleApproved(customer)) {
+    // Browsing is allowed while they wait, on the same surfaces a guest may
+    // browse, because that is what the client asked for: an applicant sees the
+    // range with "Awaiting Approval" where each price goes, and the prices
+    // appear the moment he moves them into a customer group.
+    //
+    // The server has already decided this independently: it returns null money
+    // fields for a signed-in customer with no group. So this branch does not
+    // hide anything, it explains an absence that has already happened. If the
+    // two ever disagree, the page renders a price it was given, which is why
+    // isWholesaleApproved and the server's approved_for_pricing? are written to
+    // ask the same question.
+    if (allowGuestBrowse && channel?.storefront_access === "prices_hidden") {
+      return (
+        <WholesalePendingBrowse basePath={basePath} customerName={displayName}>
+          {children()}
+        </WholesalePendingBrowse>
+      );
+    }
+
+    // Ordering surfaces still wall. A cart that cannot price anything is not
+    // useful to anybody.
     return (
       <WholesaleApplicationPending
         basePath={basePath}
-        customerName={
-          [customer.first_name, customer.last_name].filter(Boolean).join(" ") ||
-          customer.email
-        }
+        customerName={displayName}
         email={customer.email}
       />
     );
   }
-
-  const displayName =
-    [customer.first_name, customer.last_name].filter(Boolean).join(" ") ||
-    customer.email;
 
   return (
     <CartProvider surface="wholesale">

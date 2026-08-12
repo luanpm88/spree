@@ -620,7 +620,9 @@
     },
     "hiddenPrice": {
       "signInForPricing": "Zaloguj się, aby zobaczyć ceny",
-      "signInToOrder": "Zaloguj się, aby zamówić"
+      "signInToOrder": "Zaloguj się, aby zamówić",
+      "awaitingApproval": "Oczekuje na zatwierdzenie",
+      "awaitingApprovalHint": "Ceny pojawią się po zatwierdzeniu konta."
     }
   }
 }
