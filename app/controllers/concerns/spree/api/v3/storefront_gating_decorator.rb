@@ -85,8 +85,18 @@ module Spree
         def approved_for_pricing?(user)
           return true unless user.respond_to?(:customer_groups)
 
-          excluded = non_approving_group_ids
+          store = store_for_gating
           groups = user.customer_groups
+
+          # Not Approved is terminal, and it has to be checked BEFORE the deny-list.
+          # Otherwise a customer in both Not Approved and an approving group reads as
+          # approved, because the approving group satisfies the test on its own.
+          # Reproduced before fixing: hide_prices? came back false for exactly that
+          # pair, so a declined customer kept the trade price list.
+          declining = store.respond_to?(:declining_customer_group_ids) ? store.declining_customer_group_ids : []
+          return false if declining.any? && groups.exists?(id: declining)
+
+          excluded = store.respond_to?(:non_approving_customer_group_ids) ? store.non_approving_customer_group_ids : []
           # Written as a conditional rather than always calling where.not, because
           # where.not(id: []) is a condition that reads as a bug to the next person even
           # though Rails renders it harmlessly.
@@ -114,11 +124,12 @@ module Spree
         # The store whose configuration governs this request. Read from the channel
         # rather than Spree::Current, because the channel is what the gate has already
         # branched on above and a request can carry one without the other.
-        def non_approving_group_ids
-          store = current_channel&.store || Spree::Store.default
-          return [] if store.nil? || !store.respond_to?(:non_approving_customer_group_ids)
-
-          store.non_approving_customer_group_ids
+        #
+        # Resolved once and handed to both reads. Two separate lookups could in principle
+        # answer from different stores, and "declined here, approved there" is the one
+        # disagreement this method exists to prevent.
+        def store_for_gating
+          current_channel&.store || Spree::Store.default
         end
       end
     end

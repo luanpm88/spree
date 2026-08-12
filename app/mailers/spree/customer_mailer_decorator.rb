@@ -115,6 +115,14 @@ module Spree
       # group and fixes it inside the two minute grace sends nothing.
       return unless user.customer_groups.reload.exists?(id: group.id)
 
+      # And the decision has not moved past it. Both of these are reachable in one save,
+      # because the admin form is a single multi-select: ticking More Information and
+      # Approved together fires two events, and without these guards the customer would
+      # be asked for more information and congratulated seconds apart.
+      declining = store.respond_to?(:declining_customer_group_ids) ? store.declining_customer_group_ids : []
+      return if declining.any? && user.customer_groups.exists?(id: declining)
+      return if in_approving_group?(user, store)
+
       deliver_outcome(user, store, [:user_emails, :account_approval, :account_not_approved])
     end
 
@@ -287,6 +295,13 @@ module Spree
       return false unless user.respond_to?(:customer_groups)
 
       groups = user.customer_groups.reload
+
+      # Not Approved wins, checked first, for the same reason as in the price gate: an
+      # approving group left behind would otherwise make a declined customer look
+      # approved. The comment below about mirroring the gate is only true with this here.
+      declining = store.respond_to?(:declining_customer_group_ids) ? store.declining_customer_group_ids : []
+      return false if declining.any? && groups.exists?(id: declining)
+
       excluded = store.respond_to?(:non_approving_customer_group_ids) ? store.non_approving_customer_group_ids : []
       return groups.any? if excluded.empty?
 

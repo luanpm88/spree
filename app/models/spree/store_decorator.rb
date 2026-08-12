@@ -75,6 +75,33 @@ module Spree
       approval_group_roles.values
     end
 
+    # Groups whose membership OVERRIDES an approving group, rather than merely not
+    # counting as one.
+    #
+    # ── why this is separate from non_approving, and why only not_approved ────
+    #
+    # Approval was "belongs to a group that is not on the exclusion list", which is a
+    # deny-list, and a deny-list cannot express a veto. Reproduced on the real code: a
+    # customer in both "Trade" and "Not Approved" came back hide_prices? = false and
+    # would have been sent the approval email. Trade is not excluded, so it satisfied
+    # "has an approving group" all on its own. The shop would have declined somebody in
+    # writing and left them holding the full trade price list.
+    #
+    # That state is not exotic, it is the obvious way to revoke somebody: the admin form
+    # shows customer groups as one multi-select, so ticking Not Approved without
+    # remembering to untick Trade is a single save.
+    #
+    # more_information is deliberately NOT terminal. It is a hold, not a decision, and
+    # "we asked for more, then approved them" is a normal sequence where the hold is
+    # simply left behind. Vetoing on it would take prices away from a customer who had
+    # just been approved, which is the failure the whole gate exists to avoid.
+    #
+    # @return [Array<Integer>]
+    def declining_customer_group_ids
+      id = approval_group_roles['not_approved']
+      id ? [id] : []
+    end
+
     # @param group_id [Integer]
     # @return [Symbol] :more_information, :not_approved, or :approves
     def approval_role_for(group_id)
