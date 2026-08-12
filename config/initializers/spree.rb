@@ -247,6 +247,20 @@ Rails.application.config.after_initialize do
   requested.each { |name| Spree.subscribers.delete(optional.fetch(name)) }
 end
 
+# Let the admin form save the approval note.
+#
+# A virtual attribute on Spree::User, not private_metadata straight from the form: that
+# attribute's setter replaces the whole hash, so one field would delete every other key
+# in it. See Spree::UserDecorator#approval_note.
+#
+# mattr_reader, so the array is read-only as an accessor but mutable in place, which is
+# the pattern Spree's own docs use. Guarded because to_prepare runs again on every code
+# reload in development and would otherwise append a duplicate each time.
+Rails.application.config.to_prepare do
+  attrs = Spree::PermittedAttributes.user_attributes
+  attrs << :approval_note unless attrs.include?(:approval_note)
+end
+
 # Make joining a customer group publish an event.
 #
 # Spree::CustomerGroupUser has publish_events true but lifecycle_events_enabled

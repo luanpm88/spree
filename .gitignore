@@ -86,6 +86,9 @@ docs/PLAN.md
 # publish. The mailer decorator checks for the view's presence rather than
 # assuming it, so a checkout without them still sends correct stock emails.
 app/views/spree/order_mailer/
+# Any locale file carrying the client's own copy. Broadened from the client.*.yml after
+# the client's own locale file slipped past it: the underscore is not a dot, and the file
+# was one commit away from being published in a public repo.
 the client's own locale files
 app/views/spree/shipment_mailer/
 app/views/spree/reimbursement_mailer/

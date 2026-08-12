@@ -25,11 +25,24 @@ module Spree
       # per-request authorization decision inside a controller concern, and Spree
       # exposes no dependency or event for it. It is deliberately one method.
       #
-      # APPROVAL IS MEMBERSHIP OF ANY CUSTOMER GROUP, not of one group named in code.
-      # The client's group is "Bulk Orders" today, and a shop with distributors and
-      # resellers will have more tomorrow. Matching on a name means a rename in the
-      # admin silently hides prices from every approved customer, with no error and no
-      # clue. Membership is the thing he actually manipulates when he approves someone.
+      # APPROVAL IS MEMBERSHIP OF A GROUP THAT APPROVES, and never of a group named in
+      # code. The live shop's group is "Wholesale"; an earlier message called it "Bulk
+      # Orders"; a shop with distributors and resellers will have more tomorrow.
+      # Matching on a name means a rename in the admin changes who can see prices, with
+      # no error and no clue.
+      #
+      # It used to be membership of ANY group, which was right while every group meant
+      # approved. The client then asked for three outcomes, two of which are also
+      # customer groups and both of which mean NOT approved:
+      #
+      #   Approved            sees trade prices
+      #   More Information    we need more from them
+      #   Not Approved        declined
+      #
+      # So "any group" would hand the trade list to a customer the shop had just turned
+      # down. Which groups mean what is configured by id on the store, see
+      # Spree::StoreDecorator, and defaults to empty so an unconfigured shop behaves
+      # exactly as it did before.
       module StorefrontGatingDecorator
         def hide_prices?
           # Guests keep Spree's answer exactly. Nothing here loosens the existing gate.
@@ -72,7 +85,13 @@ module Spree
         def approved_for_pricing?(user)
           return true unless user.respond_to?(:customer_groups)
 
-          user.customer_groups.exists?
+          excluded = non_approving_group_ids
+          groups = user.customer_groups
+          # Written as a conditional rather than always calling where.not, because
+          # where.not(id: []) is a condition that reads as a bug to the next person even
+          # though Rails renders it harmlessly.
+          groups = groups.where.not(id: excluded) if excluded.any?
+          groups.exists?
         rescue StandardError
           # Fail OPEN, and the choice is deliberate.
           #
@@ -82,7 +101,24 @@ module Spree
           # permission. Failing open shows trade prices to someone unapproved, which is
           # a disclosure the shop can see and correct. The blast radius of the first is
           # every customer; of the second, one.
+          #
+          # Re-examined when Not Approved arrived, because failing open now means a
+          # DECLINED customer could see the trade list, which is more pointed than an
+          # applicant seeing it. It still holds: this rescue fires only when the query
+          # itself raises, which is an infrastructure fault, brief and noisy. Trading a
+          # whole shop's prices against one disclosure during an outage is the same
+          # trade as before.
           true
+        end
+
+        # The store whose configuration governs this request. Read from the channel
+        # rather than Spree::Current, because the channel is what the gate has already
+        # branched on above and a request can carry one without the other.
+        def non_approving_group_ids
+          store = current_channel&.store || Spree::Store.default
+          return [] if store.nil? || !store.respond_to?(:non_approving_customer_group_ids)
+
+          store.non_approving_customer_group_ids
         end
       end
     end

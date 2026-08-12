@@ -1,0 +1,96 @@
+<%# Shared body for all three approval outcome emails. The key path comes from
+    @copy_scope, set by Spree::CustomerMailer#deliver_outcome, so it is defined once in
+    the mailer rather than repeated in three templates.
+
+    ── shaped by his actual file, not by a guess ────────────────────────────────
+
+    Every key below is one he wrote. Read out of business.en.yml:
+
+      account_approval:  subject heading greeting body body_txt login_details action
+                         portal_note what_next_title what_bullets what_bullets_txt
+                         thank_you
+      account_approval.account_not_approved:
+                         subject heading greeting body body_txt contact contact_txt
+                         thank_you
+
+    So the two sections overlap but do not match: the approved one has a button and a
+    bullet list, the other has a contact paragraph. Everything except the heading is
+    therefore optional and a missing key renders nothing at all rather than a
+    translation_missing span. The mailer refuses to send while the heading is blank, so
+    an empty template cannot go out.
+
+    note: and contact_url: are passed to EVERY lookup. His approved body uses %{note} and
+    his fourth bullet uses %{contact_url}; I18n ignores an argument a string does not use
+    and raises only on one it wants. Passing both means he can move either between
+    sections without a code change.
+%>
+<% t = ->(key, **args) { Spree.t(key, scope: @copy_scope, note: @note, contact_url: @contact_url, default: '', **args) } %>
+
+<%= render layout: 'spree/shared/mailer_hero' do %>
+  <h1><%= t.call(:heading) %></h1>
+
+  <% greeting = t.call(:greeting, name: @user.first_name.presence || @user.email) %>
+  <% if greeting.present? %>
+    <p class="greeting"><%= greeting %></p>
+  <% end %>
+
+  <%# raw, because his copy carries <strong> and <a> around the words that matter. The
+      file is one only he and we can write. %>
+  <% body = t.call(:body) %>
+  <% if body.present? %>
+    <p><%= raw body %></p>
+  <% end %>
+
+  <%# The safety net for the thing that matters most. If his wording ever stops placing
+      %{note}, the shop's typed request would silently never reach the customer, which is
+      the entire point of the email. Rendered here only when his copy has not carried it. %>
+  <% if @note.present? && !body.to_s.include?(@note) %>
+    <p style="margin:16px 0;padding:12px 16px;background:#f6f7f9;border-left:3px solid #d0d5dd;">
+      <%= simple_format(@note) %>
+    </p>
+  <% end %>
+
+  <% login_details = t.call(:login_details, email: @user.email) %>
+  <% if login_details.present? %>
+    <p class="sub"><%= login_details %></p>
+  <% end %>
+
+  <%# His key is `action` ("Sign In"). portal_button is kept as a fallback because his
+      Canada file used that name. %>
+  <% button = t.call(:action).presence || t.call(:portal_button) %>
+  <% if button.present? %>
+    <%= render 'spree/shared/mailer_button', url: @storefront_url, label: button %>
+  <% end %>
+
+  <% bullets = email_lines(:what_bullets, scope: @copy_scope, contact_url: @contact_url, note: @note) %>
+  <% if bullets.any? %>
+    <% title = t.call(:what_next_title) %>
+    <% if title.present? %>
+      <h2 style="font-size:16px;margin:24px 0 8px;"><%= title %></h2>
+    <% end %>
+    <ul style="margin:0 0 16px;padding-left:20px;">
+      <% bullets.each do |line| %>
+        <li style="margin-bottom:6px;"><%= raw line %></li>
+      <% end %>
+    </ul>
+  <% end %>
+
+  <%# Only the not-approved section has this, and it is the operative sentence there: it
+      tells them where to reply with what was asked for. %>
+  <% contact = t.call(:contact) %>
+  <% if contact.present? %>
+    <p><%= raw contact %></p>
+  <% end %>
+
+  <% thank_you = t.call(:thank_you) %>
+  <% if thank_you.present? %>
+    <p><%= thank_you %></p>
+  <% end %>
+
+  <% portal_note = t.call(:portal_note,
+                          shop_url_full: Spree.t(:shop_url_full, scope: [:user_emails, :common],
+                                                 default: @storefront_url)) %>
+  <% if portal_note.present? %>
+    <p class="sub"><%= portal_note %></p>
+  <% end %>
+<% end %>

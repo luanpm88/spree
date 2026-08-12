@@ -1,0 +1,18 @@
+# Admin-facing wording for the three-outcome approval workflow.
+#
+# Customer-facing wording is NOT here. That belongs to the client and arrives in his own
+# locale file, under spree.user_emails.more_information and spree.user_emails.not_approved.
+# Both emails refuse to send while his heading is missing, so nothing goes out in our
+# voice by accident.
+#
+# Named so it loads before his file (ASCII: 'a' < 'e'), which keeps his keys able to
+# override ours rather than the reverse. It defines nothing he also defines, but the
+# ordering is the safe side to be on.
+en:
+  spree:
+    approval_note: What to ask this customer for
+    approval_note_help: >-
+      Goes into the More Information and Not Approved emails as-is. Say exactly what you
+      need, for example "your GST number and a delivery contact". Type it before you
+      change the customer group, or within two minutes of doing so, because the email is
+      sent on a short delay and reads this box when it goes.

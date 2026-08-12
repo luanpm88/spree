@@ -1,0 +1,55 @@
+<%# Plain-text twin of _approval_outcome.html.erb. Same @copy_scope, same optional-key
+    rules, same note fallback.
+
+    His file carries _txt variants for every sentence that contains markup, so each lookup
+    prefers the _txt key and falls back to the marked-up one. That is his convention.
+%>
+<% t = ->(key, **args) { Spree.t(key, scope: @copy_scope, note: @note, contact_url: @contact_url, default: '', **args) } -%>
+<% txt = ->(key, **args) { t.call(:"#{key}_txt", **args).presence || t.call(key, **args) } -%>
+<%= t.call(:heading) %>
+
+<% greeting = t.call(:greeting, name: @user.first_name.presence || @user.email) -%>
+<% if greeting.present? -%>
+<%= greeting %>
+
+<% end -%>
+<% body = txt.call(:body) -%>
+<% if body.present? -%>
+<%= body %>
+
+<% end -%>
+<% if @note.present? && !body.to_s.include?(@note) -%>
+<%= @note %>
+
+<% end -%>
+<% login_details = t.call(:login_details, email: @user.email) -%>
+<% if login_details.present? -%>
+<%= login_details %>
+
+<% end -%>
+<% bullets = email_lines(:what_bullets_txt, scope: @copy_scope, contact_url: @contact_url, note: @note) -%>
+<% bullets = email_lines(:what_bullets, scope: @copy_scope, contact_url: @contact_url, note: @note) if bullets.empty? -%>
+<% if bullets.any? -%>
+<% title = t.call(:what_next_title) -%>
+<% if title.present? -%>
+<%= title %>
+<% end -%>
+<% bullets.each do |line| -%>
+- <%= line %>
+<% end -%>
+
+<% end -%>
+<% contact = txt.call(:contact) -%>
+<% if contact.present? -%>
+<%= contact %>
+
+<% end -%>
+<% thank_you = t.call(:thank_you) -%>
+<% if thank_you.present? -%>
+<%= thank_you %>
+
+<% end -%>
+<% portal_note = t.call(:portal_note, shop_url_full: Spree.t(:shop_url_full, scope: [:user_emails, :common], default: @storefront_url)) -%>
+<% if portal_note.present? -%>
+<%= portal_note %>
+<% end -%>

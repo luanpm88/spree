@@ -40,6 +40,35 @@ module Spree
       base.after_create_commit :deliver_welcome_email_if_enabled
     end
 
+    # Where the shop's note to this applicant lives.
+    #
+    # The client asked for "a text box; then we just add the info, send it, and the user
+    # replies to the listed email address". This is that box, and it is read by both
+    # more_information_email and not_approved_email.
+    #
+    # A metafield key rather than a column, so nothing is migrated on a live client
+    # database.
+    APPROVAL_NOTE_KEY = 'approval.note'
+
+    # @return [String] never nil, because it is interpolated into an email as %{note} and
+    #   I18n raises on a missing interpolation argument.
+    def approval_note
+      private_metadata.to_h[APPROVAL_NOTE_KEY].to_s
+    end
+
+    # MERGES rather than assigns, and that is the whole reason this exists instead of
+    # putting private_metadata straight on the admin form.
+    #
+    # private_metadata is a plain attribute with a HashSerializer, so its setter replaces
+    # the entire hash. A form posting user[private_metadata][approval.note] would
+    # therefore delete every other key in it, silently, on a live shop whose metadata
+    # other extensions also write to. One field on a form is not worth that.
+    def approval_note=(value)
+      self.private_metadata = private_metadata.to_h.merge(
+        APPROVAL_NOTE_KEY => value.to_s.strip
+      )
+    end
+
     # Sends the welcome, including a password-reset link so the customer can set their
     # own password. Deliberately public and callable on its own, so an admin can resend
     # one from the console without recreating the account:

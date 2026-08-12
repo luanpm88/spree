@@ -4,6 +4,10 @@ module Spree
   # handling, the same URL host defaulting, and the same token-appending helper.
   module CustomerMailerDecorator
     def self.prepended(base)
+      # Wired explicitly. Spree::MailHelper is NOT a helper on this mailer, so a module
+      # prepended onto it is invisible to these views. Measured the hard way.
+      base.helper Spree::ApprovalMailHelper
+
       # Where the reset link points, relative to the store's storefront_url.
       #
       # The stock password_reset_email does not need this: the storefront supplies a
@@ -48,51 +52,86 @@ module Spree
       end
     end
 
-    # Tells the customer they have been approved and can now see prices.
+    # ── the three approval outcomes ────────────────────────────────────────────
     #
-    # Reads user_emails.approval, which the client has NOT written yet, and refuses to
-    # send until he does. That refusal is the point.
+    # The client settled the workflow as: approved and finished; information not right so
+    # ask for more; cannot be reached or still wrong so decline. His words for the last
+    # one: "not approved means: Not Approved".
     #
-    # The obvious shortcut was to reuse his user_emails.welcome section, since it is
-    # the only customer-facing copy he has sent. It is the wrong section, and wrong in
-    # the worst direction: it reads "Your Account Is Awaiting Final Approval" and
-    # promises "you will receive another email once your account has been approved".
-    # It is his SIGN-UP email. Sending it at the moment of approval tells somebody who
-    # has just been approved that they are still waiting, and the email itself
-    # promises the message they are reading.
+    # WHERE HIS COPY ACTUALLY LIVES, read out of the file he sent rather than assumed:
     #
-    # So this sends nothing rather than something wrong. An approved customer whose
-    # prices simply appear is a small disappointment; one told they are still waiting
-    # goes away.
+    #   user_emails.account_approval                          the approved email
+    #   user_emails.account_approval.account_not_approved      the "we need more" email
+    #                                                          (NESTED inside the first,
+    #                                                           which is how he wrote it)
+    #   user_emails.not_approved                              does not exist
     #
-    # Interpolations follow his house style from the welcome section, %{name} and
-    # %{email}, plus %{shop_url_full} read from his common section and passed in,
-    # because an interpolation is a value the caller supplies rather than a lookup.
+    # The third has no copy because his flow does not need one: "If no reply, the account
+    # stays in the declined group." So not_approved_email is wired, refuses to send while
+    # its section is missing, and is therefore silent by construction. It starts working
+    # the day he writes the words, with no code change.
     #
+    # Every one of these passes note: AND contact_url:. Not defensively, because his file
+    # requires both:
+    #
+    #   account_approval.body                    uses %{note}
+    #   account_approval.what_bullets.3          uses %{contact_url}
+    #   account_approval.account_not_approved.body  uses %{note}
+    #
+    # I18n raises MissingInterpolationArgument for an argument a string USES and ignores
+    # ones it does not, so passing both everywhere is safe and means his wording can move
+    # them between sections without a code change. He put %{note} in the APPROVED email
+    # too, which was not asked for and is a good idea: it lets a welcome carry a line
+    # written for that customer.
+
     # @param user [Spree.user_class]
     # @param store [Spree::Store]
     def approval_email(user, store)
       # Re-checked at render time, not at enqueue time, for the same reason as the
       # signup notification: this is sent with a delay, and the world can move.
-      # Somebody unapproved again in the meantime should not receive it.
-      return if user.customer_groups.reload.empty?
+      #
+      # Asks for an APPROVING group, not for any group. It used to be
+      # `customer_groups.reload.empty?`, which was right while every group meant approved.
+      # Now that More Information and Not Approved are also groups, "has a group" would
+      # let this congratulate somebody the shop had just declined.
+      return unless in_approving_group?(user, store)
 
-      # No copy, no email. Checked against the heading rather than the subject,
-      # because a missing subject would surface as an obviously broken email while a
-      # missing body would not.
-      return if Spree.t(:heading, scope: [:user_emails, :approval], default: '').blank?
+      deliver_outcome(user, store, [:user_emails, :account_approval])
+    end
 
-      @user = user
-      @current_store = store
-      @storefront_url = store.storefront_url.to_s.chomp('/')
+    # Asks the applicant for more about their business.
+    #
+    # The client named the hard part himself: "we will not know what info to ask for in a
+    # template". So the shop types it into a box on the customer page and it arrives here
+    # as %{note}, which his wording places inside its own sentence.
+    #
+    # @param user [Spree.user_class]
+    # @param store [Spree::Store]
+    def more_information_email(user, store)
+      group = group_for_role(:more_information, store)
+      return if group.nil?
 
-      with_store_locale(store) do
-        mail(
-          to: user.email,
-          subject: Spree.t(:subject, scope: [:user_emails, :approval], store: store.name),
-          store_url: store.storefront_url
-        )
-      end
+      # Still the shop's decision by the time this runs. An admin who picks the wrong
+      # group and fixes it inside the two minute grace sends nothing.
+      return unless user.customer_groups.reload.exists?(id: group.id)
+
+      deliver_outcome(user, store, [:user_emails, :account_approval, :account_not_approved])
+    end
+
+    # Tells the applicant the shop has declined the account.
+    #
+    # Dormant today: his file has no user_emails.not_approved section, because his flow
+    # leaves an unreachable applicant sitting in the group without a further email. Kept
+    # rather than deleted so that the day he writes the words, it sends.
+    #
+    # @param user [Spree.user_class]
+    # @param store [Spree::Store]
+    def not_approved_email(user, store)
+      group = group_for_role(:not_approved, store)
+      return if group.nil?
+      return unless user.customer_groups.reload.exists?(id: group.id)
+
+      deliver_outcome(user, store, [:user_emails, :not_approved])
     end
 
     # Tells the shop that somebody has signed up and is waiting to be approved.
@@ -140,11 +179,31 @@ module Spree
       # visible yet. Checked at enqueue time this loses the race every time: measured,
       # not assumed. A customer created and approved together still got announced as
       # waiting.
+      #
+      # ANY group is correct here, and it was re-examined when More Information and Not
+      # Approved arrived. Elsewhere "any group" became a bug, because those two mean not
+      # approved. Here the question is different: this email exists to tell the shop that
+      # somebody is waiting for a DECISION, and membership of any of the three means a
+      # decision was already taken. Do not "fix" this to match the others.
       return if user.respond_to?(:customer_groups) && user.reload.customer_groups.any?
 
       @user = user
       @current_store = store
-      @customer_admin_url = "#{store.formatted_url.to_s.chomp('/')}/admin/users/#{user.id}/edit"
+      # to_param, NOT id, and the show page rather than /edit. Both halves were wrong and
+      # both were measured, not reasoned:
+      #
+      #   Spree::Admin::UsersController#find_resource is
+      #     model_class.accessible_by(...).find_by_prefix_id!(params[:id])
+      #
+      # and find_by_prefix_id('1') returns nil, so /admin/users/1/edit rescued into a
+      # redirect and landed the shop on the customer LIST. The one link whose entire job
+      # is "here is the person to approve" pointed at everybody. to_param returns the
+      # prefixed id (cus_UkLWZg9DAJ) because Spree::User includes Spree::PrefixedId.
+      #
+      # /edit is a Turbo Frame drawer opened from the show page, so requesting it directly
+      # returns a bare frame rather than a usable page. The show page carries the customer,
+      # their groups and the Edit button that opens that drawer.
+      @customer_admin_url = "#{store.formatted_url.to_s.chomp('/')}/admin/users/#{user.to_param}"
 
       with_store_locale(store) do
         mail(
@@ -154,6 +213,90 @@ module Spree
           store_url: store.storefront_url
         )
       end
+    end
+
+    # Private, and that is not style. ActionMailer treats every PUBLIC instance method
+    # as a deliverable action, so a helper left public becomes a mailer action that can
+    # be invoked and rendered.
+    private
+
+    # The one place any of the three outcome emails is actually built.
+    #
+    # @copy_scope is set HERE and read by the views, so the key path is defined once. The
+    # earlier version repeated the scope in the mailer and again in each template, which
+    # is two places to update and one place to be wrong.
+    #
+    # No copy, no email. Checked against the heading rather than the subject, because a
+    # missing subject shows up as an obviously broken email while a missing body does not.
+    # Spree.t returns a translation_missing SPAN rather than raising, so `default: ''` is
+    # what makes this a real check.
+    def deliver_outcome(user, store, scope)
+      return if Spree.t(:heading, scope: scope, default: '').blank?
+
+      @user = user
+      @current_store = store
+      @storefront_url = store.storefront_url.to_s.chomp('/')
+      @copy_scope = scope
+      @note = customer_note(user)
+      # From his own common section, so the shop can change it without touching code.
+      @contact_url = Spree.t(:contact_url, scope: [:user_emails, :common], default: @storefront_url)
+
+      with_store_locale(store) do
+        mail(
+          to: user.email,
+          subject: Spree.t(:subject, scope: scope, store: store.name, note: @note, contact_url: @contact_url),
+          store_url: store.storefront_url
+        )
+      end
+    end
+
+    # The shop's note to this customer, typed on the admin form beside the customer
+    # group selector. Owned by the model, see Spree::UserDecorator#approval_note, so
+    # there is one definition of where it lives rather than a key repeated here.
+    #
+    # Read by both new emails: a decline can carry a reason as usefully as a request for
+    # information can carry a question.
+    #
+    # @return [String] never nil, so %{note} always has something to interpolate. I18n
+    #   raises MissingInterpolationArgument on a missing key.
+    def customer_note(user)
+      return '' unless user.respond_to?(:approval_note)
+
+      user.approval_note
+    rescue StandardError
+      ''
+    end
+
+    # @return [Spree::CustomerGroup, nil]
+    def group_for_role(role, store)
+      return nil unless store.respond_to?(:approval_group_roles)
+
+      id = store.approval_group_roles[role.to_s]
+      return nil if id.nil?
+
+      Spree::CustomerGroup.find_by(id: id)
+    rescue StandardError
+      nil
+    end
+
+    # @return [Boolean] whether the customer belongs to at least one group that grants
+    #   trade pricing. Mirrors StorefrontGatingDecorator#approved_for_pricing? on
+    #   purpose: if these two ever disagree, a customer is told they are approved and
+    #   then shown no prices, which is worse than either answer alone.
+    def in_approving_group?(user, store)
+      return false unless user.respond_to?(:customer_groups)
+
+      groups = user.customer_groups.reload
+      excluded = store.respond_to?(:non_approving_customer_group_ids) ? store.non_approving_customer_group_ids : []
+      return groups.any? if excluded.empty?
+
+      groups.where.not(id: excluded).exists?
+    rescue StandardError
+      # Fail CLOSED here, unlike the price gate, and the asymmetry is deliberate. The
+      # gate decides whether to SHOW something and a fault there should not black out a
+      # working shop. This decides whether to SEND something, and an email wrongly
+      # congratulating a declined applicant cannot be recalled.
+      false
     end
   end
 
