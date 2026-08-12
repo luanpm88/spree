@@ -162,6 +162,7 @@ running system, not what the upstream docs claim. Index: `docs/README.md`.
 | | |
 |---|---|
 | `docs/PLAN.md` | **Start here.** Where the engagement is, what is blocked, what is next |
+| `docs/VOICE.md` | **Read before writing to the client.** How messages and tracker comments are written here, built from the real corpus. Gitignored, it quotes him |
 | `docs/DESIGN.md` | Architecture, data model, B2B mechanism, extension points |
 | `docs/LOCAL.md` | Docker dev setup + the failures already hit, with root causes |
 | `docs/DEPLOY.md` | `script/deploy`, server survey, the memory situation |
