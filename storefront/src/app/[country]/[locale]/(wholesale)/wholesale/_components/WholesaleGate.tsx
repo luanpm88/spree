@@ -99,7 +99,19 @@ export async function WholesaleGate({
     // two ever disagree, the page renders a price it was given, which is why
     // isWholesaleApproved and the server's approved_for_pricing? are written to
     // ask the same question.
-    if (allowGuestBrowse && channel?.storefront_access === "prices_hidden") {
+    // Any gated posture, not `prices_hidden` alone. `login_required` gates
+    // GUESTS, and this customer is signed in, so the channel's condition is
+    // already met: what is left to decide is approval, which is this branch.
+    //
+    // Testing for `prices_hidden` here was a real hole, found by auditing the
+    // live shop. Its wholesale channel is `login_required`, so a signed-in
+    // applicant was walled instead of browsing, which is the opposite of what
+    // the client chose. The guest branch above is narrow on purpose: a guest on
+    // `login_required` really is 401'd, so there is nothing to render.
+    //
+    // `public` stays out. There the server returns real prices, so a page
+    // captioned "Awaiting Approval" beside a live price would contradict itself.
+    if (allowGuestBrowse && channel && channel.storefront_access !== "public") {
       return (
         <WholesalePendingBrowse basePath={basePath} customerName={displayName}>
           {children()}

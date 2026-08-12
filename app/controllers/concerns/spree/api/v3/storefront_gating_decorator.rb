@@ -38,10 +38,29 @@ module Spree
           user = try_spree_current_user
           return false if user.blank?
 
-          # Only ever applies on a channel the shop has already marked prices_hidden.
-          # A public channel stays public: this must not turn a retail storefront into
-          # a members club because somebody attached a customer group to it.
-          return false unless current_channel&.storefront_prices_hidden?
+          # Only ever applies on a channel the shop has already gated. A public channel
+          # stays public: this must not turn a retail storefront into a members club
+          # because somebody attached a customer group to it.
+          #
+          # Tested as "not public" rather than against storefront_prices_hidden?, and
+          # that was a real hole. The two predicates are mutually exclusive:
+          #
+          #   public           prices_hidden?=false  login_required?=false
+          #   prices_hidden    prices_hidden?=true   login_required?=false
+          #   login_required   prices_hidden?=false  login_required?=true
+          #
+          # So the earlier guard switched this off on login_required, which is the MORE
+          # restrictive posture, not a looser one. Found by auditing the live shop: its
+          # Wholesale channel is login_required, so an approved-looking but unapproved
+          # customer who signed in saw every trade price, on the one channel where that
+          # matters most. login_required only stops GUESTS reading the catalog; it says
+          # nothing about who may see prices once signed in, which is this method's job.
+          #
+          # Inverted against 'public' rather than listing the gated values, because a
+          # posture added to Spree::Channel::Gating::STOREFRONT_ACCESS later would be a
+          # further restriction, and a list would silently fail open on it.
+          return false if current_channel.nil?
+          return false if current_channel.resolved_storefront_access == 'public'
 
           !approved_for_pricing?(user)
         end
