@@ -1,0 +1,48 @@
+<%# The client's copy, under his own user_emails.welcome namespace. Every string here
+    is his, including the bullet list, which he wrote as a numbered hash so the order
+    is explicit rather than depending on YAML array handling.
+
+    Rendered inside Spree's mailer layout so it carries the same header and footer as
+    everything else the shop sends. When his own HTML design arrives this template is
+    the thing that gets replaced, and neither the mailer nor the subscriber changes. %>
+
+<%= render layout: 'spree/shared/mailer_hero' do %>
+  <h1><%= Spree.t(:heading, scope: [:user_emails, :approval]) %></h1>
+
+  <p class="greeting">
+    <%= Spree.t(:greeting, scope: [:user_emails, :approval],
+                name: @user.first_name.presence || @user.email) %>
+  </p>
+
+  <%# raw, because his body carries <strong> around the words that matter. The copy is
+      the client's own and lives in a file only he and we can write. %>
+  <p><%= raw Spree.t(:body, scope: [:user_emails, :approval]) %></p>
+
+  <p class="sub"><%= Spree.t(:login_details, scope: [:user_emails, :approval], email: @user.email) %></p>
+
+  <%= render 'spree/shared/mailer_button',
+             url: @storefront_url,
+             label: Spree.t(:portal_button, scope: [:user_emails, :approval],
+                            default: Spree.t(:heading, scope: [:user_emails, :approval])) %>
+
+  <h2 style="font-size:16px;margin:24px 0 8px;">
+    <%= Spree.t(:what_next_title, scope: [:user_emails, :approval]) %>
+  </h2>
+  <ul style="margin:0 0 16px;padding-left:20px;">
+    <%# His bullets are a hash keyed 0,1,2. sort_by the integer key so a fourth bullet
+        added later lands in the right place rather than in string order, where 10
+        would sit between 1 and 2. %>
+    <% bullets = Spree.t(:what_bullets, scope: [:user_emails, :approval], default: {}) %>
+    <% Array(bullets.respond_to?(:sort_by) ? bullets.sort_by { |k, _| k.to_s.to_i }.map(&:last) : bullets).each do |line| %>
+      <li style="margin-bottom:6px;"><%= raw line %></li>
+    <% end %>
+  </ul>
+
+  <p><%= Spree.t(:thank_you, scope: [:user_emails, :approval]) %></p>
+
+  <p class="sub">
+    <%= Spree.t(:portal_note, scope: [:user_emails, :approval],
+                shop_url_full: Spree.t(:shop_url_full, scope: [:user_emails, :common],
+                                       default: @storefront_url)) %>
+  </p>
+<% end %>

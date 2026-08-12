@@ -174,4 +174,23 @@ end
 # of already-approved trade customers is silent by construction.
 Rails.application.config.after_initialize do
   Spree.subscribers << SpreeStarter::SignupNotificationSubscriber
+  Spree.subscribers << SpreeStarter::ApprovalNotificationSubscriber
+end
+
+# Make joining a customer group publish an event.
+#
+# Spree::CustomerGroupUser has publish_events true but lifecycle_events_enabled
+# false, so approving a customer, which is exactly this row being created, fires
+# nothing at all. This is the only moment the shop has to tell an applicant they
+# can now see prices, and without this line it passes silently.
+#
+# Create only. An update on a join table carries no meaning worth an event, and a
+# delete would mean somebody was un-approved, which is not something to email
+# about.
+#
+# to_prepare, because publishes_lifecycle_events guards against double
+# registration with its own lifecycle_events_enabled flag and is safe to re-run,
+# and because the class is reloadable in development.
+Rails.application.config.to_prepare do
+  Spree::CustomerGroupUser.publishes_lifecycle_events only: [:create]
 end

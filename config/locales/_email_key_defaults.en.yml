@@ -1,0 +1,25 @@
+# Defaults for keys the client's email templates ask for but his locale file does
+# not always define.
+#
+# NAMED WITH A LEADING UNDERSCORE ON PURPOSE. Rails loads config/locales in
+# filename order and I18n lets the LAST file win, so a default must load BEFORE
+# the client's file to be overridable by it. In ASCII "_" sorts ahead of every
+# lowercase letter, so this loads first whatever he calls his own file. Rename it
+# and his copy stops taking effect, silently.
+#
+# Only for keys where an absence is a real gap in a live email. Anything he simply
+# has not written yet belongs missing, so it is visible.
+#
+#   shop_country  The templates use it as the logo's alt text and as a line in the
+#                 text footer. the client's answer was that the shop has no country
+#                 because it is global, which is a decision rather than an
+#                 oversight. Empty is therefore correct twice over: a decorative
+#                 logo beside the shop name wants empty alt text, and the footer
+#                 line should not appear at all. Without this the templates print
+#                 "translation missing: en.spree.user_emails.common.shop_country"
+#                 into the alt attribute and the footer.
+en:
+  spree:
+    user_emails:
+      common:
+        shop_country: ""

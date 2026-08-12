@@ -1,0 +1,18 @@
+<%# His _txt variants exist precisely for this part: same sentences without the markup. %>
+<%= Spree.t(:heading, scope: [:user_emails, :approval]) %>
+
+<%= Spree.t(:greeting, scope: [:user_emails, :approval], name: @user.first_name.presence || @user.email) %>
+
+<%= Spree.t(:body_txt, scope: [:user_emails, :approval], default: Spree.t(:body, scope: [:user_emails, :approval])) %>
+
+<%= Spree.t(:login_details, scope: [:user_emails, :approval], email: @user.email) %>
+
+<%= Spree.t(:what_next_title, scope: [:user_emails, :approval]) %>
+<% bullets = Spree.t(:what_bullets_txt, scope: [:user_emails, :approval], default: {}) -%>
+<% Array(bullets.respond_to?(:sort_by) ? bullets.sort_by { |k, _| k.to_s.to_i }.map(&:last) : bullets).each do |line| -%>
+- <%= line %>
+<% end -%>
+
+<%= Spree.t(:thank_you, scope: [:user_emails, :approval]) %>
+
+<%= Spree.t(:portal_note, scope: [:user_emails, :approval], shop_url_full: Spree.t(:shop_url_full, scope: [:user_emails, :common], default: @storefront_url)) %>

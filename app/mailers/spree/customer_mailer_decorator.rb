@@ -48,6 +48,53 @@ module Spree
       end
     end
 
+    # Tells the customer they have been approved and can now see prices.
+    #
+    # Reads user_emails.approval, which the client has NOT written yet, and refuses to
+    # send until he does. That refusal is the point.
+    #
+    # The obvious shortcut was to reuse his user_emails.welcome section, since it is
+    # the only customer-facing copy he has sent. It is the wrong section, and wrong in
+    # the worst direction: it reads "Your Account Is Awaiting Final Approval" and
+    # promises "you will receive another email once your account has been approved".
+    # It is his SIGN-UP email. Sending it at the moment of approval tells somebody who
+    # has just been approved that they are still waiting, and the email itself
+    # promises the message they are reading.
+    #
+    # So this sends nothing rather than something wrong. An approved customer whose
+    # prices simply appear is a small disappointment; one told they are still waiting
+    # goes away.
+    #
+    # Interpolations follow his house style from the welcome section, %{name} and
+    # %{email}, plus %{shop_url_full} read from his common section and passed in,
+    # because an interpolation is a value the caller supplies rather than a lookup.
+    #
+    # @param user [Spree.user_class]
+    # @param store [Spree::Store]
+    def approval_email(user, store)
+      # Re-checked at render time, not at enqueue time, for the same reason as the
+      # signup notification: this is sent with a delay, and the world can move.
+      # Somebody unapproved again in the meantime should not receive it.
+      return if user.customer_groups.reload.empty?
+
+      # No copy, no email. Checked against the heading rather than the subject,
+      # because a missing subject would surface as an obviously broken email while a
+      # missing body would not.
+      return if Spree.t(:heading, scope: [:user_emails, :approval], default: '').blank?
+
+      @user = user
+      @current_store = store
+      @storefront_url = store.storefront_url.to_s.chomp('/')
+
+      with_store_locale(store) do
+        mail(
+          to: user.email,
+          subject: Spree.t(:subject, scope: [:user_emails, :approval], store: store.name),
+          store_url: store.storefront_url
+        )
+      end
+    end
+
     # Tells the shop that somebody has signed up and is waiting to be approved.
     #
     # Spree publishes nothing at all when a customer account is created, so without
