@@ -1,0 +1,222 @@
+#!/usr/bin/env node
+// What is actually running on the client's server, shop by shop.
+//
+//   script/estate              print it
+//   script/estate --json       machine-readable
+//   script/estate --record     write it into docs/plan.json for the dashboard
+//
+// The point is that the architecture of that box should be answerable without
+// ssh-ing in and remembering which directory holds what. Every field here is
+// read off the server on each run rather than typed into plan.json by hand,
+// because a hand-maintained inventory is wrong within a fortnight and wrong in
+// the way that matters: it says a thing is running when it stopped.
+//
+// One ssh round trip. Everything comes back as marker-delimited sections and is
+// parsed here, so the remote side stays a plain shell script with no jq
+// dependency and no quoting games.
+
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const ENV_PATH = join(ROOT, '.env.commercial')
+const PLAN = join(ROOT, 'docs/plan.json')
+const JSON_OUT = process.argv.includes('--json')
+const RECORD = process.argv.includes('--record')
+
+const C = process.stdout.isTTY && !JSON_OUT
+  ? { dim: '\x1b[2m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', bold: '\x1b[1m', off: '\x1b[0m' }
+  : { dim: '', red: '', green: '', yellow: '', bold: '', off: '' }
+
+const die = (m) => { console.error(`${C.red}error${C.off} ${m}`); process.exit(2) }
+
+function env() {
+  if (!existsSync(ENV_PATH)) die(`missing ${ENV_PATH}`)
+  const out = {}
+  for (const line of readFileSync(ENV_PATH, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*)$/)
+    if (m) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, '')
+  }
+  return out
+}
+const E = env()
+const KEY = (E.COMMERCIAL_KEY || '').replace(/^~/, process.env.HOME)
+
+// Everything in one script. Fields are pipe-delimited and every field is
+// emitted even when empty, so a missing value is a missing value and not a
+// silently shifted column.
+const REMOTE = String.raw`
+  echo '===host==='
+  echo "$(hostname)|$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")|$(uname -r)|$(nproc)|$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')|$(docker --version 2>/dev/null | cut -d, -f1)|$(uptime -p 2>/dev/null)"
+  echo '===disk==='
+  df -h / /var 2>/dev/null | tail -n +2 | awk '{print $6"|"$2"|"$4"|"$5}'
+  echo '===shops==='
+  for d in /srv/*/; do
+    [ -f "$d/docker-compose.yml" ] || continue
+    s=$(basename "$d")
+    get() { grep -E "^$1=" "$d/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'"'; }
+    rev=$(cut -c1-7 "$d/app/REVISION" 2>/dev/null)
+    when=$(stat -c %y "$d/app/REVISION" 2>/dev/null | cut -c1-16)
+    echo "$s|$(get SHOP_NAME)|$(get RAILS_HOST)|$(get STOREFRONT_URL)|$rev|$when|$(get SPREE_PORT)|$(get STOREFRONT_PORT)|$(get STORE_COUNTRY)|$(get STORE_LOCALE)|$(get SMTP_HOST)"
+  done
+  echo '===containers==='
+  for d in /srv/*/; do
+    [ -f "$d/docker-compose.yml" ] || continue
+    s=$(basename "$d")
+    (cd "$d" && docker compose ps --all --format '{{.Service}}|{{.State}}|{{.Health}}|{{.Image}}|{{.RunningFor}}' 2>/dev/null \
+      | while IFS= read -r l; do echo "$s|$l"; done)
+  done
+  echo '===sizes==='
+  for d in /srv/*/; do
+    [ -f "$d/docker-compose.yml" ] || continue
+    s=$(basename "$d")
+    db=$(cd "$d" && docker compose exec -T postgres psql -U postgres -tAc "SELECT pg_database_size('spree_production')" spree_production 2>/dev/null | tr -d ' \r')
+    st=$(docker run --rm -v "$s"_storage_data:/v:ro alpine du -sb /v 2>/dev/null | cut -f1)
+    src=$(du -sb "$d" 2>/dev/null | cut -f1)
+    [ -n "$db" ] || db=0; [ -n "$st" ] || st=0; [ -n "$src" ] || src=0
+    echo "$s|$db|$st|$src"
+  done
+  echo '===counts==='
+  for d in /srv/*/; do
+    [ -f "$d/docker-compose.yml" ] || continue
+    s=$(basename "$d")
+    r=$(cd "$d" && docker compose exec -T web bin/rails runner '
+      print [Spree::Product.count, Spree::Order.count, Spree::Order.complete.count,
+             Spree.user_class.count, Spree::Channel.count].join("|")' 2>/dev/null | tail -1 | tr -d '\r')
+    [ -n "$r" ] || r="||||"
+    echo "$s|$r"
+  done
+  echo '===nginx==='
+  for f in /etc/nginx/sites-enabled/*; do
+    [ -f "$f" ] || continue
+    n=$(grep -hoP '^\s*server_name \K[^;]+' "$f" | head -1)
+    # These vhosts proxy to a named upstream, not to a port, so read the port off
+    # the upstream block instead. Matching only proxy_pass returns nothing here
+    # and reads as "this site proxies nowhere".
+    p=$(grep -hoP 'server 127\.0\.0\.1:\K[0-9]+' "$f" | head -1)
+    c=$(grep -hoP '^\s*ssl_certificate \K\S+' "$f" | head -1)
+    echo "$(basename "$f")|$n|$p|$c"
+  done
+  echo '===backups==='
+  for d in /var/backups/spree/*/; do
+    s=$(basename "$d")
+    [ "$s" = "last-run.json" ] && continue
+    newest=$(ls -1dt "$d"*/ 2>/dev/null | head -1)
+    [ -n "$newest" ] || { echo "$s||0|0"; continue; }
+    age=$(( ($(date -u +%s) - $(stat -c %Y "$newest")) / 3600 ))
+    tot=$(du -sb "$newest" 2>/dev/null | cut -f1)
+    keep=$(ls -1d "$d"*/ 2>/dev/null | wc -l)
+    [ -n "$tot" ] || tot=0
+    echo "$s|$age|$tot|$keep"
+  done
+`
+
+let RAW
+try {
+  RAW = execFileSync('ssh', ['-i', KEY, '-p', E.COMMERCIAL_PORT || '22', '-o', 'BatchMode=yes',
+    '-o', 'ConnectTimeout=15', `${E.COMMERCIAL_USER}@${E.COMMERCIAL_HOST}`, REMOTE],
+    { encoding: 'utf8', timeout: 240_000, maxBuffer: 16 * 1024 * 1024 })
+} catch (e) {
+  die(`cannot reach the server: ${(e.stderr || e.message).split('\n')[0]}`)
+}
+
+const sect = (n) => {
+  const m = RAW.split(`===${n}===`)[1]
+  return m ? m.split('===')[0].trim().split('\n').filter(Boolean) : []
+}
+
+const [hn, os, kernel, cores, ram, dockerV, up] = (sect('host')[0] || '').split('|')
+const host = { hostname: hn, os, kernel, cores: Number(cores) || null, ram_mb: Number(ram) || null, docker: dockerV, uptime: up }
+// `df -h / /var` prints the same row twice when /var is not its own filesystem,
+// which reads as two disks. Dedupe on the mount point df actually resolved to.
+const disks = [...new Map(sect('disk').map((l) => {
+  const [mount, size, free, used] = l.split('|')
+  return [mount, { mount, size, free, used }]
+})).values()]
+
+const shops = sect('shops').map((l) => {
+  const [shop, name, admin, storefront, revision, deployed_at, port, sport, country, locale, smtp] = l.split('|')
+  return {
+    shop, name: name || shop, admin_host: admin || null, storefront_url: storefront || null,
+    revision: revision || null, deployed_at: deployed_at || null,
+    backend_port: Number(port) || null, storefront_port: Number(sport) || null,
+    country: country || null, locale: locale || null,
+    // No SMTP_HOST means Spree logs mail instead of sending it, and nothing
+    // anywhere raises. Worth a column of its own.
+    mail: smtp ? 'configured' : 'NOT SENDING',
+    containers: [], backup: null,
+  }
+})
+const byShop = Object.fromEntries(shops.map((s) => [s.shop, s]))
+
+for (const l of sect('containers')) {
+  const [shop, service, state, health, image, since] = l.split('|')
+  byShop[shop]?.containers.push({ service, state, health: health || null, image, since })
+}
+for (const l of sect('sizes')) {
+  const [shop, db, storage, src] = l.split('|')
+  if (byShop[shop]) byShop[shop].sizes = { db: Number(db), storage: Number(storage), source: Number(src) }
+}
+for (const l of sect('counts')) {
+  const [shop, products, orders, complete, users, channels] = l.split('|')
+  if (byShop[shop]) byShop[shop].data = {
+    products: Number(products) || 0, orders: Number(orders) || 0, orders_complete: Number(complete) || 0,
+    customers: Number(users) || 0, channels: Number(channels) || 0,
+  }
+}
+for (const l of sect('backups')) {
+  const [shop, age, total, keep] = l.split('|')
+  if (byShop[shop]) byShop[shop].backup = { age_hours: age === '' ? null : Number(age), bytes: Number(total), generations: Number(keep) }
+}
+const nginx = sect('nginx').map((l) => {
+  const [file, server_name, proxy_port, cert] = l.split('|')
+  return { file, server_name, proxy_port: Number(proxy_port) || null, tls: Boolean(cert) }
+})
+
+// ── report ──────────────────────────────────────────────────────────────────
+
+const bytes = (n) => {
+  if (!n) return '0'
+  const u = ['b', 'K', 'M', 'G']
+  let i = 0, v = n
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)}${u[i]}`
+}
+
+const estate = { collected_at: new Date().toISOString(), host, disks, shops, nginx }
+
+if (JSON_OUT) {
+  console.log(JSON.stringify(estate, null, 2))
+} else {
+  console.log(`${C.bold}${host.hostname}${C.off} ${C.dim}${host.os} · ${host.cores} cores · ${host.ram_mb}MB · ${host.docker} · ${host.uptime}${C.off}`)
+  for (const d of disks) console.log(`${C.dim}  ${d.mount} ${d.size}, ${d.free} free (${d.used})${C.off}`)
+  console.log()
+  for (const s of shops) {
+    const running = s.containers.filter((c) => c.state === 'running').length
+    const bad = s.containers.some((c) => c.state !== 'running' || c.health === 'unhealthy')
+    console.log(`${bad ? C.red : C.green}${s.shop}${C.off}  ${C.dim}${s.name}${C.off}`)
+    console.log(`    admin      https://${s.admin_host || '?'}  ${C.dim}:${s.backend_port}${C.off}`)
+    console.log(`    shop       ${s.storefront_url || C.dim + 'not deployed' + C.off}  ${C.dim}:${s.storefront_port || '-'}${C.off}`)
+    console.log(`    containers ${running}/${s.containers.length} running  ${C.dim}${s.containers.map((c) => `${c.service}=${c.health || c.state}`).join(' ')}${C.off}`)
+    console.log(`    deployed   ${s.revision || '?'} ${C.dim}${s.deployed_at || ''}${C.off}`)
+    if (s.data) console.log(`    data       ${s.data.products} products · ${s.data.orders} orders · ${s.data.customers} customers · ${s.data.channels} channels`)
+    if (s.sizes) console.log(`    size       db ${bytes(s.sizes.db)} · uploads ${bytes(s.sizes.storage)} · source ${bytes(s.sizes.source)}`)
+    const b = s.backup
+    console.log(`    backup     ${b && b.age_hours !== null
+      ? `${b.age_hours <= 26 ? C.green : C.red}${b.age_hours}h ago${C.off}, ${bytes(b.bytes)}, ${b.generations} kept`
+      : `${C.red}none${C.off}`}`)
+    console.log(`    mail       ${s.mail === 'configured' ? 'configured' : C.red + 'NOT SENDING' + C.off}`)
+    console.log()
+  }
+}
+
+if (RECORD) {
+  if (!existsSync(PLAN)) die(`missing ${PLAN}`)
+  const plan = JSON.parse(readFileSync(PLAN, 'utf8'))
+  plan.health ??= {}
+  plan.health.estate = estate
+  writeFileSync(PLAN, `${JSON.stringify(plan, null, 2)}\n`)
+  if (!JSON_OUT) console.log(`${C.dim}recorded in docs/plan.json${C.off}`)
+}

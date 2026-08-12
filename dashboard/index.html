@@ -243,6 +243,10 @@ const TABS = [
   { id:'timeline',  label:'Conversation', count: (p) => (p.timeline ?? []).length },
   { id:'decisions', label:'Decisions',    count: (p) => (p.decisions ?? []).length },
   { id:'shipped',   label:'Shipped',      count: (p) => (p.done ?? []).length },
+  { id:'estate',    label:'Estate',       alert: true, count: (p) => estateRows(p).length },
+  // Alerts, because the only useful moment for this tab is the one where nobody
+  // is thinking about backups.
+  { id:'backups',   label:'Backups',      alert: true, count: (p) => backupRows(p).length },
   { id:'reference', label:'Reference',    count: () => null },
 ]
 const open = (p) => (p.waiting_on_client ?? []).filter(w => w.status === 'open')
@@ -314,6 +318,31 @@ const TASK_TONE = { in_progress:'blue', todo:'grey', blocked:'red', parked:'viol
 const SEV_TONE  = { critical:'red', high:'red', medium:'amber', low:'grey' }
 
 /* ── views ───────────────────────────────────────────────────────────────── */
+/* Backups, surfaced where you already look rather than in a log file.
+   Two separate failures, and the second is the one that bites: the backup can be
+   broken, or the CHECK can have stopped running while the last verdict sits there
+   saying everything is fine. A stale green is indistinguishable from a real green
+   unless something watches the watcher, so this ages out its own result. */
+const BACKUP_CHECK_STALE_HOURS = 48
+
+function backupRows(p) {
+  const b = p.health?.backups
+  if (!b) return [{ k:'Backups', t:'No backup check has ever run', tone:'red',
+    d:'Run `script/backups --deep --record`. Nothing on the client server is known to be recoverable.' }]
+
+  const rows = []
+  const checkedHrs = (Date.now() - new Date(b.checked_at).getTime()) / 3.6e6
+  if (checkedHrs > BACKUP_CHECK_STALE_HOURS) {
+    rows.push({ k:'Backups', t:`Backup check has not run for ${Math.round(checkedHrs / 24)} days`, tone:'red',
+      d:`Last verdict was ${b.checked_at.slice(0, 16).replace('T', ' ')} and says "${b.ok ? 'ok' : 'failing'}", but it is too old to believe. The launchd job may have stopped.` })
+  }
+  if (!b.ok) {
+    for (const problem of (b.problems ?? []).slice(0, 4))
+      rows.push({ k:'Backups', t:problem, tone:'red', d:`Last backup ${b.last_backup_at ?? 'never'}. Fix with \`script/backups --run --deep\`.` })
+  }
+  return rows
+}
+
 function viewOverview(p) {
   const w = open(p), tasks = p.tasks ?? []
   const hiRisk = (p.risks ?? []).filter(r => r.severity === 'high' && r.status !== 'mitigated')
@@ -342,6 +371,8 @@ function viewOverview(p) {
     ...w.filter(x => x.severity === 'high').map(x => ({ k:'Waiting', t:x.question, d:x.why_it_matters, tone:'red' })),
     ...hiRisk.map(x => ({ k:'Risk', t:x.title, d:x.detail, tone:'red' })),
     ...tasks.filter(t => t.status === 'blocked').map(x => ({ k:'Blocked', t:x.title, d:x.detail, tone:'amber' })),
+    ...backupRows(p),
+    ...estateRows(p),
   ]
   if (!rows.length) H.push('<div class="tw"><p class="empty">Nothing urgent.</p></div>')
   else {
@@ -426,7 +457,9 @@ function viewTheir(p) {
     if (r.artifact) tags.push(`<span class="tag">${esc(r.artifact)}</span>`)
     if (tags.length) H.push(`<p>${tags.join('')}</p>`)
     if (r.url) H.push(`<p><a href="${esc(r.url)}" rel="noreferrer">open in ${esc(c?.system ?? 'tracker')}</a></p>`)
-    if (r.ac_id) H.push(`<p class="dim">reply from here: <code>script/ac_comment ${esc(String(r.number ?? '').replace(/\D+/g,'').slice(0,2))} tmp/client/reply.md</code></p>`)
+    // The hint stays generic. This repo is public, and the scratch directory the
+    // replies actually live in is named after the client.
+    if (r.ac_id) H.push(`<p class="dim">reply from here: <code>script/ac_comment ${esc(String(r.number ?? '').replace(/\D+/g,'').slice(0,2))} &lt;your-reply&gt;.md</code></p>`)
     return H.join('')
   }, 'No tasks on their side yet.')
 }
@@ -525,6 +558,246 @@ function viewShipped(p) {
   'Nothing shipped yet.')
 }
 
+/* ── estate ───────────────────────────────────────────────────────────────
+   One row per shop, answering "what is the architecture of that box" without
+   ssh-ing in. Every field is collected by `script/estate` on each run rather
+   than written into plan.json by hand: a hand-kept inventory goes stale in the
+   direction that matters, saying a thing is up after it stopped.
+
+   Anything wrong with a shop is a row in Needs attention on the overview, so
+   this tab is where you go to understand the estate, not where you go to find
+   out something broke. */
+const ESTATE_STALE_HOURS = 48
+
+function estateRows(p) {
+  const e = p.health?.estate
+  if (!e) return [{ k:'Estate', t:'The server has never been surveyed', tone:'amber',
+    d:'Run `script/estate --record`. Nothing here knows what is deployed.' }]
+  const rows = []
+  const age = (Date.now() - new Date(e.collected_at).getTime()) / 3.6e6
+  if (age > ESTATE_STALE_HOURS) {
+    rows.push({ k:'Estate', t:`Server survey is ${Math.round(age / 24)} days old`, tone:'amber',
+      d:'Everything on the Estate tab describes how the box looked then, not now. Run `script/estate --record`.' })
+  }
+  for (const s of e.shops ?? []) {
+    const down = (s.containers ?? []).filter(c => c.state !== 'running')
+    if (down.length) rows.push({ k:'Estate', t:`${s.shop}: ${down.map(c => c.service).join(', ')} not running`, tone:'red',
+      d:`On ${e.host?.hostname ?? 'the server'}. The shop is degraded or offline.` })
+    const unhealthy = (s.containers ?? []).filter(c => c.health === 'unhealthy')
+    if (unhealthy.length) rows.push({ k:'Estate', t:`${s.shop}: ${unhealthy.map(c => c.service).join(', ')} unhealthy`, tone:'red',
+      d:'Running but failing its own health check.' })
+    // Silent by design in Spree, which is exactly why it is loud here: with no
+    // SMTP_HOST the app logs mail and returns success, and the customer gets
+    // nothing. No exception, no bounce, no clue.
+    if (s.mail !== 'configured') rows.push({ k:'Estate', t:`${s.shop} cannot send email`, tone:'amber',
+      d:'No SMTP host configured, so order confirmations are written to the log and silently dropped.' })
+  }
+  return rows
+}
+
+function viewEstate(p) {
+  const e = p.health?.estate
+  const H = []
+  if (!e) {
+    H.push(`<div class="err"><b>The server has never been surveyed</b>
+      <p style="margin:9px 0 0;color:var(--dim)">Run <code>script/estate --record</code>.</p></div>`)
+    return H.join('')
+  }
+
+  const h = e.host ?? {}
+  const shops = e.shops ?? []
+  const age = (Date.now() - new Date(e.collected_at).getTime()) / 3.6e6
+  const allUp = shops.every(s => (s.containers ?? []).every(c => c.state === 'running'))
+
+  H.push(`<div class="hero">
+    <p class="headline">${shops.length} shop${shops.length === 1 ? '' : 's'} on ${esc(h.hostname ?? '?')}, ${allUp ? 'all containers running' : 'something is not running'}.</p>
+    <div class="next"><span class="l">SURVEYED</span><span>${esc(e.collected_at.slice(0, 16).replace('T', ' '))} UTC${age > ESTATE_STALE_HOURS ? ' — stale, re-run script/estate' : ''}</span></div>
+  </div>`)
+
+  H.push(`<div class="counts">
+    ${cnt('estate', shops.length, 'shops', '')}
+    ${cnt('estate', shops.reduce((n, s) => n + (s.containers ?? []).filter(c => c.state === 'running').length, 0), 'containers up', allUp ? 'green' : 'red')}
+    ${cnt('estate', h.cores ?? '?', 'cores', '')}
+    ${cnt('estate', h.ram_mb ? `${Math.round(h.ram_mb / 1024)}G` : '?', 'memory', '')}
+    ${cnt('estate', (e.disks ?? [])[0]?.free ?? '?', 'disk free', '')}
+  </div>`)
+
+  H.push(`<h2>The box</h2><div class="card">
+    <h3>${esc(h.hostname ?? '?')}</h3>
+    <p>${esc(h.os ?? '')} · kernel ${esc(h.kernel ?? '')} · ${esc(h.docker ?? '')} · ${esc(h.uptime ?? '')}</p>
+    <p>${(e.disks ?? []).map(d => `${esc(d.mount)} ${esc(d.size)}, ${esc(d.free)} free (${esc(d.used)} used)`).join(' · ')}</p>
+  </div>`)
+
+  // The wide one. Scrolls inside its own container rather than pushing the page.
+  // Ports live under the address they serve rather than in a column of their own.
+  // Two numbers with no context needed a column; next to the hostname they need a
+  // line, and that buys back the width for Mail, which is a warning rather than a
+  // detail and was being pushed off the visible edge of the table.
+  H.push('<h2>Shops</h2><div class="tw"><table><thead><tr>' +
+    '<th>Shop</th><th style="width:160px">Admin</th><th style="width:160px">Storefront</th>' +
+    '<th style="width:120px">Containers</th><th style="width:92px">Deployed</th>' +
+    '<th style="width:110px">Data</th>' +
+    '<th style="width:92px">Size</th><th style="width:96px">Backup</th><th style="width:74px">Mail</th>' +
+    '</tr></thead><tbody>')
+  for (const s of shops) {
+    const cs = s.containers ?? []
+    const up = cs.filter(c => c.state === 'running').length
+    const cTone = up === cs.length && cs.length ? '' : 'red'
+    const b = s.backup
+    const bCell = b && b.age_hours !== null
+      ? (b.age_hours <= 26 ? `${b.age_hours}h ago` : pill(`${b.age_hours}h old`, 'red'))
+      : pill('none', 'red')
+    H.push(`<tr>
+      <td class="t">${esc(s.shop)}<div class="note">${esc(s.name ?? '')}</div></td>
+      <td class="n">${s.admin_host ? `<a href="https://${esc(s.admin_host)}/admin" target="_blank" rel="noopener">${esc(s.admin_host)}</a>` : '<span class="note">none</span>'}<div class="note">:${s.backend_port ?? '-'}</div></td>
+      <td class="n">${s.storefront_url ? `<a href="${esc(s.storefront_url)}" target="_blank" rel="noopener">${esc(String(s.storefront_url).replace(/^https?:\/\//, ''))}</a>` : '<span class="note">not deployed</span>'}<div class="note">:${s.storefront_port ?? '-'}</div></td>
+      <td>${cTone ? pill(`${up}/${cs.length} up`, 'red') : `${up}/${cs.length} up`}
+        <div class="note">${cs.map(c => esc(`${c.service}:${c.health || c.state}`)).join('<br>')}</div></td>
+      <td class="n">${esc(s.revision ?? '?')}<div class="note">${esc(s.deployed_at ?? '')}</div></td>
+      <td class="n">${s.data ? `${s.data.products} prod<div class="note">${s.data.orders} orders · ${s.data.customers} cust</div>` : '<span class="note">?</span>'}</td>
+      <td class="n">${s.sizes ? `${bytes(s.sizes.db)}<div class="note">up ${bytes(s.sizes.storage)}</div>` : '<span class="note">?</span>'}</td>
+      <td class="n">${bCell}${b ? `<div class="note">${bytes(b.bytes)} · ${b.generations} kept</div>` : ''}</td>
+      <td>${s.mail === 'configured' ? 'ok' : pill('silent', 'amber')}</td>
+    </tr>`)
+  }
+  H.push('</tbody></table></div>')
+
+  if ((e.nginx ?? []).length) {
+    H.push('<h2>What nginx answers on</h2><div class="tw"><table><thead><tr>' +
+      '<th>Site</th><th>Server name</th><th style="width:100px">Proxies to</th><th style="width:70px">TLS</th></tr></thead><tbody>')
+    for (const n of e.nginx) {
+      // A vhost with no server_name is nginx's stock catch-all. It serves nothing
+      // and wants no certificate, so flagging it red for missing TLS is noise, and
+      // noise here costs the real red flags their meaning.
+      const isCatchAll = !n.server_name || n.server_name === '_'
+      H.push(`<tr><td class="t">${esc(n.file)}</td>` +
+        `<td class="n">${isCatchAll ? '<span class="note">catch-all, serves nothing</span>' : esc(n.server_name)}</td>` +
+        `<td class="n">${n.proxy_port ? `127.0.0.1:${n.proxy_port}` : '<span class="note">-</span>'}</td>` +
+        `<td>${n.tls ? 'yes' : isCatchAll ? '<span class="note">n/a</span>' : pill('no', 'red')}</td></tr>`)
+    }
+    H.push('</tbody></table></div>')
+  }
+
+  H.push(`<h2>How a shop is put together</h2><div class="card">
+    <p>One directory per shop under <code>/srv</code>, one compose stack inside it, nothing shared
+    between shops except nginx and the kernel. <code>/srv/&lt;shop&gt;/app</code> is the code,
+    <code>docker-compose.yml</code> the stack, <code>.env</code> that shop's secrets.</p>
+    <p>Three containers: <b>postgres</b> holds the data, <b>web</b> is Rails and serves
+    <code>/admin</code> and the API, <b>storefront</b> is the Next.js shop customers see.
+    Spree 5.5 dropped the Rails storefront and 5.6 ships no replacement, which is why the
+    front end is a separate image at all.</p>
+    <p>Every port binds to <code>127.0.0.1</code> only. nginx on the host terminates TLS and
+    proxies in, so nothing here is reachable from the internet except through it. Binding
+    <code>0.0.0.0</code> would publish the app directly, because Docker writes its NAT rules
+    ahead of the firewall.</p>
+    <p><code>SPREE_API_URL</code> and the publishable key are <em>build</em> arguments for the
+    storefront, not runtime ones, so pointing a shop at a different backend means rebuilding
+    that image rather than editing an env var.</p>
+  </div>`)
+
+  return H.join('')
+}
+
+/* ── backups ──────────────────────────────────────────────────────────────
+   Written after a postgres volume was recreated on the client's live server to
+   change a password, taking a morning of his admin settings with it. Nothing
+   existed to restore from and nothing anywhere said so.
+
+   The tab answers three questions in the order you actually ask them at the
+   moment you need it: is there a backup, is it recent enough to be worth
+   anything, and what exactly do I type to get the data back. The restore recipe
+   is spelled out rather than linked, because the day you want it is not the day
+   to go looking for it. */
+const bytes = (n) => {
+  if (!n) return '0'
+  const u = ['b', 'K', 'M', 'G']
+  let i = 0, v = n
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)}${u[i]}`
+}
+
+function viewBackups(p) {
+  const b = p.health?.backups
+  const H = []
+
+  if (!b) {
+    H.push(`<div class="err"><b>No backup check has ever run</b>
+      <p style="margin:9px 0 0;color:var(--dim)">Nothing on the client server is known to be recoverable.
+      Run <code>script/backups --run --deep --record</code>.</p></div>`)
+    return H.join('')
+  }
+
+  const checkedHrs = (Date.now() - new Date(b.checked_at).getTime()) / 3.6e6
+  const stale = checkedHrs > BACKUP_CHECK_STALE_HOURS
+  const shops = b.shops ?? []
+  const oldest = shops.length ? Math.max(...shops.map(s => s.age_hours ?? 9e9)) : null
+  const totalKept = shops.reduce((n, s) => n + (s.generations ?? 0), 0)
+
+  H.push(`<div class="hero">
+    <p class="headline">${b.ok && !stale ? 'Every shop has a verified backup from the last day.' : 'Backups need attention.'}</p>
+    <div class="next"><span class="l">CHECKED</span><span>${esc(b.checked_at.slice(0, 16).replace('T', ' '))} UTC${stale ? ' — too old to believe' : ''}</span></div>
+  </div>`)
+
+  H.push(`<div class="counts">
+    ${cnt('backups', oldest === null ? '—' : `${oldest}h`, 'oldest backup', oldest !== null && oldest <= 26 ? 'green' : 'red')}
+    ${cnt('backups', shops.length, 'shops covered', shops.length ? 'green' : 'red')}
+    ${cnt('backups', totalKept, 'copies kept', '')}
+    ${cnt('backups', b.cron === 'installed' ? 'on' : 'OFF', 'nightly cron', b.cron === 'installed' ? 'green' : 'red')}
+    ${cnt('backups', b.disk_used ?? '?', 'disk used', parseInt(b.disk_used) > 85 ? 'red' : 'green')}
+  </div>`)
+
+  if ((b.problems ?? []).length) {
+    H.push('<h2>Problems</h2><div class="tw"><table><tbody>')
+    for (const pr of b.problems) H.push(`<tr><td style="width:90px">${pill('Backup', 'red')}</td><td class="t">${esc(pr)}</td></tr>`)
+    H.push('</tbody></table></div>')
+  }
+
+  H.push('<h2>What is stored</h2><div class="tw"><table><thead><tr>' +
+    '<th>Shop</th><th style="width:74px">Age</th><th style="width:80px">Database</th>' +
+    '<th style="width:74px">Uploads</th><th style="width:74px">App</th>' +
+    '<th style="width:70px">Copies</th><th style="width:96px">Verified</th></tr></thead><tbody>')
+  for (const s of shops) {
+    const fresh = s.age_hours !== null && s.age_hours <= 26
+    // "Verified" means a dump that was read back, not one that merely exists.
+    const verified = s.complete === undefined ? '<span class="note">size only</span>'
+      : s.complete ? `${s.tables} tables` : pill('TRUNCATED', 'red')
+    H.push(`<tr><td class="t">${esc(s.shop)}</td>` +
+      `<td class="${fresh ? '' : 'n'}">${s.age_hours === null ? pill('none', 'red') : `${s.age_hours}h`}</td>` +
+      `<td class="n">${bytes(s.db)}</td><td class="n">${bytes(s.storage)}</td><td class="n">${bytes(s.app)}</td>` +
+      `<td class="n">${s.generations}</td><td>${verified}</td></tr>`)
+  }
+  H.push('</tbody></table></div>')
+
+  H.push(`<h2>Getting it back</h2><div class="card">
+    <h3>Restore the database onto a running shop</h3>
+    <p>The dump carries <code>--clean --if-exists</code>, so it replays over a live database
+    without dropping it first. That is deliberate: the mistake this whole tab exists
+    because of was reaching for a delete when a replay would have done.</p>
+    <p><code>zcat /var/backups/spree/&lt;shop&gt;/&lt;stamp&gt;/db.sql.gz | docker compose exec -T postgres psql -U postgres spree_production</code></p>
+    <h3>Restore uploaded images</h3>
+    <p><code>docker run --rm -i -v &lt;shop&gt;_storage_data:/v alpine tar -xzf - -C /v &lt; storage.tar.gz</code></p>
+    <h3>Restore the client's own files</h3>
+    <p>Mail templates, the shipping calculator and the postcode list are gitignored,
+    so <code>app.tar.gz</code> is the only copy that exists anywhere.
+    <code>tar -xzf app.tar.gz -C /srv</code></p>
+    <h3>Before touching anything</h3>
+    <p><code>ssh &lt;server&gt; /usr/local/bin/spree-backup &lt;shop&gt;</code> — takes about five seconds and is the rule now, not a suggestion.</p>
+  </div>`)
+
+  H.push(`<h2>How this is checked</h2><div class="card">
+    <p>The nightly job runs on the server at 02:15 UTC and keeps 14 days.
+    <code>script/backups --deep --record</code> runs from a laptop, not from the server, for the
+    same reason <code>script/uptime</code> does: a checker living on the box it watches has nothing
+    to say on the day that box is the problem.</p>
+    <p>It reads each dump back rather than trusting an exit code, because
+    <code>pg_dump</code> returns success on a file truncated by a full disk. This page also ages out
+    its own verdict after ${BACKUP_CHECK_STALE_HOURS} hours, so a check that quietly stopped
+    running shows up as red rather than as a stale green.</p>
+  </div>`)
+
+  return H.join('')
+}
+
 function viewReference(p) {
   const H = []
   if (p.client) {
@@ -589,7 +862,8 @@ function viewReference(p) {
 }
 
 const VIEWS = { overview:viewOverview, waiting:viewWaiting, their:viewTheir, work:viewWork, risks:viewRisks,
-                timeline:viewTimeline, decisions:viewDecisions, shipped:viewShipped, reference:viewReference }
+                timeline:viewTimeline, decisions:viewDecisions, shipped:viewShipped,
+                estate:viewEstate, backups:viewBackups, reference:viewReference }
 
 /* ── render ───────────────────────────────────────────────────────────────── */
 function render() {

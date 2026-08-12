@@ -29,7 +29,12 @@ services:
     image: postgres:18-alpine
     restart: always
     environment:
-      POSTGRES_HOST_AUTH_METHOD: trust   # reachable only on this shop's network
+      # A real password, not trust. The network boundary already keeps this database
+      # off the internet, but a password is the difference between one mistake and
+      # two: anything that ends up on this host's docker network would otherwise have
+      # the database as well. Client's standard: 24 characters, and a different one
+      # per shop, so a leak from one shop cannot open another.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env, 24 chars, unique per shop}
       POSTGRES_DB: ${POSTGRES_DB:-spree_production}
       PGDATA: /var/lib/postgresql/18/docker
     command: >
@@ -66,7 +71,7 @@ services:
         condition: service_healthy
     environment:
       RAILS_ENV: production
-      DATABASE_URL: postgres://postgres@postgres:5432/${POSTGRES_DB:-spree_production}
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-spree_production}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?generate one with openssl rand -hex 64}
 
       # Every generated URL comes from this: image URLs in API responses, links

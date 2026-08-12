@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Everything the dashboard needs to know about the client's server, in one call.
+#
+#   script/health            survey, check backups, record both into docs/plan.json
+#   script/health --install  install the launchd job that runs this daily
+#   script/health --status   is the launchd job loaded, when did it last run
+#
+# This is what the scheduled job runs. It is a separate file rather than three
+# lines in a plist so that changing what "healthy" means does not mean editing
+# XML and reloading a daemon.
+#
+# It deliberately does NOT stop at the first failure. A broken backup must not
+# prevent the estate survey from being recorded, or one problem hides the other
+# and the dashboard shows yesterday's picture of everything except the one thing
+# that broke.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+ROOT=$(pwd)
+LABEL=com.luan.spree.health
+PLIST=$HOME/Library/LaunchAgents/$LABEL.plist
+
+case "${1:-run}" in
+  --install)
+    mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/tmp"
+
+    # Resolve node NOW and pin it into the plist, rather than trusting the job to
+    # find it later. launchd starts with a bare environment, and node here comes
+    # from nvm, which is set up by the interactive shell profile that a launchd
+    # job never reads. `bash -lc` looks like it should be enough and is not: the
+    # first scheduled run failed with `env: node: No such file or directory`
+    # while `which node` answered perfectly from a terminal.
+    NODE_BIN=$(command -v node) || { echo "node is not on PATH, cannot install"; exit 1; }
+    NODE_DIR=$(dirname "$NODE_BIN")
+    echo "pinning node from $NODE_DIR"
+
+    # 09:00 local, not 02:00. Nothing here fixes itself, so it should land when
+    # someone is awake to read it rather than eight hours before they look.
+    cat > "$PLIST" <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$NODE_DIR:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>cd '$ROOT' && exec script/health</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+  <!-- The laptop is asleep at 09:00 more often than not. Without this the job is
+       simply skipped and the dashboard quietly ages, which is the exact failure
+       the dashboard is supposed to make visible. -->
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$ROOT/tmp/health.log</string>
+  <key>StandardErrorPath</key><string>$ROOT/tmp/health.log</string>
+</dict>
+</plist>
+XML
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
+    launchctl bootstrap "gui/$(id -u)" "$PLIST" || { echo "could not load $PLIST"; exit 1; }
+    echo "installed $LABEL, runs daily at 09:00 and on login"
+    echo "log: $ROOT/tmp/health.log"
+    exit 0
+    ;;
+  --status)
+    if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+      echo "launchd job loaded"
+      launchctl print "gui/$(id -u)/$LABEL" | grep -E 'last exit code|runs =' | sed 's/^/  /'
+    else
+      echo "launchd job NOT loaded, run script/health --install"
+    fi
+    node -e '
+      const p = require("./docs/plan.json")
+      for (const k of ["estate", "backups"]) {
+        const h = p.health?.[k]
+        if (!h) { console.log(`  ${k}: never recorded`); continue }
+        const t = h.collected_at ?? h.checked_at
+        const hrs = ((Date.now() - new Date(t)) / 3.6e6).toFixed(1)
+        console.log(`  ${k}: ${t} (${hrs}h ago)`)
+      }' 2>/dev/null
+    exit 0
+    ;;
+esac
+
+echo "── $(date -u +%Y-%m-%dT%H:%M:%SZ) ─────────────────────────────"
+rc=0
+script/estate --record  || { echo "estate check failed"; rc=1; }
+script/backups --deep --record || { echo "backup check failed"; rc=1; }
+exit $rc

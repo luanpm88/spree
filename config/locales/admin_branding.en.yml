@@ -1,0 +1,13 @@
+# Strings the admin ships with that name someone else's business.
+#
+# Rails loads engine locales before the app's, and I18n lets the later file win,
+# so overriding a key here is enough. No decorator, no patched view.
+#
+# The admin login page suggested `steve@getvendo.com` in the email field, which
+# is Spree's own demo address. The client saw it on his own login screen and
+# asked for it to go. Anything else of the same kind belongs in this file.
+en:
+  spree:
+    admin:
+      user_sessions:
+        email_placeholder: email@domain.com

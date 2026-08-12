@@ -19,9 +19,21 @@ import { mkdirSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 
 const OUT = 'tmp/dashboard'
-// Must match the TABS in dashboard/index.html. A tab missing here is a tab nothing
-// checks, which is how a broken one ships looking fine.
-const TABS = ['overview', 'waiting', 'their', 'work', 'risks', 'timeline', 'decisions', 'shipped', 'reference']
+
+// Read the tab list out of the page rather than keeping a copy here. This used to
+// be a hardcoded array with a comment warning that a tab missing from it is a tab
+// nothing checks, and then two tabs were added and the comment was right: the
+// check went on reporting a confident pass over the tabs it already knew about.
+// A list that has to be updated by hand to stay correct will eventually not be.
+function tabsFromPage() {
+  const html = readFileSync('dashboard/index.html', 'utf8')
+  const block = html.match(/const TABS = \[([\s\S]*?)\n\]/)
+  if (!block) throw new Error('cannot find the TABS array in dashboard/index.html')
+  const ids = [...block[1].matchAll(/\bid:\s*'([a-z]+)'/g)].map((m) => m[1])
+  if (!ids.length) throw new Error('found the TABS array but no ids in it')
+  return ids
+}
+const TABS = tabsFromPage()
 
 mkdirSync(OUT, { recursive: true })
 const plan = JSON.parse(readFileSync('docs/plan.json', 'utf8'))

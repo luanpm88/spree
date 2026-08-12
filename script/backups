@@ -1,0 +1,229 @@
+#!/usr/bin/env node
+// Is there a backup, is it recent, and is it actually restorable?
+//
+//   script/backups              check every shop, exit non-zero if anything is wrong
+//   script/backups --json       machine-readable, for a cron that pipes somewhere
+//   script/backups --deep       also read a dump back and count its tables
+//   script/backups --run        take a backup now, then check it
+//   script/backups --record     write the verdict into docs/plan.json for the dashboard
+//
+// Run from here, not from the server, for the same reason `script/uptime` is:
+// a checker living on the box it watches has nothing to say on the day that box
+// is the problem. This one reads the receipt the backup script leaves behind, so
+// "the cron silently stopped three weeks ago" is a thing you find out about.
+//
+// The distinction it is built around: a backup that RAN is not a backup that
+// WORKS. Freshness and exit status only tell you the script finished. --deep
+// reads the dump back and counts what is in it, which is the only claim worth
+// making before you rely on it.
+
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const ENV_PATH = join(ROOT, '.env.commercial')
+const JSON_OUT = process.argv.includes('--json')
+const DEEP = process.argv.includes('--deep')
+const RUN = process.argv.includes('--run')
+const RECORD = process.argv.includes('--record')
+const PLAN = join(ROOT, 'docs/plan.json')
+
+// The cron runs at 02:15 UTC. 26 hours allows one missed start without crying
+// wolf, while still catching a cron that stopped yesterday.
+const MAX_AGE_HOURS = 26
+// A shop with a real catalogue dumps to far more than this. The floor is here to
+// catch a dump of an empty database being reported as a healthy backup.
+const MIN_DB_BYTES = 10_000
+
+const C = process.stdout.isTTY && !JSON_OUT
+  ? { dim: '\x1b[2m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', bold: '\x1b[1m', off: '\x1b[0m' }
+  : { dim: '', red: '', green: '', yellow: '', bold: '', off: '' }
+
+const die = (m) => { console.error(`${C.red}error${C.off} ${m}`); process.exit(2) }
+
+function env() {
+  if (!existsSync(ENV_PATH)) die(`missing ${ENV_PATH}`)
+  const out = {}
+  for (const line of readFileSync(ENV_PATH, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*)$/)
+    if (m) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, '')
+  }
+  return out
+}
+const E = env()
+const KEY = (E.COMMERCIAL_KEY || '').replace(/^~/, process.env.HOME)
+
+function ssh(script, { timeout = 120_000 } = {}) {
+  try {
+    return execFileSync('ssh', ['-i', KEY, '-p', E.COMMERCIAL_PORT || '22', '-o', 'BatchMode=yes',
+      '-o', 'ConnectTimeout=15', `${E.COMMERCIAL_USER}@${E.COMMERCIAL_HOST}`, script],
+      { encoding: 'utf8', timeout, maxBuffer: 32 * 1024 * 1024 })
+  } catch (e) {
+    die(`cannot reach the server: ${(e.stderr || e.message).split('\n')[0]}`)
+  }
+}
+
+const human = (n) => {
+  if (!n) return '0'
+  const u = ['b', 'K', 'M', 'G']
+  let i = 0, v = n
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)}${u[i]}`
+}
+
+// ── gather ──────────────────────────────────────────────────────────────────
+
+if (RUN) {
+  console.log(`${C.dim}running a backup now...${C.off}`)
+  console.log(ssh('/usr/local/bin/spree-backup 2>&1', { timeout: 600_000 }).trimEnd())
+  console.log()
+}
+
+// One round trip: the receipt, then every shop's newest backup directory with
+// the size of each part. Doing this in one script keeps it honest about what a
+// single point in time looked like.
+const RAW = ssh(`
+  R=/var/backups/spree
+  echo '---receipt---'
+  cat $R/last-run.json 2>/dev/null || echo '{}'
+  echo '---shops---'
+  for d in $R/*/; do
+    s=$(basename "$d")
+    [ "$s" = "last-run.json" ] && continue
+    newest=$(ls -1dt "$d"*/ 2>/dev/null | head -1)
+    [ -n "$newest" ] || { echo "$s|||none"; continue; }
+    age=$(( $(date -u +%s) - $(stat -c %Y "$newest") ))
+    db=$(stat -c%s "$newest/db.sql.gz" 2>/dev/null || echo 0)
+    st=$(stat -c%s "$newest/storage.tar.gz" 2>/dev/null || echo 0)
+    ap=$(stat -c%s "$newest/app.tar.gz" 2>/dev/null || echo 0)
+    keep=$(ls -1d "$d"*/ 2>/dev/null | wc -l)
+    echo "$s|$newest|$age|$db|$st|$ap|$keep"
+  done
+  echo '---disk---'
+  df -h /var | tail -1 | awk '{print $4"|"$5}'
+  echo '---cron---'
+  crontab -l 2>/dev/null | grep spree-backup || echo 'MISSING'
+`)
+
+const section = (name) => {
+  const m = RAW.split(`---${name}---`)[1]
+  return m ? m.split('---')[0].trim() : ''
+}
+
+let receipt = {}
+try { receipt = JSON.parse(section('receipt') || '{}') } catch { receipt = {} }
+const cron = section('cron')
+const [diskFree, diskUsed] = section('disk').split('|')
+
+const shops = section('shops').split('\n').filter(Boolean).map((line) => {
+  const [shop, path, age, db, storage, app, keep] = line.split('|')
+  return {
+    shop,
+    path,
+    ageHours: path ? Number(age) / 3600 : null,
+    db: Number(db || 0),
+    storage: Number(storage || 0),
+    app: Number(app || 0),
+    generations: Number(keep || 0),
+  }
+})
+
+// ── deep check: read the dump back ──────────────────────────────────────────
+
+if (DEEP) {
+  for (const s of shops) {
+    if (!s.path) continue
+    const out = ssh(`zcat '${s.path}/db.sql.gz' 2>/dev/null | grep -c 'CREATE TABLE' || echo 0`, { timeout: 300_000 })
+    s.tables = Number(out.trim()) || 0
+    // tail -10, not -3. PostgreSQL 18 writes an `\unrestrict <token>` line after
+    // its own completion marker, which pushed the marker five lines from the end
+    // and made this report a perfectly good dump as truncated. A daily check that
+    // cries wolf is worse than no check, because you stop reading it.
+    const tail = ssh(`zcat '${s.path}/db.sql.gz' 2>/dev/null | tail -10`, { timeout: 300_000 })
+    s.complete = tail.includes('dump complete')
+  }
+}
+
+// ── judge ───────────────────────────────────────────────────────────────────
+
+const problems = []
+if (cron === 'MISSING') problems.push('the nightly cron is not installed')
+if (receipt.status && receipt.status !== 'ok') problems.push(`last run reported ${receipt.status}: ${receipt.detail || ''}`)
+if (!receipt.finished_epoch) problems.push('no receipt from any run, the backup has never completed')
+else {
+  const hrs = (Date.now() / 1000 - receipt.finished_epoch) / 3600
+  if (hrs > MAX_AGE_HOURS) problems.push(`last run was ${Math.round(hrs)}h ago, expected within ${MAX_AGE_HOURS}h`)
+}
+if (!shops.length) problems.push('no shop has ever been backed up')
+
+for (const s of shops) {
+  if (!s.path) { problems.push(`${s.shop}: no backup at all`); continue }
+  if (s.ageHours > MAX_AGE_HOURS) problems.push(`${s.shop}: newest backup is ${Math.round(s.ageHours)}h old`)
+  if (s.db < MIN_DB_BYTES) problems.push(`${s.shop}: database dump is only ${human(s.db)}`)
+  if (!s.app) problems.push(`${s.shop}: no app/client-files archive`)
+  if (DEEP && !s.complete) problems.push(`${s.shop}: dump has no completion marker, it is truncated`)
+  if (DEEP && s.tables < 50) problems.push(`${s.shop}: dump holds only ${s.tables} tables`)
+}
+if (diskUsed && Number(diskUsed.replace('%', '')) > 85) {
+  problems.push(`/var is ${diskUsed} full, ${diskFree} left, backups will start failing`)
+}
+
+// ── report ──────────────────────────────────────────────────────────────────
+
+if (JSON_OUT) {
+  console.log(JSON.stringify({
+    checked_at: new Date().toISOString(), receipt, shops, cron, disk: { free: diskFree, used: diskUsed }, problems,
+  }, null, 2))
+} else {
+  for (const s of shops) {
+    if (!s.path) { console.log(`  ${C.red}NONE${C.off} ${s.shop.padEnd(20)} no backup`); continue }
+    const bad = s.ageHours > MAX_AGE_HOURS || s.db < MIN_DB_BYTES || !s.app || (DEEP && !s.complete)
+    const mark = bad ? `${C.red}BAD ${C.off}` : `${C.green}ok  ${C.off}`
+    const deep = DEEP ? `  ${s.tables} tables${s.complete ? '' : ` ${C.red}TRUNCATED${C.off}`}` : ''
+    console.log(`  ${mark} ${s.shop.padEnd(20)} ${String(Math.round(s.ageHours) + 'h ago').padStart(8)}  ` +
+      `db ${human(s.db).padStart(6)}  files ${human(s.storage).padStart(6)}  app ${human(s.app).padStart(6)}  ` +
+      `${s.generations} kept${deep}`)
+  }
+  console.log(`${C.dim}  cron ${cron === 'MISSING' ? 'MISSING' : 'installed'} · /var ${diskUsed} used, ${diskFree} free` +
+    `${receipt.finished_at ? ` · last run ${receipt.finished_at}` : ''}${C.off}`)
+}
+
+// ── record ──────────────────────────────────────────────────────────────────
+// Written into plan.json rather than a log, because the dashboard already polls
+// plan.json every ten seconds and a log nobody opens is not a check. The whole
+// point is that a cron which quietly stopped in March is visible in April.
+if (RECORD) {
+  if (!existsSync(PLAN)) die(`missing ${PLAN}`)
+  const plan = JSON.parse(readFileSync(PLAN, 'utf8'))
+  plan.health ??= {}
+  plan.health.backups = {
+    checked_at: new Date().toISOString(),
+    ok: problems.length === 0,
+    // The receipt's own timestamp, not this check's. "The checker ran" and "a
+    // backup exists" are different claims and the dashboard shows the second.
+    last_backup_at: receipt.finished_at ?? null,
+    cron: cron === 'MISSING' ? 'missing' : 'installed',
+    disk_used: diskUsed ?? null,
+    shops: shops.map((s) => ({
+      shop: s.shop,
+      age_hours: s.ageHours === null ? null : Math.round(s.ageHours),
+      db: s.db, storage: s.storage, app: s.app,
+      generations: s.generations,
+      ...(DEEP ? { tables: s.tables, complete: s.complete } : {}),
+    })),
+    problems,
+  }
+  writeFileSync(PLAN, `${JSON.stringify(plan, null, 2)}\n`)
+  if (!JSON_OUT) console.log(`${C.dim}  recorded in docs/plan.json${C.off}`)
+}
+
+if (problems.length) {
+  if (!JSON_OUT) {
+    console.log()
+    for (const p of problems) console.log(`  ${C.red}!${C.off} ${p}`)
+  }
+  process.exit(1)
+}
+if (!JSON_OUT) console.log(`${C.dim}  nothing wrong${C.off}`)
