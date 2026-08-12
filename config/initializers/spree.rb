@@ -177,6 +177,76 @@ Rails.application.config.after_initialize do
   Spree.subscribers << SpreeStarter::ApprovalNotificationSubscriber
 end
 
+# Emails this shop does not send.
+#
+# The client's B2B shops hand fulfilment and refunds to his own invoicing system, so a
+# shipment or a refund never happens inside Spree and an email about one is a customer
+# being told something untrue by a system that does not know.
+#
+# ── why this is not a setting he can reach ──────────────────────────────────
+#
+# Spree has exactly one switch, Store#preferred_send_consumer_transactional_emails,
+# default TRUE, and it gates order confirm, shipped, reimbursement, customer and
+# newsletter together. There is no per-email switch anywhere in 5.6.1. Turning it off
+# to stop the shipped email would take the order confirmation with it, which is the one
+# email he most wants.
+#
+# ── why deleting his wording is not the same as turning it off ──────────────
+#
+# The obvious move looks like removing the section from his en.yml. That does not stop
+# anything: Spree carries its own English for every one of these, so the email still
+# goes out, in Spree's default voice, about a shipment his own system is handling. Worse
+# than either sending his copy or sending nothing.
+#
+# ── env var, not hardcoded ─────────────────────────────────────────────────
+#
+# Four of the seven shops being migrated onto this codebase are retail (nz, au, us, ca).
+# They ship real parcels and they want the shipped email. Only the B2B shops move
+# fulfilment out. So this belongs in the environment of the shop that wants it, and the
+# retail shops simply do not set it.
+#
+#   DISABLED_EMAILS=shipment,reimbursement
+#
+# Absent from the map on purpose: order (confirm is wanted) and customer (that one
+# carries password reset, which must never be switchable off by a typo).
+#
+# after_initialize, and the ordering is load-bearing in both directions.
+#
+# spree_emails registers its concat inside its own engine's config.after_initialize,
+# which is added when the engine class loads at Bundler.require time. This block is
+# added later, during load_config_initializers, so the concat has already run and there
+# is something to delete. Spree::Events.activate! is added later still, by an
+# initializer declared `after: :load_config_initializers`, so it reads the array after
+# this has pruned it. Move any of the three and the switch silently stops working.
+#
+# Code reloads are covered too: Spree's to_prepare calls Events.reset! then activate!,
+# and both read Spree.subscribers fresh, so a class removed here stays removed.
+Rails.application.config.after_initialize do
+  # Local, not a top level constant: an initializer that defines one puts it on Object
+  # for the life of the process, and this is read exactly once.
+  #
+  # Referencing the classes is safe in this phase for the plainest possible reason:
+  # spree_emails' own engine names the same constants in its own after_initialize block
+  # to register them.
+  optional = {
+    'shipment' => Spree::ShipmentEmailSubscriber,
+    'reimbursement' => Spree::ReimbursementEmailSubscriber,
+    'newsletter' => Spree::NewsletterSubscriberEmailSubscriber
+  }
+
+  requested = ENV.fetch('DISABLED_EMAILS', '').split(',').map { |name| name.strip.downcase }.reject(&:empty?)
+
+  # A typo raises instead of being ignored. A silent no-op here means a customer
+  # receives an email the shop believes is switched off, and nobody finds out until
+  # they reply to it. Failing at boot means finding out during a deploy.
+  unknown = requested - optional.keys
+  if unknown.any?
+    raise "DISABLED_EMAILS: no such email #{unknown.join(', ')}. Valid: #{optional.keys.join(', ')}"
+  end
+
+  requested.each { |name| Spree.subscribers.delete(optional.fetch(name)) }
+end
+
 # Make joining a customer group publish an event.
 #
 # Spree::CustomerGroupUser has publish_events true but lifecycle_events_enabled

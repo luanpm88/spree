@@ -268,7 +268,58 @@ Và `CustomerMailer` chỉ có `password_reset_email`. Shop 5.2/5.4 gửi welcom
 
 Xem `app/mailers/spree/order_mailer_payment_link_decorator.rb`.
 
----
+### 1.21 Chỉ có MỘT công tắc cho toàn bộ email khách hàng
+
+`Spree::Store` có đúng một preference, và nó gác năm subscriber cùng lúc:
+
+```ruby
+# spree_core-5.6.1/app/models/spree/store.rb:47
+preference :send_consumer_transactional_emails, :boolean, default: true
+```
+
+Gác: order (confirm + resend), shipment, reimbursement, customer, newsletter. Không
+có công tắc riêng từng loại ở đâu trong 5.6.1. Tắt nó để chặn email shipped thì mất
+luôn email xác nhận đơn — thường là email duy nhất khách thực sự muốn giữ.
+
+Ngoại lệ duy nhất: `cancel_email` **không** bị preference này gác.
+
+**Và xóa chữ trong en.yml không tắt được email.** Spree mang theo bản tiếng Anh mặc
+định của chính nó cho mọi mailer, nên khi section của khách mất thì mail vẫn gửi, bằng
+giọng của Spree. Khách nhận một email không ai viết, nói về việc mà hệ thống khác đang
+xử lý. Tệ hơn cả hai lựa chọn gửi-chữ-của-khách hoặc không-gửi-gì.
+
+Nơi duy nhất gọi `ShipmentMailer` / `ReimbursementMailer` trong cả `spree_core`,
+`spree_admin`, `spree_api` và `spree_emails` là hai subscriber đó — đã grep hết bốn
+gem. Không có nút resend nào ở admin. Nên bỏ subscriber là tắt **sạch**, không phải
+tắt một nửa:
+
+```ruby
+Spree.subscribers.delete(Spree::ShipmentEmailSubscriber)   # cách Spree tự document
+```
+
+Thứ tự boot là load-bearing, cả hai đầu:
+
+```
+Bundler.require            spree_emails engine đăng ký after_initialize  → concat
+load_config_initializers   block của mình đăng ký after_initialize       → delete
+after: load_config_...     Spree::Events.activate! đăng ký sau nữa       → đọc array
+```
+
+Đổi chỗ bất kỳ cái nào thì switch **im lặng** ngừng hoạt động. `to_prepare` của Spree
+gọi `Events.reset!` rồi `activate!`, cả hai đọc `Spree.subscribers` mới, nên class đã
+xoá vẫn ở ngoài sau mỗi lần reload code.
+
+Đo bằng cách publish event thật rồi đếm job, không đoán:
+
+```
+chưa set                          shipment.shipped → Webhook, ShipmentEmail
+DISABLED_EMAILS=shipment,reimb…   shipment.shipped → Webhook
+                                  order.completed  → vẫn đủ 4, có OrderEmailSubscriber
+```
+
+Biến `DISABLED_EMAILS` trong `config/initializers/spree.rb`. Là env var chứ không
+hardcode: 4 trong 7 shop sắp migrate là bán lẻ (nz, au, us, ca), chúng gửi hàng thật và
+**cần** email shipped. Chỉ shop B2B mới đẩy fulfilment ra ngoài.
 
 ---
 
