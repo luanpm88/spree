@@ -44,6 +44,11 @@
 <%= contact %>
 
 <% end -%>
+<% if @reset_url.present? -%>
+<%= Spree.t('customer_mailer.welcome_email.fallback') %>
+<%= @reset_url %>
+
+<% end -%>
 <% thank_you = t.call(:thank_you) -%>
 <% if thank_you.present? -%>
 <%= thank_you %>

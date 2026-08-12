@@ -82,6 +82,22 @@
     <p><%= raw contact %></p>
   <% end %>
 
+  <%# Only the welcome email sets @reset_url, and only when the shop creates accounts
+      rather than the customer registering. On this client's shop the apply form collects a
+      password, so the flag is off and this block never renders. Kept because a shop whose
+      admin creates customers has no other way in. %>
+  <% if @reset_url.present? %>
+    <%= render 'spree/shared/mailer_button', url: @reset_url,
+               label: Spree.t('customer_mailer.welcome_email.cta') %>
+    <p class="sub"><%= Spree.t('customer_mailer.welcome_email.expiry') %></p>
+    <%# Every mail client eventually eats a button, and this link is the only way in. %>
+    <p class="sub">
+      <%= Spree.t('customer_mailer.welcome_email.fallback') %>
+      <br>
+      <span style="word-break: break-all;"><%= @reset_url %></span>
+    </p>
+  <% end %>
+
   <% thank_you = t.call(:thank_you) %>
   <% if thank_you.present? %>
     <p><%= thank_you %></p>

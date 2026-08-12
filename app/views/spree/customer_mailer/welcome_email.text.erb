@@ -1,14 +1,16 @@
-<%# A text part matters more than usual here. This mail carries the only link that
-    lets the customer in, and some corporate mail gateways strip HTML entirely. %>
+<%# His welcome copy when he has written it, our own wording when he has not. See the
+    HTML twin for why his section IS this email. %>
+<% if @copy_scope.present? %><%= render 'approval_outcome' %><% else %>
 <%= Spree.t('customer_mailer.welcome_email.heading', store: @current_store.name) %>
 
 <%= Spree.t('customer_mailer.welcome_email.greeting', name: @user.first_name.presence || @user.email) %>
 
 <%= Spree.t('customer_mailer.welcome_email.body', store: @current_store.name) %>
+<% if @reset_url.present? -%>
 
-<%= Spree.t('customer_mailer.welcome_email.cta') %>:
+<%= Spree.t('customer_mailer.welcome_email.fallback') %>
 <%= @reset_url %>
 
 <%= Spree.t('customer_mailer.welcome_email.expiry') %>
-
-<%= Spree.t('customer_mailer.welcome_email.signoff', store: @current_store.name) %>
+<% end -%>
+<% end %>

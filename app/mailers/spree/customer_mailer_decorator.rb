@@ -28,6 +28,23 @@ module Spree
       #
       #   Spree::CustomerMailer.welcome_reset_path = '/account/set-password'
       base.class_attribute :welcome_reset_path, default: '/account/reset-password'
+
+      # Whether the welcome email carries a set-your-password link.
+      #
+      # Default true, which is right for a shop whose admin creates customer accounts:
+      # those customers have no password and the link is their only way in.
+      #
+      # FALSE is right for this client, and the evidence is in his own storefront rather
+      # than in an opinion. storefront/.../(wholesale)/wholesale/apply/page.tsx collects a
+      # password on the application form: an `apply-password` field, minimum six
+      # characters, autoComplete="new-password", posted as both password and
+      # password_confirmation. So an applicant has already chosen one by the time this
+      # email goes out, and his own wording agrees: "You can now sign in and browse our
+      # product range". Telling somebody to set a password thirty seconds after they set
+      # one reads as a broken email.
+      #
+      # Set in config/initializers/spree.rb.
+      base.class_attribute :welcome_includes_password_link, default: true
     end
 
     # @param user [Spree.user_class]
@@ -36,19 +53,37 @@ module Spree
     def welcome_email(user, reset_token, store)
       @user = user
       @current_store = store
-      # append_token comes from Spree::BaseMailer and uses ?token= / &token=, which is
-      # the parameter name the storefront's reset page reads. Do not invent another.
-      @reset_url = append_token(
-        "#{store.storefront_url.to_s.chomp('/')}#{self.class.welcome_reset_path}",
-        reset_token
-      )
+      @storefront_url = store.storefront_url.to_s.chomp('/')
+
+      # His own copy when he has written it, ours when he has not. His welcome section is
+      # the SIGN-UP email and it says so: heading "Your Account Is Awaiting Final
+      # Approval", and a bullet promising a second email once approved. That is exactly
+      # what this send is, so it should be his words and not ours.
+      #
+      # The fallback matters: on a checkout without his file, every one of these keys is
+      # absent and the email has to still say something.
+      his_copy = Spree.t(:heading, scope: [:user_emails, :welcome], default: '').present?
+      @copy_scope = his_copy ? [:user_emails, :welcome] : nil
+      @note = ''
+      @contact_url = Spree.t(:contact_url, scope: [:user_emails, :common], default: @storefront_url)
+
+      if self.class.welcome_includes_password_link
+        # append_token comes from Spree::BaseMailer and uses ?token= / &token=, which is
+        # the parameter name the storefront's reset page reads. Do not invent another.
+        @reset_url = append_token(
+          "#{@storefront_url}#{self.class.welcome_reset_path}",
+          reset_token
+        )
+      end
+
+      subject = if his_copy
+                  Spree.t(:subject, scope: [:user_emails, :welcome], store: store.name)
+                else
+                  Spree.t('customer_mailer.welcome_email.subject', store: store.name)
+                end
 
       with_store_locale(store) do
-        mail(
-          to: user.email,
-          subject: Spree.t('customer_mailer.welcome_email.subject', store: store.name),
-          store_url: store.storefront_url
-        )
+        mail(to: user.email, subject: subject, store_url: store.storefront_url)
       end
     end
 

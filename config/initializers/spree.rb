@@ -164,6 +164,22 @@ Rails.application.config.to_prepare do
   # row, which includes seeds, sample data and a bulk customer import. A CSV import
   # that silently emails five thousand people is not a sensible default.
   Spree.user_class.send_welcome_emails = ENV['SEND_WELCOME_EMAILS'] == 'true'
+
+  # No set-your-password link in the welcome email on this deployment.
+  #
+  # Evidence, from the client's own storefront rather than from an opinion:
+  # storefront/src/app/[country]/[locale]/(wholesale)/wholesale/apply/page.tsx collects a
+  # password on the application form. An `apply-password` field, minimum six characters,
+  # autoComplete="new-password", posted as both password and password_confirmation. So an
+  # applicant has chosen a password before this email is sent.
+  #
+  # His own wording agrees: "Your business account has been created successfully. You can
+  # now sign in and browse our product range." Handing that customer a link to set a
+  # password thirty seconds after they set one reads as a broken email.
+  #
+  # Left as true by default in the mailer, because a shop whose ADMIN creates customer
+  # accounts has no other way to let them in. Flip this back if that day comes.
+  Spree::CustomerMailer.welcome_includes_password_link = false
 end
 
 # Tell the shop when somebody signs up and is waiting to be approved.

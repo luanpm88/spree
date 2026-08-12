@@ -1,37 +1,38 @@
-<%# Mirrors the structure of the stock password_reset_email in spree_emails, using
-    Spree's own mailer_hero and mailer_button partials rather than hand-rolled tables.
-    First version built the button by hand and got a white-on-grey box that did not read
-    as clickable — the partial applies Spree's own button markup and the bulletproof
-    table wrapper Outlook needs.
+<%# His welcome copy when he has written it, our own markup when he has not.
+    @copy_scope is set by the mailer and is nil on a checkout without his file.
 
-    Rendered inside Spree's mailer layout, which supplies the store header, footer and
-    the inlined stylesheet. Deliberate: the client has a welcome design of his own, but
-    has only ever sent it as a PDF, never as ERB. Inventing his markup from a picture
-    would be guesswork, and this has to WORK first. Swapping his template in later
-    changes nothing about the mailer or the token. %>
+    His section IS this email: heading "Your Account Is Awaiting Final Approval", and a
+    bullet promising a second email once approved. So it renders through the same partial
+    as the other three outcome emails, which is also what keeps his file the single source
+    of the shape. %>
+<% if @copy_scope.present? %>
+  <%= render 'approval_outcome' %>
+<% else %>
+  <%= render layout: 'spree/shared/mailer_hero' do %>
+    <h1><%= Spree.t('customer_mailer.welcome_email.heading', store: @current_store.name) %></h1>
 
-<%= render layout: 'spree/shared/mailer_hero' do %>
-  <h1><%= Spree.t('customer_mailer.welcome_email.heading', store: @current_store.name) %></h1>
+    <p class="greeting">
+      <%= Spree.t('customer_mailer.welcome_email.greeting',
+                  name: @user.first_name.presence || @user.email) %>
+    </p>
 
-  <p class="greeting">
-    <%= Spree.t('customer_mailer.welcome_email.greeting',
-                name: @user.first_name.presence || @user.email) %>
-  </p>
+    <p><%= Spree.t('customer_mailer.welcome_email.body', store: @current_store.name) %></p>
 
-  <p><%= Spree.t('customer_mailer.welcome_email.body', store: @current_store.name) %></p>
+    <% if @reset_url.present? %>
+      <%= render 'spree/shared/mailer_button',
+                 url: @reset_url,
+                 label: Spree.t('customer_mailer.welcome_email.cta') %>
 
-  <%= render 'spree/shared/mailer_button',
-             url: @reset_url,
-             label: Spree.t('customer_mailer.welcome_email.cta') %>
+      <p class="sub"><%= Spree.t('customer_mailer.welcome_email.expiry') %></p>
 
-  <p class="sub"><%= Spree.t('customer_mailer.welcome_email.expiry') %></p>
-
-  <%# Every mail client eventually eats a button, and this link is the only way in.
-      The raw URL is the difference between a customer who signs in and a support
-      message. %>
-  <p class="sub">
-    <%= Spree.t('customer_mailer.welcome_email.fallback') %>
-    <br>
-    <span style="word-break: break-all;"><%= @reset_url %></span>
-  </p>
+      <%# Every mail client eventually eats a button, and this link is the only way in.
+          The raw URL is the difference between a customer who signs in and a support
+          message. %>
+      <p class="sub">
+        <%= Spree.t('customer_mailer.welcome_email.fallback') %>
+        <br>
+        <span style="word-break: break-all;"><%= @reset_url %></span>
+      </p>
+    <% end %>
+  <% end %>
 <% end %>
