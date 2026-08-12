@@ -69,6 +69,43 @@ module Spree
       )
     end
 
+    # When this customer was told they were approved, or nil if they never were.
+    #
+    # ── why a recorded fact instead of a clever query ────────────────────────
+    #
+    # The subscriber used to decide "have we already told them" by asking whether the
+    # membership row that just appeared was the customer's OLDEST approving membership.
+    # That reads the right answer out of the wrong thing, and it fails the moment a send
+    # is dropped rather than delivered:
+    #
+    #   customer sits in Not Approved. Shop changes its mind and ticks Wholesale in the
+    #   same save. The insert publishes, the row IS the oldest approving one, so the email
+    #   is enqueued. Two minutes later the mailer re-checks, finds the Not Approved
+    #   membership still there, and correctly refuses to send. Then the shop unticks Not
+    #   Approved, which publishes nothing at all through remove_customers and only
+    #   user.updated through the form. The customer is now approved, sees trade prices,
+    #   and the ordering test still says the Wholesale row is the oldest, so no future
+    #   event can ever send it. Told nothing, permanently.
+    #
+    # A marker cannot go stale like that. Not told yet means still to do, whatever order
+    # the rows arrived in.
+    APPROVAL_NOTIFIED_KEY = 'approval.notified_at'
+
+    # @return [Boolean]
+    def approval_notified?
+      private_metadata.to_h[APPROVAL_NOTIFIED_KEY].present?
+    end
+
+    # Merges, for the same reason approval_note= does: private_metadata's setter replaces
+    # the whole hash, and this must not delete the note the shop typed.
+    def mark_approval_notified!
+      return if approval_notified?
+
+      update_columns(
+        private_metadata: private_metadata.to_h.merge(APPROVAL_NOTIFIED_KEY => Time.current.iso8601)
+      )
+    end
+
     # Sends the welcome, including a password-reset link so the customer can set their
     # own password. Deliberately public and callable on its own, so an admin can resend
     # one from the console without recreating the account:

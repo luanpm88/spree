@@ -79,6 +79,41 @@ module Spree
 
       created
     end
+
+    # Makes an un-decline from the group screen visible.
+    #
+    # remove_customers is delete_all plus touch_users, and neither runs a callback, so
+    # removing somebody from "Not Approved" publishes NOTHING. Measured against the other
+    # two paths:
+    #
+    #   customer_group_ids=      user.updated        (the admin customer form)
+    #   remove_customers         nothing             (this, and the Admin API)
+    #   destroy on the join row  nothing, because CustomerGroupUser enables :create only
+    #
+    # That silence is the difference between an approval that arrives late and one that
+    # never arrives: SpreeStarter::ApprovalNotificationSubscriber#handle_user_changed is
+    # the only thing that can notice a customer has become approved without a new
+    # membership appearing, and it needs an event to run at all.
+    #
+    # Publishing user.updated rather than inventing a new event name, because that is
+    # exactly what the equivalent form path already publishes, so one handler covers both.
+    #
+    # @param user_ids [Array]
+    # @return [Integer] the count Spree returns, unchanged
+    def remove_customers(user_ids)
+      wanted = Array(user_ids).map(&:to_s).uniq
+      removed = super
+      return removed if removed.to_i.zero? || wanted.empty?
+
+      Spree.user_class.where(id: wanted).find_each do |user|
+        next unless user.respond_to?(:should_publish_events?, true)
+        next unless user.send(:should_publish_events?)
+
+        user.publish_event('user.updated')
+      end
+
+      removed
+    end
   end
 
   CustomerGroup.prepend CustomerGroupDecorator

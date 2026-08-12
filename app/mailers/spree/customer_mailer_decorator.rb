@@ -130,8 +130,20 @@ module Spree
       # Now that More Information and Not Approved are also groups, "has a group" would
       # let this congratulate somebody the shop had just declined.
       return unless in_approving_group?(user, store)
+      # Told once. The subscriber checks this too, but it can be enqueued twice: an admin
+      # ticking two approving groups in one save publishes two events, and both pass the
+      # enqueue-time check before either job runs.
+      return if user.respond_to?(:approval_notified?) && user.approval_notified?
 
-      deliver_outcome(user, store, [:user_emails, :account_approval])
+      message = deliver_outcome(user, store, [:user_emails, :account_approval])
+
+      # Marked here, past every guard, and NOT at enqueue time. Marking on enqueue is what
+      # the old ordering test effectively did, and it is why a withheld approval could
+      # never be recovered: the shop looked told when nothing had been sent. If the SMTP
+      # delivery itself then fails the mail is lost, which is the same exposure every other
+      # mailer here has and strictly better than losing it silently forever.
+      user.mark_approval_notified! if message.present? && user.respond_to?(:mark_approval_notified!)
+      message
     end
 
     # Asks the applicant for more about their business.
