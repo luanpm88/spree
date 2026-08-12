@@ -19,13 +19,22 @@ export const WHOLESALE_MIN_QUANTITY = 10;
 /**
  * Whether a customer is an approved wholesale buyer.
  *
- * Approval is membership of ANY customer group, not of one group matched by
- * name. This deliberately mirrors the server, which decides the same question in
- * `Spree::Api::V3::StorefrontGatingDecorator#approved_for_pricing?`, and the two
- * must agree: the server decides whether prices are in the response at all, this
- * decides what the page says instead. Disagreement produces the worst outcome of
- * the two, a page that says "awaiting approval" over prices it was given, or an
- * ordering surface opened to someone the API will refuse.
+ * `customer_groups` is the SERVER'S VERDICT, not a raw membership list. The Store
+ * API emits only the groups that approve: see
+ * `Spree::Api::V3::ApprovalScopedCustomerSerializer`, which applies the same two
+ * rules as `StorefrontGatingDecorator#approved_for_pricing?` — Not Approved vetoes
+ * an approving group left behind, and More Information does not count as one.
+ *
+ * So counting the array is still correct, and it is correct for a reason that now
+ * lives in one place instead of two. It was NOT correct for a while: the server
+ * learned about the three outcomes and this file did not, so a customer declined
+ * into Not Approved had one group, read as approved, and was shown the whole portal
+ * the API then refused to price. That is the failure this note used to warn about
+ * abstractly and then suffered concretely.
+ *
+ * A customer on hold in More Information therefore looks the same here as one with
+ * no group yet, and both get the Awaiting Approval state. That is deliberate: they
+ * ARE awaiting approval, and what the shop needs from them arrives by email.
  *
  * Matching on a name is what this used to do, against a hardcoded "Wholesale".
  * The client's group is "Bulk Orders", so that test was already wrong here, and

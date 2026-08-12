@@ -119,6 +119,19 @@ end
 Spree.user_class = 'Spree::User'
 Spree.admin_user_class = 'Spree::AdminUser'
 
+# Make the Store API's customer_groups mean "the groups that approve you".
+#
+# The storefront decides wholesale approval by counting that array, which was right while
+# every group meant approved and became wrong the moment More Information and Not Approved
+# existed: a declined customer had one group, counted as approved, and was shown the full
+# portal the API then refused to price. See
+# Spree::Api::V3::ApprovalScopedCustomerSerializer for the whole argument.
+#
+# STORE only. admin_customer_serializer is a separate dependency and stays unfiltered, so
+# an admin can still see that somebody is in Not Approved, which is how they explain why
+# that customer has no prices.
+Spree.api.customer_serializer = 'Spree::Api::V3::ApprovalScopedCustomerSerializer'
+
 # Serve Active Storage attachment URLs (product images, logos, etc.) from a CDN
 # host instead of the application host. Host only, no protocol — the scheme
 # comes from routes.default_url_options (see config/environments/production.rb).
