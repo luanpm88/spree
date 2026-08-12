@@ -321,6 +321,106 @@ Biến `DISABLED_EMAILS` trong `config/initializers/spree.rb`. Là env var chứ
 hardcode: 4 trong 7 shop sắp migrate là bán lẻ (nz, au, us, ca), chúng gửi hàng thật và
 **cần** email shipped. Chỉ shop B2B mới đẩy fulfilment ra ngoài.
 
+### 1.22 `auto_capture` bật sẵn, nên thanh toán offline đánh dấu đơn ĐÃ TRẢ khi chưa có tiền
+
+Đây là cái bẫy đắt nhất tìm được trong phần payment, và nó im lặng hoàn toàn.
+
+```ruby
+# spree_core-5.6.1/lib/spree/core/configuration.rb:39
+preference :auto_capture, :boolean, default: true
+```
+
+Payment method để trống cột `auto_capture` của nó thì **thừa hưởng** global:
+
+```ruby
+# app/models/spree/payment_method.rb:179
+auto_capture.nil? ? Spree::Config[:auto_capture] : auto_capture
+```
+
+Và `auto_capture?` quyết định purchase hay chỉ authorize:
+
+```ruby
+# app/models/spree/payment/processing.rb:12
+payment_method&.auto_capture? ? purchase! : authorize!
+#   purchase!  → gateway_action(source, :purchase,   :complete)  → state completed
+#   authorize! → gateway_action(source, :authorize,  :pend)      → state pending
+```
+
+Với method offline thì **không có gì để gọi**, nên gem tự trả lời thành công:
+
+```ruby
+# app/models/spree/payment_method/check.rb
+def purchase(*) = simulated_successful_billing_response
+```
+
+Payment vào `completed` → `payment_total` đếm nó → `payment_state` suy ra từ số còn
+lại (`order_updater.rb:196`) → thành **`paid`**.
+
+Nghĩa là: khách đặt xong, chưa chuyển đồng nào, admin ghi **đã trả**. Với shop dùng
+Bank Transfer đặt cọc rồi trả phần còn lại thì đây là sai sót kế toán nghiêm trọng,
+vì hệ thống của khách sẽ xuất hoá đơn cho số tiền Spree tưởng đã nhận.
+
+Sửa: bỏ tick `auto_capture` trên payment method đó. Là cột thật, có trong
+`permitted_attributes.rb:176`, sửa được từ form admin, không cần code.
+
+5.6.1 core **không có** Bank Transfer. Chỉ có `PaymentMethod::Check` và
+`PaymentMethod::StoreCredit`. Check chính là method offline và hành vi đúng như trên.
+
+**Và cọc rồi trả phần còn lại thì Spree làm sẵn rồi**, không cần code:
+
+```ruby
+# app/models/spree/payment.rb:356  split_uncaptured_amount
+# capture! một phần → tạo payment thứ 2 state 'pending' cho phần còn lại,
+# cùng method/source, rồi authorize!, và hạ amount payment đầu về số đã thu.
+```
+
+Đính chính một điều mình từng ghi sai: `void` chuyển sang **`void`**, không phải
+`failed`. `failed` là của `event :failure`, đi từ `[:pending, :processing]`.
+
+### 1.23 CBM tính theo PACKAGE, không theo ORDER — và splitter chia sẵn theo shipping category
+
+`Spree::Stock::Package#volume` là `contents.sum(&:volume)` (`package.rb:101`). Một
+order **không phải** một package:
+
+```ruby
+# spree_core-5.6.1/lib/spree/core/engine.rb:150
+stock_splitters = [
+  Spree::Stock::Splitter::ShippingCategory,   # ← mặc định, đang bật
+  Spree::Stock::Splitter::Backordered,
+  Spree::Stock::Splitter::Digital
+]
+```
+
+Nên bình một shipping category, ly một category khác → đơn 15 CBM thành **hai** package
+7.5 CBM. Mỗi package đọc ra "pallet" trong khi cả đơn là "container". Sai theo hướng
+làm mất tiền, và trên màn hình không có gì trông sai.
+
+Cộng thêm `Variant#volume` là `(width||0)*(height||0)*(depth||0)` — **không có đơn vị
+nào**. Xem [1.21](#) về `catalogue:audit` và bản sửa importer.
+
+**Shipping method hiện ra hay không là giao của NĂM điều kiện** (`stock/estimator.rb:61`):
+
+```ruby
+package.shipping_methods.select do |m|
+  m.available_to_display?(display_filter) &&
+    m.include?(order.ship_address) &&        # ← zone phải chứa địa chỉ
+    m.calculator.available?(package) &&
+    (m.calculator.preferences[:currency].blank? ||
+     m.calculator.preferences[:currency] == currency)
+end
+```
+
+Thiếu bất kỳ điều kiện nào thì method **biến mất không thông báo gì**. Với shop bán sỉ
+đi nhiều nước, `zone` là cái sẽ cắn: địa chỉ ngoài mọi zone thì checkout không có lựa
+chọn vận chuyển nào và dừng, không nói lý do.
+
+`cost` của shipment **không** nằm trong `@@shipment_attributes`
+(`permitted_attributes.rb:240`), nên không có sẵn field để nhập giá freight bằng tay.
+Và cho phép nó cũng sai, vì phí ship bị tính lại mỗi khi đơn thay đổi. Cách đúng: lưu
+báo giá trên order (`private_metadata`), rồi calculator đọc ra qua `package.order` —
+nhớ nil-guard, vì `Package#order` dò động qua inventory unit và có thể trả nil
+(`package.rb:33`).
+
 ---
 
 ## 2. Về Docker / môi trường

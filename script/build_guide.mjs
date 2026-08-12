@@ -53,6 +53,11 @@ const COVERS = {
     ],
   },
   HANDOVER: {
+    // The page footer defaults to this repo's URL, which is right for an internal
+    // document and wrong for one a client reads: the repo is public and it is ours.
+    // The meta table already had the Repository row removed for that reason and the
+    // footer was missed, so every client-facing cover sets this.
+    footerLeft: 'b-teka.com',
     eyebrow: 'Project handover · b-teka',
     title: 'Spree Commerce<br>Project Handover',
     sub: 'Live production system',
