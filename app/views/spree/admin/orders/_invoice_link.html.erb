@@ -1,0 +1,12 @@
+<%# Registered into Spree.admin.partials.order_page_dropdown, which is a sanctioned hook,
+    so no view in spree_admin is overridden or decorated to get this link on the page.
+
+    `order` is the local the hook passes. Opens in a new tab because the invoice is a
+    standalone printable document, and the admin should not lose their place on the order
+    to look at it. %>
+<%= link_to spree.admin_order_invoice_path(order),
+            class: 'dropdown-item',
+            target: '_blank',
+            rel: 'noopener' do %>
+  <%= Spree.t(:print_invoice, scope: :admin_invoice) %>
+<% end %>

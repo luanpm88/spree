@@ -1,0 +1,20 @@
+# Admin-side labels for the printable invoice.
+#
+# Only the words the SHOP sees on its own document, and only the ones the client has not
+# written himself. The shop identity and the bank block come from HIS user_emails.common
+# and user_emails.payment_link, so there is nothing here that could contradict what his
+# payment email says.
+#
+# Named admin_invoice.en.yml so it loads before the client.*.yml and his keys stay able to
+# win, the same rule as approval_workflow.en.yml.
+en:
+  spree:
+    admin_invoice:
+      print_invoice: Print invoice
+      print: Print
+      back_to_order: Back to order
+      invoice_title: "Invoice %{number}"
+      order_number: Order
+      order_date: Date
+      payment_status: Payment
+      printed_on: "Printed %{date}"

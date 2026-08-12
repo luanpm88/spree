@@ -116,6 +116,34 @@ Rails.application.config.after_initialize do
   ])
 end
 
+# Put "Print invoice" in the order page's action menu.
+#
+# Spree.admin.partials.order_page_dropdown is a hook spree_admin renders on the order page,
+# so nothing in the gem is overridden or decorated to get the link there. The controller,
+# route and view are ours; this is the only line that has to know about the admin UI.
+#
+# after_initialize, NOT to_prepare, and the reason is the same one that governs
+# Spree.subscribers a few lines below: the registry does not exist yet during
+# load_config_initializers. Measured the hard way — to_prepare gave
+#
+#   NoMethodError: undefined method 'include?' for nil
+#
+# and took the container down on boot. Probing it from `rails runner` earlier showed [],
+# because that runs after a completed boot, which is exactly the sort of check that
+# confirms the wrong thing.
+#
+# Guarded against a duplicate, and tolerant of a nil list, so a future Spree that builds
+# the registry later still works.
+Rails.application.config.after_initialize do
+  partial = 'spree/admin/orders/invoice_link'
+  list = Spree.admin.partials.order_page_dropdown
+  if list.nil?
+    Spree.admin.partials.order_page_dropdown = [partial]
+  elsif !list.include?(partial)
+    list << partial
+  end
+end
+
 Spree.user_class = 'Spree::User'
 Spree.admin_user_class = 'Spree::AdminUser'
 

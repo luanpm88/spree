@@ -1,0 +1,251 @@
+<%#
+  A print-ready invoice for one order. layout false, so this is the whole document.
+
+  ── where the words come from ────────────────────────────────────────────────
+
+  The shop's identity and the bank details are read from the CLIENT'S OWN locale file,
+  not from strings invented here:
+
+    user_emails.common.*        shop, shop_url, shop_country, shop_logo, the_team
+    user_emails.payment_link.*  bank_details_title, bank_name, account_name,
+                                account_number, swift_code, payment_reference,
+                                payment_note
+
+  That is deliberate and it is the whole reason this reads well. He already wrote those
+  bank lines for the payment email, so the invoice and the email cannot disagree about
+  where to send money, and he has nothing new to write. Every one of them is skipped when
+  blank, so a shop without his file still prints a usable invoice from the store record.
+
+  ── printing ────────────────────────────────────────────────────────────────
+
+  No PDF gem: see Spree::Admin::InvoicesController for why. The browser's own print
+  produces the PDF, so the CSS below is the real deliverable. @page sets A4 and margins,
+  rows are kept off page breaks, and the Print button hides itself when printing.
+%>
+<% t_common = ->(key, **args) { Spree.t(key, scope: [:user_emails, :common], default: '', **args) } %>
+<% t_bank = ->(key, **args) { Spree.t(key, scope: [:user_emails, :payment_link], default: '', **args) } %>
+<% shop_name = t_common.call(:shop).presence || @store.name %>
+<% bank_lines = %i[bank_name account_name account_number swift_code].filter_map { |k| t_bank.call(k).presence } %>
+<% bank_title = t_bank.call(:bank_details_title) %>
+<% payment_reference = t_bank.call(:payment_reference, number: @order.number) %>
+<% payment_note = t_bank.call(:payment_note) %>
+<!DOCTYPE html>
+<html lang="<%= I18n.locale %>">
+  <head>
+    <meta charset="utf-8">
+    <title><%= Spree.t(:invoice_title, scope: :admin_invoice, number: @order.number) %></title>
+    <style>
+      /* A4 with real margins, because this is printed on paper as often as saved. */
+      @page { size: A4; margin: 16mm 14mm; }
+
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        margin: 0; padding: 24px;
+        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        color: #111827; background: #fff;
+      }
+      .sheet { max-width: 820px; margin: 0 auto; }
+
+      .toolbar { margin-bottom: 20px; display: flex; gap: 8px; }
+      .toolbar button, .toolbar a {
+        font: inherit; padding: 8px 16px; border-radius: 6px; border: 1px solid #d1d5db;
+        background: #111827; color: #fff; cursor: pointer; text-decoration: none;
+      }
+      .toolbar a { background: #fff; color: #111827; }
+
+      header.masthead { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; }
+      .shop-name { font-size: 20px; font-weight: 700; margin: 0 0 4px; }
+      .muted { color: #6b7280; }
+      .logo { max-height: 56px; max-width: 220px; }
+
+      h1.doc-title { font-size: 22px; margin: 28px 0 4px; letter-spacing: -0.01em; }
+
+      table.meta { border-collapse: collapse; margin-top: 4px; }
+      table.meta td { padding: 2px 16px 2px 0; vertical-align: top; }
+      table.meta td.k { color: #6b7280; white-space: nowrap; }
+
+      .parties { display: flex; gap: 32px; margin: 24px 0; }
+      .parties section { flex: 1; }
+      .parties h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #6b7280; margin: 0 0 6px; }
+
+      table.items { width: 100%; border-collapse: collapse; margin-top: 8px; }
+      table.items th {
+        text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+        color: #6b7280; border-bottom: 2px solid #111827; padding: 8px 8px 6px;
+      }
+      table.items td { padding: 9px 8px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+      table.items tr { page-break-inside: avoid; }
+      .num { text-align: right; white-space: nowrap; }
+
+      table.totals { margin-left: auto; margin-top: 14px; border-collapse: collapse; }
+      table.totals td { padding: 5px 8px; }
+      table.totals td.k { color: #6b7280; text-align: right; }
+      table.totals tr.grand td { font-weight: 700; font-size: 15px; border-top: 2px solid #111827; padding-top: 9px; }
+
+      .bank { margin-top: 26px; padding: 14px 16px; background: #f6f7f9; border-left: 3px solid #111827; page-break-inside: avoid; }
+      .bank h2 { font-size: 12px; letter-spacing: 0.06em; margin: 0 0 8px; }
+      .bank p { margin: 0 0 4px; }
+      .bank .ref { font-weight: 700; margin-top: 10px; }
+
+      footer.foot { margin-top: 30px; padding-top: 12px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 12px; }
+
+      @media print {
+        body { padding: 0; }
+        .toolbar { display: none; }
+        a { color: inherit; text-decoration: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="sheet">
+      <div class="toolbar">
+        <button type="button" onclick="window.print()"><%= Spree.t(:print, scope: :admin_invoice) %></button>
+        <a href="<%= spree.admin_order_path(@order) %>"><%= Spree.t(:back_to_order, scope: :admin_invoice) %></a>
+      </div>
+
+      <header class="masthead">
+        <div>
+          <p class="shop-name"><%= shop_name %></p>
+          <% if t_common.call(:shop_url).present? %>
+            <p class="muted"><%= t_common.call(:shop_url) %></p>
+          <% end %>
+          <% if t_common.call(:shop_country).present? %>
+            <p class="muted"><%= t_common.call(:shop_country) %></p>
+          <% end %>
+        </div>
+        <% logo = t_common.call(:shop_logo) %>
+        <% if logo.present? %>
+          <%# His logo is an absolute URL in his own file, no asset pipeline involved, and it
+              is currently DEAD: a third-party CDN host was not resolving. Verified,
+              not assumed. So the image hides itself rather than printing a broken-image
+              icon on a document that goes to a customer. The shop name above is already
+              text, so an invoice without the logo still says who sent it.
+
+              onerror rather than checking the URL server side: this renders on every print
+              and a per-request HEAD to a third-party host is a page that hangs when the CDN
+              is slow. %>
+          <img class="logo" src="<%= logo %>" alt="<%= shop_name %>"
+               onerror="this.style.display='none'">
+        <% end %>
+      </header>
+
+      <h1 class="doc-title"><%= Spree.t(:invoice_title, scope: :admin_invoice, number: @order.number) %></h1>
+
+      <table class="meta">
+        <tr>
+          <td class="k"><%= Spree.t(:order_number, scope: :admin_invoice) %></td>
+          <td><%= @order.number %></td>
+        </tr>
+        <% if @order.completed_at.present? %>
+          <tr>
+            <td class="k"><%= Spree.t(:order_date, scope: :admin_invoice) %></td>
+            <td><%= l @order.completed_at.to_date, format: :long %></td>
+          </tr>
+        <% end %>
+        <tr>
+          <td class="k"><%= Spree.t(:payment_status, scope: :admin_invoice) %></td>
+          <td><%= Spree.t(@order.payment_state, scope: [:payment_states], default: @order.payment_state.to_s.humanize) %></td>
+        </tr>
+        <% if @order.email.present? %>
+          <tr>
+            <td class="k"><%= Spree.t(:email) %></td>
+            <td><%= @order.email %></td>
+          </tr>
+        <% end %>
+      </table>
+
+      <div class="parties">
+        <% if @order.bill_address.present? %>
+          <section>
+            <h2><%= Spree.t(:billing_address) %></h2>
+            <%# to_s on a Spree address returns markup with <br/>, so it is rendered raw. %>
+            <div><%= raw @order.bill_address.to_s %></div>
+          </section>
+        <% end %>
+        <% if @order.ship_address.present? %>
+          <section>
+            <h2><%= Spree.t(:shipping_address) %></h2>
+            <div><%= raw @order.ship_address.to_s %></div>
+          </section>
+        <% end %>
+      </div>
+
+      <table class="items">
+        <thead>
+          <tr>
+            <th><%= Spree.t(:sku) %></th>
+            <th><%= Spree.t(:description) %></th>
+            <th class="num"><%= Spree.t(:qty) %></th>
+            <th class="num"><%= Spree.t(:price) %></th>
+            <th class="num"><%= Spree.t(:total) %></th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @order.line_items.each do |item| %>
+            <tr>
+              <td><%= item.variant&.sku %></td>
+              <td><%= item.name %></td>
+              <td class="num"><%= item.quantity %></td>
+              <td class="num"><%= item.display_price %></td>
+              <td class="num"><%= item.display_total %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+
+      <table class="totals">
+        <tr>
+          <td class="k"><%= Spree.t(:subtotal) %></td>
+          <td class="num"><%= @order.display_item_total %></td>
+        </tr>
+        <%# Every eligible adjustment, by its own label, rather than a guessed set of rows.
+            A promotion, a manual discount and a hand-entered freight charge all arrive
+            here, and the quoted-shipping design in DESIGN/PLAN adds more. %>
+        <% @order.adjustments.eligible.each do |adjustment| %>
+          <tr>
+            <td class="k"><%= adjustment.label %></td>
+            <td class="num"><%= adjustment.display_amount %></td>
+          </tr>
+        <% end %>
+        <tr>
+          <td class="k"><%= Spree.t(:shipping) %></td>
+          <td class="num"><%= @order.display_ship_total %></td>
+        </tr>
+        <% if @order.additional_tax_total.to_f.positive? %>
+          <tr>
+            <td class="k"><%= Spree.t(:tax) %></td>
+            <td class="num"><%= @order.display_additional_tax_total %></td>
+          </tr>
+        <% end %>
+        <tr class="grand">
+          <td class="k"><%= Spree.t(:order_total) %> (<%= @order.currency %>)</td>
+          <td class="num"><%= @order.display_total %></td>
+        </tr>
+      </table>
+
+      <% if bank_title.present? || bank_lines.any? || payment_reference.present? %>
+        <div class="bank">
+          <% if bank_title.present? %>
+            <h2><%= bank_title %></h2>
+          <% end %>
+          <% bank_lines.each do |line| %>
+            <p><%= raw line %></p>
+          <% end %>
+          <% if payment_reference.present? %>
+            <p class="ref"><%= raw payment_reference %></p>
+          <% end %>
+          <% if payment_note.present? %>
+            <p class="muted" style="margin-top:10px;"><%= raw payment_note %></p>
+          <% end %>
+        </div>
+      <% end %>
+
+      <footer class="foot">
+        <% if t_common.call(:the_team).present? %>
+          <p><%= t_common.call(:the_team) %></p>
+        <% end %>
+        <p><%= Spree.t(:printed_on, scope: :admin_invoice, date: l(Date.current, format: :long)) %></p>
+      </footer>
+    </div>
+  </body>
+</html>

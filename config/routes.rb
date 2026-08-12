@@ -1,6 +1,18 @@
 
 Rails.application.routes.draw do
   Spree::Core::Engine.add_routes do
+    # Printable invoice for one order, at /admin/orders/:order_id/invoice.
+    #
+    # A separate controller rather than an extra action on Spree's OrdersController, so
+    # nothing in spree_admin is decorated. add_routes is the sanctioned way to put a route
+    # inside the engine's namespace, which is what makes spree.admin_order_invoice_path
+    # resolve in admin views.
+    namespace :admin do
+      resources :orders, only: [] do
+        resource :invoice, only: [:show], controller: 'invoices'
+      end
+    end
+
     # Admin authentication
     devise_for(
       Spree.admin_user_class.model_name.singular_route_key,
