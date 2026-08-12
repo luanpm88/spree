@@ -1,0 +1,56 @@
+<%#
+  Overrides devise/shared/_links.html.erb from the devise gem.
+
+  Devise's own copy calls the bare route helpers, `new_password_path(resource_name)`
+  and friends. Those resolve against whatever routes the CURRENT view context owns,
+  and every admin Devise page is rendered from inside the spree_admin engine, whose
+  route set contains none of them. The result on Spree 5.6.1 is that both
+
+      /admin_users/password/new           the "Forgot your password?" page
+      /admin_users/password/edit?token=   the page a reset link opens
+
+  answer 500 with `undefined method 'new_admin_user_registration_path' for an
+  instance of ActionDispatch::Routing::RoutesProxy`. Password recovery for admins
+  is therefore completely unavailable out of the box, and the only sign it gives is
+  a 500 on a page nobody visits until they are already locked out.
+
+  `main_app` reaches the application's own routes and is available from an engine
+  view and an app view alike, so it is correct in both. Each link is still guarded
+  on the helper existing, because a route set that is missing one of these is
+  exactly the situation this file exists to survive.
+
+  The "Sign up" link is deliberately gone. Spree declares :registerable on
+  Spree::AdminUser, which routes GET /admin_users/sign_up, but no POST route is
+  mounted to receive the form. The link therefore led to a page that could never
+  create anything, on an admin area where self-registration should not be offered
+  in the first place.
+-%>
+<% path = ->(helper) { main_app.respond_to?(helper) ? main_app.public_send(helper) : nil } %>
+
+<% if controller_name != 'sessions' && (href = path.call(:"new_#{resource_name}_session_path")) %>
+  <p><%= link_to 'Log in', href %></p>
+<% end %>
+
+<% if devise_mapping.recoverable? && controller_name != 'passwords' && controller_name != 'registrations' &&
+      (href = path.call(:"new_#{resource_name}_password_path")) %>
+  <p><%= link_to 'Forgot your password?', href %></p>
+<% end %>
+
+<% if devise_mapping.confirmable? && controller_name != 'confirmations' &&
+      (href = path.call(:"new_#{resource_name}_confirmation_path")) %>
+  <p><%= link_to "Didn't receive confirmation instructions?", href %></p>
+<% end %>
+
+<% if devise_mapping.lockable? && resource_class.unlock_strategy_enabled?(:email) && controller_name != 'unlocks' &&
+      (href = path.call(:"new_#{resource_name}_unlock_path")) %>
+  <p><%= link_to "Didn't receive unlock instructions?", href %></p>
+<% end %>
+
+<% if devise_mapping.omniauthable? %>
+  <% resource_class.omniauth_providers.each do |provider| %>
+    <% href = path.call(:"#{resource_name}_#{provider}_omniauth_authorize_path") %>
+    <% next unless href %>
+    <p><%= button_to "Sign in with #{OmniAuth::Utils.camelize(provider)}", href,
+                     data: { turbo: false }, method: :post %></p>
+  <% end %>
+<% end %>

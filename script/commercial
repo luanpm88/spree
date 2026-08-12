@@ -184,7 +184,14 @@ cmd_ship() {
   if [ "$sent" -eq 0 ]; then
     warn "no client assets found locally. The shop will send stock Spree emails."
   else
-    tar -C "$ROOT" -cf - -T "$tmpf" | host "tar -x -C '$dir/app'"
+    # COPYFILE_DISABLE stops macOS bsdtar writing an AppleDouble `._name` sidecar
+    # for every file carrying an extended attribute. Those land in config/locales
+    # next to the real thing, they match the `*.yml` glob Rails loads translations
+    # from, and they are binary. Harmless until the day one is parsed, and then a
+    # boot failure in a file nobody wrote.
+    COPYFILE_DISABLE=1 tar -C "$ROOT" -cf - -T "$tmpf" | host "tar -x -C '$dir/app'"
+    # Sweep any left by an earlier ship that predates the line above.
+    host "find '$dir/app' -name '._*' -type f -delete 2>/dev/null || true"
     ok "$(host "find '$dir/app/app/views/spree' '$dir/app/config/locales' '$dir/app/app/models/spree/calculator' -type f 2>/dev/null | wc -l | tr -d ' '") client files in place"
   fi
   rm -f "$tmpf"
