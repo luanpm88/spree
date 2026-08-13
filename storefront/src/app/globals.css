@@ -40,6 +40,78 @@
   --color-primary-800: #54554D;
   --color-primary-900: #494849;
   --color-primary-950: #2E2F2B;
+
+  /* ── neutrals ────────────────────────────────────────────────────────────
+     The brand tokens above only reach elements that use them. Typography here
+     uses Tailwind utilities directly, 402 of them across 68 files, so the page
+     kept the starter's blue-grey text while the buttons went green. Measured,
+     not guessed: headings rendered #101828 and body text #4A5565, neither of
+     which is in the client's palette.
+     Editing 68 files would miss some and churn every component. Redefining the
+     scales instead reaches all of them at once, including any added later.
+     Built from the client's own neutrals, warmed slightly so grey sits next to
+     the sage rather than fighting it. Every step used for text clears WCAG AA
+     on white: 500 is 5.09:1, 600 is 7.54:1, 900 is 16.95:1.                  */
+  --color-gray-50: #F7F7F7;
+  --color-gray-100: #F1F0F0;
+  --color-gray-200: #E5E8D9;
+  --color-gray-300: #DFDEDE;
+  --color-gray-400: #999999;
+  --color-gray-500: #6E6F66;
+  --color-gray-600: #54554D;
+  --color-gray-700: #494849;
+  --color-gray-800: #33342F;
+  --color-gray-900: #1C1D19;
+  --color-gray-950: #000000;
+
+  --color-neutral-50: #F7F7F7;
+  --color-neutral-100: #F1F0F0;
+  --color-neutral-200: #E5E8D9;
+  --color-neutral-300: #DFDEDE;
+  --color-neutral-400: #999999;
+  --color-neutral-500: #6E6F66;
+  --color-neutral-600: #54554D;
+  --color-neutral-700: #494849;
+  --color-neutral-800: #33342F;
+  --color-neutral-900: #1C1D19;
+  --color-neutral-950: #000000;
+
+  --color-slate-50: #F7F7F7;
+  --color-slate-100: #F1F0F0;
+  --color-slate-200: #E5E8D9;
+  --color-slate-300: #DFDEDE;
+  --color-slate-400: #999999;
+  --color-slate-500: #6E6F66;
+  --color-slate-600: #54554D;
+  --color-slate-700: #494849;
+  --color-slate-800: #33342F;
+  --color-slate-900: #1C1D19;
+  --color-slate-950: #000000;
+
+  --color-zinc-50: #F7F7F7;
+  --color-zinc-100: #F1F0F0;
+  --color-zinc-200: #E5E8D9;
+  --color-zinc-300: #DFDEDE;
+  --color-zinc-400: #999999;
+  --color-zinc-500: #6E6F66;
+  --color-zinc-600: #54554D;
+  --color-zinc-700: #494849;
+  --color-zinc-800: #33342F;
+  --color-zinc-900: #1C1D19;
+  --color-zinc-950: #000000;
+
+  --color-stone-50: #F7F7F7;
+  --color-stone-100: #F1F0F0;
+  --color-stone-200: #E5E8D9;
+  --color-stone-300: #DFDEDE;
+  --color-stone-400: #999999;
+  --color-stone-500: #6E6F66;
+  --color-stone-600: #54554D;
+  --color-stone-700: #494849;
+  --color-stone-800: #33342F;
+  --color-stone-900: #1C1D19;
+  --color-stone-950: #000000;
+
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -190,19 +262,19 @@ input[type="search"]::-webkit-search-cancel-button {
 
 :root {
   --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --foreground: #1C1D19;  /* near black, agreed 13 Aug. Same value as gray-900 so a heading is one colour whether or not it carries a class */
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: #1C1D19;  /* matches --foreground */
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
+  --popover-foreground: #1C1D19;  /* matches --foreground */
   --primary: #707757;  /* #707757, the shade that passes AA under white text */
   --primary-foreground: #FFFFFF;  /* #FFFFFF, his button text colour */
   --secondary: #E5E8D9;  /* #E5E8D9 */
-  --secondary-foreground: oklch(0.205 0 0);
+  --secondary-foreground: #1C1D19;  /* matches --foreground */
   --muted: #F1F0F0;  /* #F1F0F0 */
-  --muted-foreground: oklch(0.556 0 0);
+  --muted-foreground: #6E6F66;  /* same as gray-500, 5.09:1 on white */
   --accent: #F7F7F7;  /* #F7F7F7 */
-  --accent-foreground: oklch(0.205 0 0);
+  --accent-foreground: #1C1D19;  /* matches --foreground */
   --destructive: #C73528;  /* #C73528 */
   --border: #E5E8D9;  /* #E5E8D9 */
   --input: #E5E8D9;  /* #E5E8D9 */
@@ -277,3 +349,4 @@ input[type="search"]::-webkit-search-cancel-button {
     @apply font-sans;
   }
 }
+

@@ -709,6 +709,31 @@ Hai đường đúng: dùng `-f docker-compose.dev.yml`, hoặc `docker compose 
 được server: `docker buildx build` lấy cả THƯ MỤC làm context nên file gitignore vẫn vào
 image — build context là thư mục, không phải git index.
 
+### 2.17 Turbopack phục vụ CSS cũ qua cả lần khởi động lại container
+
+Sửa biến màu trong `globals.css`, restart container, đo lại: một phần đổi, một phần vẫn
+giá trị cũ. Cụ thể thang `--color-gray-*` trong `@theme` đã cập nhật, còn `--foreground`
+và `--muted-foreground` trong `:root` thì không, dù nằm cùng một file và chỉ được khai
+đúng một lần.
+
+Không phải đua biên dịch: đo lại nhiều lần vẫn thế. `.next` là **named volume** nên sống
+qua restart, và Turbopack phục vụ lại chunk CSS đã dựng.
+
+Nguy ở chỗ nó **im lặng**: trang vẫn 200, vẫn có màu, chỉ là sai màu. Nếu tin vào ảnh
+chụp thì kết luận "đổi không ăn" rồi đi sửa nhầm chỗ.
+
+Ép dựng lại rẻ nhất là chạm vào file:
+
+```bash
+printf '\n/* rebuild %s */\n' "$(date +%s)" >> src/app/globals.css
+```
+
+Cách chắc chắn hơn là hỏi trình duyệt giá trị đã tính, đừng nhìn ảnh:
+
+```bash
+node script/check_theme_applied.mjs      # đọc computed style, đối chiếu bảng màu
+```
+
 ## 3. Về server dùng chung
 
 ### 3.1 Không bao giờ `swapoff` swap đang dùng trên máy RAM thấp

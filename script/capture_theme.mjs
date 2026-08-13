@@ -30,7 +30,10 @@ try {
                           { name: 'mobile', width: 390, height: 844 }]) {
     const ctx = await browser.newContext({
       viewport: { width: viewport.width, height: viewport.height },
-      deviceScaleFactor: 2
+      // DPR=1 keeps a 1440-wide shot at 1440 pixels. Retina doubles it to 2880, which is
+      // crisper to send but too big for some tools to open, including the one used to
+      // check the shot before sending it. Check at 1, send at 2.
+      deviceScaleFactor: Number(process.env.DPR || 2)
     });
     const page = await ctx.newPage();
 
@@ -53,7 +56,11 @@ try {
       await page.waitForTimeout(600);
 
       const name = `${viewport.name}${p.replace(/\//g, '-') || '-home'}.png`;
-      await page.screenshot({ path: path.join(OUT, name), fullPage: viewport.name === 'desktop' });
+      // A full-page shot of a long page comes out thousands of pixels tall: unreadable
+      // on a phone and too big for some tools to open at all. FULL_PAGE=0 keeps it to
+      // the viewport, which is what you want for anything going to a person.
+      const full = process.env.FULL_PAGE !== '0' && viewport.name === 'desktop';
+      await page.screenshot({ path: path.join(OUT, name), fullPage: full });
       shots.push(name);
       console.log(`  ok    ${name}`);
     }

@@ -10,7 +10,6 @@ import { CurrentYear } from "./CurrentYear";
 const storeName = getStoreName();
 const storeDescription = getStoreDescription();
 
-
 interface FooterProps {
   basePath: string;
   locale: Locale;
@@ -30,7 +29,7 @@ export function FooterCategoryLinks({
     <li key={category.id}>
       <Link
         href={`${basePath}/c/${category.permalink}`}
-        className="text-sm text-neutral-400 hover:text-neutral-200 transition-colors"
+        className="text-sm text-primary-100 hover:text-white transition-colors"
       >
         {category.name}
       </Link>
@@ -41,6 +40,7 @@ export function FooterCategoryLinks({
 export async function Footer({ basePath, locale, categoryLinks }: FooterProps) {
   const t = await getTranslations({ locale, namespace: "footer" });
   const tp = await getTranslations({ locale, namespace: "policies" });
+  const tc = await getTranslations({ locale, namespace: "contact" });
   const wholesaleEnabled = isWholesaleEnabled();
 
   return (
@@ -57,14 +57,14 @@ export async function Footer({ basePath, locale, categoryLinks }: FooterProps) {
 
           {/* Links */}
           <div>
-            <h3 className="text-sm font-medium text-neutral-300">
+            <h3 className="text-sm font-medium text-primary-50">
               {t("shop")}
             </h3>
             <ul className="mt-4 space-y-3">
               <li>
                 <Link
                   href={`${basePath}/products`}
-                  className="text-sm text-neutral-400 hover:text-neutral-200 transition-colors"
+                  className="text-sm text-primary-100 hover:text-white transition-colors"
                 >
                   {t("allProducts")}
                 </Link>
@@ -75,14 +75,14 @@ export async function Footer({ basePath, locale, categoryLinks }: FooterProps) {
 
           {/* Account */}
           <div>
-            <h3 className="text-sm font-medium text-neutral-300">
+            <h3 className="text-sm font-medium text-primary-50">
               {t("account")}
             </h3>
             <ul className="mt-4 space-y-3">
               <li>
                 <Link
                   href={`${basePath}/account`}
-                  className="text-sm text-neutral-400 hover:text-neutral-200 transition-colors"
+                  className="text-sm text-primary-100 hover:text-white transition-colors"
                 >
                   {t("myAccount")}
                 </Link>
@@ -90,7 +90,7 @@ export async function Footer({ basePath, locale, categoryLinks }: FooterProps) {
               <li>
                 <Link
                   href={`${basePath}/account/orders`}
-                  className="text-sm text-neutral-400 hover:text-neutral-200 transition-colors"
+                  className="text-sm text-primary-100 hover:text-white transition-colors"
                 >
                   {t("orderHistory")}
                 </Link>
@@ -98,7 +98,7 @@ export async function Footer({ basePath, locale, categoryLinks }: FooterProps) {
               <li>
                 <Link
                   href={`${basePath}/cart`}
-                  className="text-sm text-neutral-400 hover:text-neutral-200 transition-colors"
+                  className="text-sm text-primary-100 hover:text-white transition-colors"
                 >
                   {t("cart")}
                 </Link>
@@ -107,18 +107,28 @@ export async function Footer({ basePath, locale, categoryLinks }: FooterProps) {
                 <li>
                   <Link
                     href={`${basePath}/wholesale`}
-                    className="text-sm text-neutral-400 hover:text-neutral-200 transition-colors"
+                    className="text-sm text-primary-100 hover:text-white transition-colors"
                   >
                     {t("wholesale")}
                   </Link>
                 </li>
               )}
+              {/* A contact page nothing links to is a contact page nobody finds. The
+                  route existed for a while before anyone noticed there was no way in. */}
+              <li>
+                <Link
+                  href={`${basePath}/contact`}
+                  className="text-sm text-primary-100 hover:text-white transition-colors"
+                >
+                  {tc("title")}
+                </Link>
+              </li>
             </ul>
           </div>
 
           {/* Policies */}
           <div>
-            <h3 className="text-sm font-medium text-neutral-300">
+            <h3 className="text-sm font-medium text-primary-50">
               {t("policies")}
             </h3>
             <ul className="mt-4 space-y-3">
@@ -126,7 +136,7 @@ export async function Footer({ basePath, locale, categoryLinks }: FooterProps) {
                 <li key={policy.slug}>
                   <Link
                     href={`${basePath}/policies/${policy.slug}`}
-                    className="text-sm text-neutral-400 hover:text-neutral-200 transition-colors"
+                    className="text-sm text-primary-100 hover:text-white transition-colors"
                   >
                     {tp(policy.nameKey)}
                   </Link>

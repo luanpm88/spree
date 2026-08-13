@@ -12,10 +12,22 @@ import { getStoreName } from "@/lib/store";
  * in the browser. Note that NEXT_PUBLIC_* is baked at BUILD time, not read at runtime,
  * so changing it means a rebuild (see DISCOVERIES 2.13).
  *
- * The words above the form come from the messages file rather than from here, because
- * the shop writes them and will change them without us.
+ * ── where the words come from ────────────────────────────────────────────────
+ *
+ * Two layers. The messages file holds a neutral default that suits any shop, and two
+ * environment variables override it with the shop's own copy.
+ *
+ * That split is not decoration. This repository is public, and the copy a shop writes
+ * for its own contact page carries its brand and its positioning. Putting it in
+ * messages/en.json would publish it. Configuration does not get published, and it is
+ * also the honest description of what this text is: per-deployment, not source.
+ *
+ * NEXT_PUBLIC_CONTACT_INTRO is one string; blank lines separate paragraphs, so the shop
+ * can send two or five without anyone touching this file.
  */
 const FORM_URL = process.env.NEXT_PUBLIC_CONTACT_FORM_URL ?? "";
+const TITLE_OVERRIDE = process.env.NEXT_PUBLIC_CONTACT_TITLE?.trim();
+const INTRO_OVERRIDE = process.env.NEXT_PUBLIC_CONTACT_INTRO?.trim();
 
 interface ContactPageProps {
   params: Promise<{ country: string; locale: string }>;
@@ -29,7 +41,7 @@ export async function generateMetadata({
   const storeName = getStoreName();
 
   return {
-    title: `${t("title")} — ${storeName}`,
+    title: `${TITLE_OVERRIDE || t("title")} — ${storeName}`,
     description: t("metaDescription"),
   };
 }
@@ -38,9 +50,8 @@ export default async function ContactPage({ params }: ContactPageProps) {
   const { locale } = await params;
   const t = await getTranslations({ locale, namespace: "contact" });
 
-  // One string, split on blank lines, so the shop can send two paragraphs or five
-  // without anyone touching this file.
-  const intro = t("intro")
+  const title = TITLE_OVERRIDE || t("title");
+  const intro = (INTRO_OVERRIDE || t("intro"))
     .split(/\n\s*\n/)
     .map((p) => p.trim())
     .filter(Boolean);
@@ -48,7 +59,7 @@ export default async function ContactPage({ params }: ContactPageProps) {
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-10 sm:py-14">
       <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-        {t("title")}
+        {title}
       </h1>
 
       {intro.length > 0 && (
