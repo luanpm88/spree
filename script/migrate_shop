@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+#
+# Take one shop from a 5.2/5.4 dump to a 5.6.1 database that passes every check, in
+# one command.
+#
+#   script/migrate_shop <name> <dump.sql|dump.sql.gz|dump.zip>
+#   script/migrate_shop nz tmp/dumps/nz.sql.gz
+#   KEEP=1 script/migrate_shop ca ca.sql        keep an existing <name>_migrate
+#
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# The first two shops were done by hand: load, survey, export properties, clean up,
+# migrate, work out which classes went missing, retype them, import properties, carry
+# the payment wording, then check. Twelve steps, and the order of three of them is
+# load bearing. Five more shops are coming. Doing that by hand five times is how a
+# step gets skipped on the shop nobody was watching.
+#
+# Every remedy below was found by measuring a real shop, and every one of them is
+# invisible until measured. See docs/DISCOVERIES.md 1.24 to 1.28.
+#
+# It NEVER touches a live database. It builds <name>_migrate from a dump and keeps
+# <name>_pristine beside it, untouched, so any count can be checked against the
+# original rather than against memory.
+set -euo pipefail
+
+C_BLD=$'\e[1m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_RED=$'\e[31m'; C_DIM=$'\e[2m'; C_OFF=$'\e[0m'
+step() { printf '\n%s==>%s %s\n' "$C_BLD" "$C_OFF" "$*"; }
+ok()   { printf '  %sok%s   %s\n' "$C_GRN" "$C_OFF" "$*"; }
+warn() { printf '  %swarn%s %s\n' "$C_YEL" "$C_OFF" "$*"; }
+info() { printf '  %s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
+die()  { printf '%serror%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+
+NAME="${1:-}"
+DUMP="${2:-}"
+[ -n "$NAME" ] && [ -n "$DUMP" ] || die "usage: script/migrate_shop <name> <dump file>"
+[ -f "$DUMP" ] || die "no such dump: $DUMP"
+case "$NAME" in *[!a-z0-9_]*) die "name must be lower case letters, digits and underscores";; esac
+
+DB="${NAME}_migrate"
+PRISTINE="${NAME}_pristine"
+DC="docker compose -f docker-compose.dev.yml"
+PSQL="docker compose exec -T postgres psql -U postgres"
+RUN="$DC run --rm --no-deps -e DATABASE_URL=postgres://postgres@postgres:5432/$DB web"
+QUIET='grep -viE "already initialized|previous definition|^ *Container spree-web-run|warning:|Spree Warning|Spree Events|No dedicated JWT|DEPRECATION"'
+
+# ── 1. load ──────────────────────────────────────────────────────────────────
+step "Loading $DUMP into $DB"
+if [ "${KEEP:-0}" = "1" ] && $PSQL -tAc "SELECT 1 FROM pg_database WHERE datname='$DB'" | grep -q 1; then
+  info "KEEP=1 and $DB exists, skipping load"
+else
+  $PSQL -c "DROP DATABASE IF EXISTS $DB" >/dev/null
+  $PSQL -c "CREATE DATABASE $DB" >/dev/null
+  case "$DUMP" in
+    *.gz)  gunzip -c "$DUMP" ;;
+    *.zip) unzip -p "$DUMP" '*.sql' ;;
+    *)     cat "$DUMP" ;;
+  esac | $PSQL -d "$DB" -q >/dev/null 2>&1 || die "restore failed"
+  ok "restored"
+fi
+
+# The control copy. Every "did we lose anything" question below is answered by
+# comparing against this rather than against a number written down earlier.
+$PSQL -c "DROP DATABASE IF EXISTS $PRISTINE" >/dev/null 2>&1 || true
+$PSQL -c "CREATE DATABASE $PRISTINE TEMPLATE $DB" >/dev/null
+ok "control copy $PRISTINE"
+
+# Separated by a character that survives the whitespace strip, because the line this
+# feeds is the one that answers "did we lose anything" and 899352416 answers nothing.
+counts() {
+  $PSQL -d "$1" -tAc "
+    SELECT 'products='||(SELECT count(*) FROM spree_products)||
+           ' variants='||(SELECT count(*) FROM spree_variants)||
+           ' orders='||(SELECT count(*) FROM spree_orders)||
+           ' users='||(SELECT count(*) FROM spree_users)||
+           ' properties='||(SELECT count(*) FROM spree_product_properties)" 2>/dev/null | tr -d '\r' | sed 's/^ *//;s/ *$//'
+}
+BEFORE="$(counts "$PRISTINE")"
+info "$BEFORE"
+
+# ── 2. survey before touching anything ───────────────────────────────────────
+step "Pre-flight: which classes this shop expects"
+eval "$RUN bin/rails runner script/check_sti_classes.rb 2>&1 | $QUIET | grep -iE 'MISSING|STI type column' || true"
+
+# ── 3. properties out FIRST. The old table stops being the source after migrating,
+#       and the 5.6 migration converts most rows but not all of them.
+step "Exporting product properties (must happen BEFORE migrating)"
+PROPS="db/${NAME}_properties.json"
+eval "$RUN bin/rails properties:export FILE=$PROPS 2>&1 | $QUIET | tail -2"
+
+# ── 4. migrate ───────────────────────────────────────────────────────────────
+step "Cleanup, then migrations one at a time"
+eval "$RUN bin/rails rehearsal:cleanup 2>&1 | $QUIET | tail -4"
+eval "$RUN bin/rails rehearsal:migrate 2>&1 | $QUIET | tail -22"
+
+# ── 5. the remedies, all of them non-destructive ─────────────────────────────
+#
+# Nothing is deleted. A row whose class is gone is retyped to the core equivalent, so
+# it can be read and it can be changed back. The five migrations recorded here failed
+# on both shops rehearsed so far and their destination state was verified present
+# against a clean 5.6.1 schema: columns and indexes both.
+step "Remedies for what the upgrade leaves behind"
+$PSQL -d "$DB" -v ON_ERROR_STOP=1 <<SQL >/dev/null
+BEGIN;
+CREATE INDEX IF NOT EXISTS index_spree_reimbursements_on_performed_by_id
+  ON spree_reimbursements (performed_by_id);
+INSERT INTO schema_migrations (version) VALUES
+  ('20260317145976'),('20260317145978'),
+  ('20260330090112'),('20260330090113'),('20260330090114')
+ON CONFLICT (version) DO NOTHING;
+UPDATE spree_payment_methods SET type='Spree::PaymentMethod::Check'
+WHERE type='Spree::PaymentMethod::BankTransfer';
+UPDATE spree_payment_methods SET auto_capture=false
+WHERE type='Spree::PaymentMethod::Check' AND active=true AND auto_capture IS NULL;
+COMMIT;
+SQL
+ok "index, migration markers, offline payment method"
+
+# Calculators are done in Ruby rather than SQL because "which classes are missing" is a
+# question only the running app can answer, and hardcoding a list would go stale the
+# first time a shop turns up with a calculator the others did not have.
+eval "$RUN bin/rails runner '
+  base = Spree::Calculator
+  gone = base.unscoped.distinct.pluck(:type).reject { |t| (t.constantize && true) rescue false }
+  if gone.empty?
+    puts \"  every calculator class resolves\"
+  else
+    n = base.unscoped.where(type: gone).update_all(type: \"Spree::Calculator::Shipping::FlatRate\")
+    puts \"  retyped #{n} calculator rows from #{gone.size} missing classes to FlatRate\"
+    puts \"    was: #{gone.join(\", \")}\"
+  end
+' 2>&1 | $QUIET"
+
+# ── 6. properties back in, and the bank wording ──────────────────────────────
+step "Importing properties and carrying the payment wording"
+eval "$RUN bin/rails properties:import FILE=$PROPS 2>&1 | $QUIET | tail -3"
+eval "$RUN bin/rails properties:verify FILE=$PROPS 2>&1 | $QUIET | tail -2"
+eval "$RUN bin/rails rehearsal:carry_payment_instructions 2>&1 | $QUIET | tail -2"
+
+# ── 7. did anything go missing ───────────────────────────────────────────────
+step "Comparing against the untouched copy"
+AFTER="$(counts "$DB")"
+if [ "$BEFORE" = "$AFTER" ]; then
+  ok "identical: $AFTER"
+else
+  warn "before $BEFORE"
+  warn "after  $AFTER"
+  die "row counts changed. $PRISTINE still holds the original."
+fi
+
+# ── 8. the gate ──────────────────────────────────────────────────────────────
+step "Checklist"
+if eval "$RUN bin/rails runner script/shop_checklist.rb 2>&1 | $QUIET"; then
+  printf '\n%sok%s   %s is ready. Control copy kept as %s.\n' "$C_GRN" "$C_OFF" "$DB" "$PRISTINE"
+else
+  printf '\n%serror%s %s did not pass. Nothing was deleted; %s is untouched.\n' "$C_RED" "$C_OFF" "$DB" "$PRISTINE" >&2
+  exit 1
+fi
