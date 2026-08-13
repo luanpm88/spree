@@ -111,5 +111,10 @@
       "Bash(git checkout -- .gitignore)",
       "Bash(git restore .gitignore)"
     ]
+  },
+  "//attribution": "Empty on purpose. Commits and PRs here carry no tool or model name.",
+  "attribution": {
+    "commit": "",
+    "pr": ""
   }
 }
