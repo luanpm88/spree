@@ -63,9 +63,18 @@ ENV SPREE_API_URL=$SPREE_API_URL \
 ARG NEXT_PUBLIC_LOGO_URL=""
 ARG NEXT_PUBLIC_STORE_NAME=""
 ARG NEXT_PUBLIC_SITE_URL=""
+# Contact page wording and form. Docker silently ignores a build arg the Dockerfile
+# does not declare, so compose passed these three correctly, the build ignored them,
+# and the page shipped with its neutral defaults and no form. Nothing failed.
+ARG NEXT_PUBLIC_CONTACT_FORM_URL=""
+ARG NEXT_PUBLIC_CONTACT_TITLE=""
+ARG NEXT_PUBLIC_CONTACT_INTRO=""
 ENV NEXT_PUBLIC_LOGO_URL=$NEXT_PUBLIC_LOGO_URL \
     NEXT_PUBLIC_STORE_NAME=$NEXT_PUBLIC_STORE_NAME \
-    NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+    NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL \
+    NEXT_PUBLIC_CONTACT_FORM_URL=$NEXT_PUBLIC_CONTACT_FORM_URL \
+    NEXT_PUBLIC_CONTACT_TITLE=$NEXT_PUBLIC_CONTACT_TITLE \
+    NEXT_PUBLIC_CONTACT_INTRO=$NEXT_PUBLIC_CONTACT_INTRO
 
 # Optional Sentry release/source-map upload. When SENTRY_DSN is empty,
 # next.config.ts skips withSentryConfig entirely, so the build still works.
