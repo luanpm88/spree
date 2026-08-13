@@ -624,5 +624,12 @@
       "awaitingApproval": "Oczekuje na zatwierdzenie",
       "awaitingApprovalHint": "Ceny pojawią się po zatwierdzeniu konta."
     }
+  },
+  "contact": {
+    "title": "Contact Us",
+    "metaDescription": "Get in touch with our team.",
+    "intro": "",
+    "formTitle": "Contact form",
+    "notConfigured": "The contact form is not configured for this store yet."
   }
 }

@@ -624,5 +624,12 @@
       "awaitingApproval": "Warten auf Freigabe",
       "awaitingApprovalHint": "Preise erscheinen, sobald Ihr Konto freigegeben ist."
     }
+  },
+  "contact": {
+    "title": "Contact Us",
+    "metaDescription": "Get in touch with our team.",
+    "intro": "",
+    "formTitle": "Contact form",
+    "notConfigured": "The contact form is not configured for this store yet."
   }
 }

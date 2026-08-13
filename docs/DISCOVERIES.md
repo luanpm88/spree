@@ -423,6 +423,117 @@ nhớ nil-guard, vì `Package#order` dò động qua inventory unit và có th�
 
 ---
 
+### 1.24 Một dòng calculator mồ côi làm SẬP cả trang Shipping Methods, không chỉ hỏng báo giá
+
+Shop cũ migrate lên thường mang theo calculator tự viết. Nếu class đó không còn,
+`spree_calculators.type` trở thành chuỗi không constantize được. Trực giác nói "thì
+method đó không quote được thôi". Đo thật thì rộng hơn nhiều:
+
+| Truy vấn | Kết quả |
+|---|---|
+| `Spree::ShippingMethod.all.to_a` | chạy bình thường |
+| `Spree::Calculator.count` | chạy bình thường |
+| `Spree::Calculator.all.to_a` | **RAISE** `SubclassNotFound` |
+| `ShippingMethod.includes(:calculator)` | **RAISE** `SubclassNotFound` |
+
+Dòng cuối là đúng truy vấn màn hình admin Shipping Methods dùng. Nên **một** dòng hỏng
+làm 500 cả trang, kể cả các method hoàn toàn lành. Vì `count` và `all.to_a` cho kết quả
+khác nhau, health check đếm số dòng sẽ báo xanh trong khi admin đang sập.
+
+Vá mà không phá dữ liệu: đổi `type` sang một class core tương đương, **không xoá dòng**.
+Với "free postage" thì `Spree::Calculator::Shipping::FlatRate` là tương đương chính xác,
+`preferred_amount` mặc định `0.0` nên `compute` trả về `0.0`. Cột `preferences` giữ nguyên,
+nên đổi ngược lại lúc nào cũng được.
+
+```sql
+UPDATE spree_calculators SET type = 'Spree::Calculator::Shipping::FlatRate'
+WHERE type = 'Spree::Calculator::Shipping::<TênClassĐãMất>';
+```
+
+Kiểm trước khi đổi: nếu `preferences` KHÔNG rỗng thì có cấu hình sẽ bị bỏ qua, phải đọc
+kỹ chứ đừng đổi mù. `script/check_sti_classes.rb` quét sẵn mọi cột STI để tìm các dòng này.
+
+### 1.25 Zeitwerk và viết tắt: file client load được hay không là chuyện HOA THƯỜNG
+
+Class calculator do shop tự viết hay đặt tên kiểu `UBICaShippingCalculator`. Zeitwerk suy
+constant từ tên file, `ubi_ca_shipping_calculator.rb` ra `UbiCaShippingCalculator`, lệch
+đúng hai chữ hoa. Cài file vào rồi mà class vẫn "mất" y như chưa cài — và vì
+`compute_package` thường có `rescue => e; 0.0`, hậu quả không phải lỗi mà là **phí ship $0**.
+
+Cạm bẫy nằm ở cách sửa. Cách hiển nhiên:
+
+```ruby
+inflect.acronym 'UBI'      # ĐỪNG
+```
+
+`acronym` có phạm vi TOÀN CỤC, nên nó sửa file này và đồng thời làm hỏng file anh em
+`ubi_nz_shipping_calculator.rb` (class đó viết `UbiNz`, camel thường). Sửa shop A gãy shop B.
+Phải giới hạn đúng một basename:
+
+```ruby
+# config/initializers/inflections.rb
+Rails.autoloaders.each do |autoloader|
+  autoloader.inflector.inflect('ubi_ca_shipping_calculator' => 'UBICaShippingCalculator')
+end
+```
+
+Đừng đổi tên class cho khớp Zeitwerk: chuỗi đó nằm trong `type` của mọi dòng calculator
+trong dữ liệu production, đổi class nghĩa là phải UPDATE dữ liệu thật để chữa một việc mà
+ba dòng config giải quyết xong.
+
+### 1.26 Class STI mất: có hai loại, và chỉ MỘT loại làm gãy admin
+
+Cùng là "class không constantize được", nhưng hậu quả khác hẳn, và phân biệt được thì
+đỡ mất thời gian chữa thứ không hỏng:
+
+| Trường hợp | Ví dụ | Hậu quả |
+|---|---|---|
+| Class con mất, **class gốc còn** | `Calculator::Shipping::X`, `PaymentMethod::Y` | `Base.all.to_a` và `includes(:assoc)` **RAISE** → sập trang admin |
+| **Cả model không tồn tại** | `Spree::Page`, `Spree::Theme` khi không cài gem storefront | các dòng đó **trơ**, không code nào chạm tới được |
+
+Loại thứ hai kiểm bằng chính class gốc: nếu `Spree::Page` báo `NameError` và
+`store.pages` báo `NoMethodError` thì không có association nào nạp chúng, nên dù bảng
+có hàng nghìn dòng type lạ cũng không ảnh hưởng gì. Đừng đụng vào, và nhất là đừng xoá.
+
+Công cụ quét chỉ liệt kê type không constantize được, nên nó gộp cả hai loại lại. Bước
+tiếp theo luôn là hỏi: class GỐC có tồn tại không.
+
+### 1.27 5 migration báo FAILED trên đường 5.2.5 → 5.6.1 mà schema vẫn đúng
+
+`CreateSpreeDigitalLinks`, `RenameSecretToTokenOnSpreeDigitalLinks`,
+`RenameDataFeedTableColumns`, `AddIndexesToDataFeedsTable`,
+`RenameDataFeedsColumnProviderToType` đều fail với `PG::UndefinedColumn`. Cả hai shop
+đã thử đều fail y hệt, nên đây là đặc tính của đường nâng cấp chứ không phải dữ liệu bẩn.
+
+Lý do: bảng đích đã tồn tại sẵn ở hình dạng CUỐI. `spree_digital_links` đã có `token`
+chứ không còn `secret`, `spree_data_feeds` đã có `store_id/type/slug/active`. Các
+migration đổi tên vì thế không còn gì để đổi.
+
+Đừng tin cái nhãn FAILED, mà **so schema với một database 5.6.1 sạch**:
+
+```bash
+# cột nào bản sạch CÓ mà shop migrate THIẾU — con số này phải là 0
+comm -23 <(cols clean) <(cols migrated)
+# rồi so tiếp index, vì so cột không nhìn thấy index thiếu
+comm -23 <(idx clean) <(idx migrated)
+```
+
+Thực tế: 0 cột thiếu, 1 index thiếu (`spree_reimbursements.performed_by_id`, cột có
+sẵn nhưng index không được tạo, thiếu ở cả hai shop). Sau khi xác minh xong thì thêm
+index và ghi 5 version vào `schema_migrations`, nếu không `check_all_pending!` sẽ báo
+`PendingMigrationError` mãi.
+
+### 1.28 Migration 5.6 chuyển product properties sang metafields, nhưng bỏ sót
+
+Trên shop thử: 416 property, migration lõi tự chuyển 388, còn **28 cái không có
+metafield nào**. Không có lỗi, không có cảnh báo. Nếu bỏ qua bước
+`properties:export` trước khi migrate thì 28 property đó biến mất lặng lẽ và không
+lấy lại được, vì bảng cũ đã hết là nguồn đọc.
+
+Bảng `spree_product_properties` vẫn còn nguyên dữ liệu sau khi migrate, và
+`Spree::ProductProperty` thì **không còn tồn tại** trong 5.6.1 — model đã bị bỏ. Nên
+`ProductProperty.count` báo `NameError` là đúng, không phải mất dữ liệu. Kiểm bằng SQL thô.
+
 ## 2. Về Docker / môi trường
 
 ### 2.1 `docker --version` chạy được không có nghĩa daemon đang sống
@@ -575,6 +686,28 @@ Cách kiểm duy nhất đáng tin: mở link trong context trình duyệt **kh�
 ---
 
 ---
+
+### 2.16 `docker compose` mặc định KHÔNG mount source — sửa code xong test vẫn chạy code cũ
+
+Repo có ba file compose và chúng khác nhau ở đúng chỗ nguy hiểm nhất:
+
+| File | web service | mount |
+|---|---|---|
+| `docker-compose.yml` (mặc định) | `image: ghcr.io/spree/spree:latest` | chỉ `storage` |
+| `docker-compose.dev.yml` | `build: .` | `- .:/rails` |
+
+`docker compose exec web ...` không có `-f` sẽ dùng file mặc định, tức **image dựng sẵn**.
+File vừa viết trên máy không có trong container, mà lệnh vẫn chạy trơn tru và in ra kết quả
+trông như thật. Đã dính nhiều lần, mỗi lần đều mất thời gian đi tìm lỗi ở chỗ không có lỗi.
+
+Dấu hiệu nhận ra ngay: `docker compose exec web ls <file vừa tạo>` báo No such file, hoặc
+`docker inspect` chỉ thấy đúng một mount là `storage`.
+
+Hai đường đúng: dùng `-f docker-compose.dev.yml`, hoặc `docker compose cp` file vào rồi
+`restart web`. Bản `cp` chỉ sống trong lớp ghi của container: `restart` giữ, `up -d` /
+`--force-recreate` xoá sạch. Đây cũng là cách các file client (calculator, initializer) lên
+được server: `docker buildx build` lấy cả THƯ MỤC làm context nên file gitignore vẫn vào
+image — build context là thư mục, không phải git index.
 
 ## 3. Về server dùng chung
 

@@ -624,5 +624,12 @@
       "awaitingApproval": "Awaiting Approval",
       "awaitingApprovalHint": "Prices appear once your account is approved."
     }
+  },
+  "contact": {
+    "title": "Contact Us",
+    "metaDescription": "Get in touch with our team.",
+    "intro": "",
+    "formTitle": "Contact form",
+    "notConfigured": "The contact form is not configured for this store yet."
   }
 }

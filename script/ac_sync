@@ -111,6 +111,28 @@ const day = (ts) => (ts ? new Date(ts * 1000).toISOString().slice(0, 10) : null)
 
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s)
 
+// Strip anything credential-shaped before it is written to disk.
+//
+// asks is a verbatim copy of the client's task body, and clients put passwords in task
+// bodies. This one did: the root password for the commercial server sat in
+// docs/plan.json for two days after he had already removed it from ActiveCollab, and it
+// was read back to him as if it were still there. He was right and the copy was mine.
+//
+// plan.json is gitignored, so this was never going to be published, but a credential in a
+// local file is still a credential, and the file is read aloud constantly.
+//
+// Conservative on purpose. It redacts what follows a credential word, and standalone
+// high-entropy runs, and leaves ordinary prose, URLs and IPs alone: over-redacting an
+// "asks" field would hide the thing a human is meant to read.
+function redact(text) {
+  return String(text || '')
+    // password: xxxx   root xxxx   token = xxxx
+    .replace(/\b(pass(?:word)?|pwd|root|secret|token|api[_ -]?key)\b\s*[:=]?\s*(\S{8,})/gi,
+             (_m, label) => `${label} [REDACTED]`)
+    // bare high-entropy strings: 20+ chars mixing letters and digits, no spaces
+    .replace(/\b(?=\S*[a-z])(?=\S*[A-Z0-9])[A-Za-z0-9+/=_-]{20,}\b/g, '[REDACTED]')
+}
+
 // ── fetch ───────────────────────────────────────────────────────────────────
 
 async function sync() {
@@ -181,7 +203,7 @@ for (const t of tasks) {
   if (!row) {
     // A task we have never seen. Fill only what the API knows and leave the human
     // fields blank — blank is the signal that it still needs a person to read it.
-    const created = { id, ...fresh, asks: clip(toText(t.body), 400), status: 'new, unread', our_reply: '', waiting_for: '', artifact: '' }
+    const created = { id, ...fresh, asks: clip(redact(toText(t.body)), 400), status: 'new, unread', our_reply: '', waiting_for: '', artifact: '' }
     plan.client_tasks.push(created)
     changes.push(`${C.green}new${C.off}     ${id}  ${t.name}`)
     continue

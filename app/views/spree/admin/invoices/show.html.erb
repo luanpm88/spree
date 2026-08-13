@@ -115,11 +115,13 @@
         </div>
         <% logo = t_common.call(:shop_logo) %>
         <% if logo.present? %>
-          <%# His logo is an absolute URL in his own file, no asset pipeline involved, and it
-              is currently DEAD: a third-party CDN host was not resolving. Verified,
-              not assumed. So the image hides itself rather than printing a broken-image
-              icon on a document that goes to a customer. The shop name above is already
-              text, so an invoice without the logo still says who sent it.
+          <%# The logo is an absolute URL out of the shop's own locale file, with no asset
+              pipeline behind it, so as far as this document is concerned it is a third-party
+              host that can be wrong or down without anyone here noticing. It was in fact dead
+              when this was written and live again two days later, which is the whole argument
+              for the guard: the image hides itself rather than printing a broken-image icon
+              on a document that goes to a customer. The shop name above is already text, so
+              an invoice without the logo still says who sent it.
 
               onerror rather than checking the URL server side: this renders on every print
               and a per-request HEAD to a third-party host is a page that hangs when the CDN

@@ -34,9 +34,19 @@ namespace :email do
       # qty column is not always "1". Taking the first three
       # variants returns three colours of the same product, so every row of the
       # rendered table reads identically and a broken loop looks correct.
+      #
+      # `variants` EXCLUDES the master, so a shop whose products carry no options has
+      # none at all and this used to raise "run: make setup" on a database that was
+      # perfectly fine. That is the normal shape for a simple catalogue, and it is the
+      # shape of the client shops, so fall back to the master rather than refuse.
       variants = Spree::Product.joins(variants: :prices).distinct.limit(3)
                                .filter_map { |prod| prod.variants.joins(:prices).first }
-      raise 'no variants with prices — run: make setup' if variants.empty?
+      if variants.empty?
+        variants = Spree::Product.joins(master: :prices).distinct.limit(3)
+                                 .filter_map(&:master)
+        puts 'no option variants in this catalogue, using master variants' if variants.any?
+      end
+      raise 'no variants with prices at all — run: make setup' if variants.empty?
 
       # Build it as a cart, not as a completed order. Adding a line item to an order
       # that is already `complete` fires the inventory hook, which unstocks through
@@ -70,7 +80,18 @@ namespace :email do
       # A shipment so shipments.first.stock_location resolves, and a payment so
       # payments.first.number and .payment_method.name do.
       if (location = Spree::StockLocation.first)
+        # A shipping method too. Without one, shipment.shipping_method is nil and
+        # shipped_email dies on `.name` — again a fixture gap wearing a template bug's
+        # clothes. Reuse a live method if the shop has one so the preview reads like the
+        # real thing, otherwise make a plain free one.
+        ship_method = Spree::ShippingMethod.where(deleted_at: nil).first
+        ship_method ||= Spree::ShippingMethod.create!(
+          name: 'Preview delivery',
+          calculator: Spree::Calculator::Shipping::FlatRate.new(preferred_amount: 0),
+          shipping_categories: [Spree::ShippingCategory.first || Spree::ShippingCategory.create!(name: 'Default')]
+        )
         shipment = order.shipments.create!(stock_location: location, state: 'shipped')
+        shipment.shipping_rates.create!(shipping_method: ship_method, cost: 0, selected: true)
 
         # Inventory units do not appear just because a shipment exists. Spree creates
         # them while allocating stock during a real checkout, and this order skips
@@ -88,8 +109,17 @@ namespace :email do
       # Must be a method with source_required? == false. The seeded StoreCredit and
       # Bogus gateway both demand a payment source, and creating one just to render an
       # email would mean faking card data. Check needs nothing.
+      #
+      # And build one if the shop has none. A database whose only method is StoreCredit
+      # used to leave the order with no payment at all, silently, because of the `if
+      # method` guard. store_owner_notification_email then died on
+      # `payments.first.payment_method` and the failure looked like a template bug rather
+      # than a missing fixture. A preview task should make what it needs.
       method = Spree::PaymentMethod.unscoped.find { |m| !m.source_required? }
-      order.payments.create!(payment_method: method, amount: order.total, state: 'completed') if method
+      method ||= Spree::PaymentMethod::Check.create!(
+        name: 'Preview offline payment', active: true, display_on: 'both'
+      )
+      order.payments.create!(payment_method: method, amount: order.total, state: 'completed')
 
       # `update_totals` only sums what is already on the record; it does not run the
       # adjustments and shipment totals, so the order stays at 0.00. `update_with_updater!`

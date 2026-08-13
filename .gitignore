@@ -82,14 +82,24 @@ docs/plan.json*
 docs/PLAN.md
 
 # Client-owned email design assets. luanpm88/spree is a public repo; these are
-# the client's templates and his brand copy, given to us to run HIS shops, not to
-# publish. The mailer decorator checks for the view's presence rather than
-# assuming it, so a checkout without them still sends correct stock emails.
+# The client's own email templates and brand copy, given to us to run THEIR shops, not
+# to publish. This repository is public.
 app/views/spree/order_mailer/
-# Any locale file carrying the client's own copy. Broadened from the client.*.yml after
-# the client's own locale file slipped past it: the underscore is not a dot, and the file
-# was one commit away from being published in a public repo.
-the client's own locale files
+
+# Locale files. Inverted to an allowlist rather than a pattern that names the client's
+# files, for two reasons. It keeps their brand out of a public repository, and it is
+# strictly safer: a pattern has to be guessed in advance and one of theirs already
+# slipped past an earlier attempt because an underscore is not a dot. Everything under
+# config/locales is ignored unless it is one of ours, listed below, so a new file they
+# send is protected the moment it lands.
+config/locales/*
+!config/locales/_email_key_defaults.en.yml
+!config/locales/admin_branding.en.yml
+!config/locales/admin_invoice.en.yml
+!config/locales/approval_workflow.en.yml
+!config/locales/en.yml
+!config/locales/signup_notification.en.yml
+!config/locales/welcome_mailer.en.yml
 app/views/spree/shipment_mailer/
 app/views/spree/reimbursement_mailer/
 
@@ -99,7 +109,21 @@ docs/.covers.local.json
 # Client-owned shipping code. luanpm88/spree is public; these calculators were
 # written for the client's business and their rates are commercially sensitive.
 app/models/spree/calculator/shipping/
+# And the autoload rule that exists ONLY to make those calculators resolve. One of
+# them spells its acronym in a way Zeitwerk cannot derive from the filename, so
+# without this the class is missing at runtime and that shop cannot quote shipping.
+# Kept out of the public repo for the same reason as the calculators themselves; it
+# reaches the server inside the build context, which is the directory, not the index.
+config/initializers/inflections.rb
+
+# Dữ liệu catalogue của client rơi ra từ properties:export khi migrate từng shop.
+# Mỗi file là toàn bộ product property của một shop thật, kèm tên sản phẩm.
+db/*_properties.json
 config/rural_postcodes.txt
 
 # Names the client and quotes his messages. This repo is public.
 docs/VOICE.md
+# Cùng lý do: runbook migrate gọi thẳng tên shop, domain, phiên bản Spree từng shop,
+# trích nguyên lời client và ghi ngày chốt. Nội dung kỹ thuật chung đã tách sang
+# docs/DISCOVERIES.md §1.24, §1.25, §2.16 dưới dạng trung tính, không định danh ai.
+docs/MIGRATION_RUNBOOK.md

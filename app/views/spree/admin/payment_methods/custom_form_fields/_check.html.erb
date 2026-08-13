@@ -1,0 +1,18 @@
+<%#
+  The instructions box for an offline payment method, rendered through the
+  custom_form_fields hook in spree_admin 5.6.1's payment method form.
+
+  Bound to :description because that is the field the Store API publishes
+  (Spree::Api::V3::PaymentMethodSerializer -> attributes :name, :description), so
+  whatever is typed here is what a storefront can show at checkout.
+
+  HTML is accepted and expected: the migrated shops store this as HTML, including a
+  link to a PDF of the same bank details. See app/models/spree/payment_method/
+  check_decorator.rb for why this is a plain textarea rather than the Trix editor.
+%>
+<%= f.spree_text_area :description,
+      label: Spree.t(:instructions_label, scope: :offline_payment,
+                     default: 'Information shown to the customer'),
+      rows: 12,
+      help: Spree.t(:instructions_help, scope: :offline_payment,
+                    default: 'Shown on the storefront when this method is chosen. HTML is allowed, so a link to a details file works here. Do not rely on the order email to carry bank details.') %>

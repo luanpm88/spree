@@ -189,4 +189,65 @@ namespace :rehearsal do
       "insert into schema_migrations (version) values ('#{version}') on conflict do nothing"
     )
   end
+
+  desc 'Carry payment method instructions into description, which is the field 5.6 publishes'
+  task carry_payment_instructions: :environment do
+    abort 'refusing to run without DATABASE_URL set explicitly' if ENV['DATABASE_URL'].blank?
+    conn = ActiveRecord::Base.connection
+
+    # ── what this is for ──────────────────────────────────────────────────────
+    #
+    # Older shops keep the bank transfer wording in spree_payment_methods.instructions:
+    # the account, the reference to quote, and on these shops a link to a PDF of the
+    # same details. A clean 5.6.1 spree_payment_methods has no instructions column at
+    # all, and the 5.6.1 admin form offers only name, display_on, auto_capture and
+    # active. So after migrating, the text is still sitting in the row with nothing
+    # reading it and no box to edit it in. It does not error. It just stops appearing,
+    # which for a bank transfer method means the customer is told to pay and not told
+    # where.
+    #
+    # Spree::Api::V3::PaymentMethodSerializer publishes :description, so that is where
+    # it has to land for a storefront to show it again.
+    unless conn.column_exists?(:spree_payment_methods, :instructions)
+      puts 'no instructions column: nothing to carry (already done, or a clean 5.6 database)'
+      next
+    end
+
+    rows = conn.select_all(<<~SQL).to_a
+      SELECT id, name, type,
+             COALESCE(length(instructions), 0) AS instr_len,
+             COALESCE(length(description), 0)  AS desc_len
+      FROM spree_payment_methods
+      WHERE instructions IS NOT NULL AND instructions <> ''
+      ORDER BY id
+    SQL
+
+    if rows.empty?
+      puts 'no payment method carries instructions text'
+      next
+    end
+
+    moved = 0
+    rows.each do |r|
+      # Never overwrite. A description already set is someone's decision, and the two
+      # fields disagreeing is a question for the shop owner, not something to settle here.
+      if r['desc_len'].to_i.positive?
+        puts format('  %-18s SKIPPED, description already has %d chars', r['name'], r['desc_len'])
+        next
+      end
+
+      conn.exec_update(
+        'UPDATE spree_payment_methods SET description = instructions WHERE id = $1',
+        'carry_payment_instructions',
+        [ActiveRecord::Relation::QueryAttribute.new('id', r['id'], ActiveRecord::Type::Integer.new)]
+      )
+      moved += 1
+      puts format('  %-18s %d chars -> description', r['name'], r['instr_len'])
+    end
+
+    # instructions is left in place on purpose. It costs nothing, it is the only copy of
+    # the original if the carry across ever needs re-reading, and dropping a column that
+    # holds client wording is not a decision for a rehearsal script.
+    puts "carried #{moved} of #{rows.size}. instructions column left intact."
+  end
 end

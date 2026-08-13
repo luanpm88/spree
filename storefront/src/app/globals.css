@@ -18,17 +18,28 @@
   --animate-hamburger-bottom-open: hamburger-bottom-open 0.35s ease-in-out forwards;
   --animate-hamburger-bottom-close: hamburger-bottom-close 0.35s ease-in-out forwards;
 
-  --color-primary-50: #eff6ff;
-  --color-primary-100: #dbeafe;
-  --color-primary-200: #bfdbfe;
-  --color-primary-300: #93c5fd;
-  --color-primary-400: #60a5fa;
-  --color-primary-500: #0077ff;
-  --color-primary-600: #0066dd;
-  --color-primary-700: #0055bb;
-  --color-primary-800: #004499;
-  --color-primary-900: #003377;
-  --color-primary-950: #001d4d;
+  /* ── brand ramp ──────────────────────────────────────────────────────────
+     Built from the client's own palette, hue held at 118 across the whole ramp
+     so every step is the same green. 500 is his brand colour exactly.
+
+       #7D8560  brand        #707757  darker      #868E59  lighter
+       #646A4E  his "Text Colour"
+
+     600 lands on his darker olive on purpose: white text on the brand colour
+     measures 3.89:1, which fails WCAG AA for body text, while the darker one
+     measures 4.70:1 and passes. So buttons use 600, headings and fills use 500.
+     Both are his colours. Nothing invented.                                  */
+  --color-primary-50: #F4F5EF;
+  --color-primary-100: #E5E8D9;
+  --color-primary-200: #D2D7BE;
+  --color-primary-300: #B9C09D;
+  --color-primary-400: #9CA67B;
+  --color-primary-500: #7D8560;
+  --color-primary-600: #707757;
+  --color-primary-700: #646A4E;
+  --color-primary-800: #54554D;
+  --color-primary-900: #494849;
+  --color-primary-950: #2E2F2B;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -184,18 +195,18 @@ input[type="search"]::-webkit-search-cancel-button {
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
+  --primary: #707757;  /* #707757, the shade that passes AA under white text */
+  --primary-foreground: #FFFFFF;  /* #FFFFFF, his button text colour */
+  --secondary: #E5E8D9;  /* #E5E8D9 */
   --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
+  --muted: #F1F0F0;  /* #F1F0F0 */
   --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
+  --accent: #F7F7F7;  /* #F7F7F7 */
   --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.58 0.22 27);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --destructive: #C73528;  /* #C73528 */
+  --border: #E5E8D9;  /* #E5E8D9 */
+  --input: #E5E8D9;  /* #E5E8D9 */
+  --ring: #7D8560;  /* #7D8560 brand */
   --chart-1: oklch(0.809 0.105 251.813);
   --chart-2: oklch(0.623 0.214 259.815);
   --chart-3: oklch(0.546 0.245 262.881);

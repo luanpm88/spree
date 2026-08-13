@@ -622,5 +622,12 @@
       "signInForPricing": "Inicia sesión para ver precios",
       "signInToOrder": "Inicia sesión para pedir"
     }
+  },
+  "contact": {
+    "title": "Contact Us",
+    "metaDescription": "Get in touch with our team.",
+    "intro": "",
+    "formTitle": "Contact form",
+    "notConfigured": "The contact form is not configured for this store yet."
   }
 }
