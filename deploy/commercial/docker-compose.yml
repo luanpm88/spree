@@ -142,6 +142,15 @@ services:
         NEXT_PUBLIC_LOGO_URL: ${LOGO_URL:-}
         NEXT_PUBLIC_STORE_NAME: ${SHOP_NAME:-Shop}
         NEXT_PUBLIC_SITE_URL: ${STOREFRONT_URL:-}
+        # Contact page. The form lives on a host the shop owns and is embedded, so this
+        # is the full view URL including the form id. The wording above it is
+        # configuration rather than source because this repository is public and a
+        # shop's own copy carries its brand. All three are optional: unset, the page
+        # falls back to neutral wording and says the form is not configured rather than
+        # rendering an empty box.
+        NEXT_PUBLIC_CONTACT_FORM_URL: ${CONTACT_FORM_URL:-}
+        NEXT_PUBLIC_CONTACT_TITLE: ${CONTACT_TITLE:-}
+        NEXT_PUBLIC_CONTACT_INTRO: ${CONTACT_INTRO:-}
     image: storefront-${SHOP:?}:latest
     restart: always
     depends_on:

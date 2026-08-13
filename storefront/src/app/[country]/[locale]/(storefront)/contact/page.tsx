@@ -51,7 +51,12 @@ export default async function ContactPage({ params }: ContactPageProps) {
   const t = await getTranslations({ locale, namespace: "contact" });
 
   const title = TITLE_OVERRIDE || t("title");
+  // Split on a real blank line, and on the two characters backslash-n twice. A value
+  // that arrives through a .env file and a Docker build arg keeps its escape sequences
+  // literal, so a paragraph break written as \n\n stays as those four characters and
+  // the whole intro renders as one block with the escapes showing.
   const intro = (INTRO_OVERRIDE || t("intro"))
+    .replace(/\\n/g, "\n")
     .split(/\n\s*\n/)
     .map((p) => p.trim())
     .filter(Boolean);

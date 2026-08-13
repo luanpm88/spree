@@ -206,7 +206,11 @@ cmd_up() {
   host "test -f '$dir/.env'" || die "no $dir/.env yet. Create it first."
 
   step "Building (this box has the cores for it, so no registry is involved)"
+  # web AND storefront. Building only web is a deploy that runs clean, reports
+  # success, and changes nothing on the front end, which is where most changes
+  # actually are. That trap has cost hours more than once.
   host "cd '$dir' && docker compose build --progress plain web 2>&1 | tail -20"
+  host "cd '$dir' && docker compose --profile storefront build --progress plain storefront 2>&1 | tail -20"
 
   step "Starting"
   host "cd '$dir' && docker compose up -d"
