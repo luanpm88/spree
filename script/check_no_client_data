@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+#
+# Refuse to let anything that identifies the client into a public repository.
+#
+#   script/check_no_client_data              everything git tracks
+#   script/check_no_client_data --staged     only what is about to be committed
+#
+# ── why this is a gate and not a report ──────────────────────────────────────
+#
+# It printed a warning once and the commit went in underneath it, because a warning
+# needs someone to be reading. Two of the leaks it now catches got in exactly that way:
+# a client's shop name in a usage example, and a path with their name in it. Both were
+# found later by a wider scan than the one that had passed.
+#
+# So this exits non-zero. Wired to .githooks/pre-commit, so the commit does not happen.
+#
+# ── what counts ──────────────────────────────────────────────────────────────
+#
+# Not only credentials. A first name plus a brand identifies a client as surely as a
+# domain does, and this repository is public. The patterns live in one place below so
+# adding a new client means adding a line, not remembering nine places.
+#
+# To allow a specific line, put it in .clientscanignore, one grep-compatible pattern
+# per line. Keep it short: every entry is a thing this cannot protect.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+STAGED=0
+[ "${1:-}" = "--staged" ] && STAGED=1
+
+# The patterns live OUTSIDE the repository, in .clientscan-patterns, which is
+# gitignored. Keeping them here would publish the client's name in the file whose job
+# is to keep it out, and the hook proved that by refusing its own commit. One
+# grep-compatible pattern per line, blank lines and # comments ignored.
+PATTERN_FILE='.clientscan-patterns'
+if [ ! -f "$PATTERN_FILE" ]; then
+  cat >&2 <<'NOPE'
+no .clientscan-patterns in this checkout, so nothing is being checked.
+
+Copy .clientscan-patterns.example to .clientscan-patterns and put the names, brands
+and domains this repository must never contain in it, one per line. It is gitignored
+on purpose: the list itself identifies the client.
+NOPE
+  exit 1
+fi
+PATTERNS=$(grep -vE '^\s*(#|$)' "$PATTERN_FILE" | paste -sd'|' -)
+[ -n "$PATTERNS" ] || { echo ".clientscan-patterns is empty, nothing to check" >&2; exit 1; }
+
+IGNORE_FILE='.clientscanignore'
+filter() {
+  if [ -f "$IGNORE_FILE" ]; then grep -vEf "$IGNORE_FILE"; else cat; fi
+}
+
+if [ "$STAGED" = "1" ]; then
+  FILES=$(git diff --cached --name-only --diff-filter=ACM)
+  read_file() { git show ":$1" 2>/dev/null; }
+  WHAT="staged for commit"
+else
+  FILES=$(git ls-files)
+  read_file() { cat "$1" 2>/dev/null; }
+  WHAT="tracked"
+fi
+
+[ -z "$FILES" ] && { echo "nothing $WHAT"; exit 0; }
+
+hits=0
+count=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  count=$((count + 1))
+  found=$(read_file "$f" | grep -inE "$PATTERNS" | filter | head -3)
+  if [ -n "$found" ]; then
+    hits=$((hits + 1))
+    printf '\n  %s\n' "$f"
+    printf '%s\n' "$found" | sed 's/^/      /' | cut -c1-140
+  fi
+done <<< "$FILES"
+
+echo ''
+if [ "$hits" -eq 0 ]; then
+  echo "ok — $count files $WHAT, nothing identifying the client"
+  exit 0
+fi
+
+cat <<MSG
+$hits file(s) name the client, and this repository is public.
+
+Fix the wording, or move the file out of the tree and add it to .gitignore. If a
+line is genuinely fine, add a pattern to .clientscanignore and say why in a comment.
+MSG
+exit 1

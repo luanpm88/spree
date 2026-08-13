@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Blocks a commit that would put the client's name into a public repository.
+# Enable once per clone:  git config core.hooksPath .githooks
+exec script/check_no_client_data --staged

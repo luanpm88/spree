@@ -130,3 +130,6 @@ docs/MIGRATION_RUNBOOK.md
 
 # Everything the client sends us: dumps, templates, brand files, screenshots.
 tmp/client/
+
+# The scan pattern list. It names the client, so it stays out of a public repo.
+.clientscan-patterns

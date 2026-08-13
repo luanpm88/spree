@@ -1,0 +1,9 @@
+# Copy to .clientscan-patterns and fill in. One grep pattern per line, case insensitive.
+# Everything that identifies whoever this repository is being built for: their name,
+# their brand, their domains, fragments of their bank details. A first name plus a
+# brand identifies a client as surely as a domain does.
+#
+# acme
+# jane\.doe
+# acme-corp\.com
+# 12-3456-7890
