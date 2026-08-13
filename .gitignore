@@ -116,16 +116,16 @@ app/models/spree/calculator/shipping/
 # reaches the server inside the build context, which is the directory, not the index.
 config/initializers/inflections.rb
 
-# Dữ liệu catalogue của client rơi ra từ properties:export khi migrate từng shop.
-# Mỗi file là toàn bộ product property của một shop thật, kèm tên sản phẩm.
+# Catalogue data that falls out of properties:export while migrating a shop. Each file
+# is every product property of a real shop, product names and all.
 db/*_properties.json
 config/rural_postcodes.txt
 
 # Names the client and quotes his messages. This repo is public.
 docs/VOICE.md
-# Cùng lý do: runbook migrate gọi thẳng tên shop, domain, phiên bản Spree từng shop,
-# trích nguyên lời client và ghi ngày chốt. Nội dung kỹ thuật chung đã tách sang
-# docs/DISCOVERIES.md §1.24, §1.25, §2.16 dưới dạng trung tính, không định danh ai.
+# Same reason: the migration runbook names shops, a domain, the Spree version each one
+# runs, and quotes the client directly. The general engineering content lives in
+# docs/DISCOVERIES.md 1.24, 1.25 and 2.16 instead, written so it identifies nobody.
 docs/MIGRATION_RUNBOOK.md
 
 # Everything the client sends us: dumps, templates, brand files, screenshots.
