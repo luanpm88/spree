@@ -77,7 +77,9 @@ export default function EmbeddedForm({
       if (event.origin !== expected) return;
       const reported = parseHeight(event.data);
       if (reported === null) return;
-      setHeight(Math.min(Math.max(reported, minHeight), MAX_HEIGHT));
+      // A little more than reported. With scrolling off, a height that is even one
+      // pixel short crops the form instead of scrolling, so err upward.
+      setHeight(Math.min(Math.max(reported + 24, minHeight), MAX_HEIGHT));
     }
 
     window.addEventListener("message", onMessage);
@@ -90,6 +92,11 @@ export default function EmbeddedForm({
       title={title}
       height={height}
       className="w-full border-0"
+      // The form's own page is 3 pixels wider than the frame, so the browser draws a
+      // horizontal scrollbar over someone else's stylesheet that we cannot reach from
+      // here. scrolling="no" removes it. It cannot clip anything vertically either:
+      // the height below comes from the form itself and carries a buffer.
+      scrolling="no"
       // The form collects contact details and runs a captcha, so it needs forms,
       // scripts and same-origin against ITS own origin. No allow-top-navigation: a
       // framed page should not be able to move the tab it sits in.

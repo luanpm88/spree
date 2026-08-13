@@ -177,6 +177,16 @@ cmd_ship() {
   # theirs. Which means a shop deployed from the archive alone runs Spree's stock
   # emails instead of the client's, with no error and nothing to notice. Found that
   # by looking, after telling the client the shop was up.
+  # Gate, before anything is sent. Every file the app loads that git ignores must be in
+  # CLIENT_ASSETS, or the server gets a tree missing code it needs and the container
+  # will not boot. That is not hypothetical: it took the backend down for 20 minutes.
+  if [ -x "$ROOT/script/check_deploy_assets" ]; then
+    "$ROOT/script/check_deploy_assets" >/dev/null 2>&1 || {
+      "$ROOT/script/check_deploy_assets" || true
+      die "refusing to ship with files the application needs and the archive will not carry"
+    }
+  fi
+
   step "Client assets"
   local sent=0
   local tmpf; tmpf="$(mktemp)"

@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+#
+# Every file the application loads but git does not carry must be in CLIENT_ASSETS.
+#
+#   script/check_deploy_assets
+#
+# ── why ──────────────────────────────────────────────────────────────────────
+#
+# A deploy took the client's backend down for twenty minutes because
+# config/initializers/inflections.rb is gitignored, script/commercial ships HEAD with
+# `git archive`, and that file was not in the hand-carried list. Rails eager loads in
+# production, the constant it defines could not resolve, and the container refused to
+# boot. Nothing in the deploy said a file was missing: `ship` reported "40 client files
+# in place" and `up` built an image that then died on startup.
+#
+# The note in .gitignore said that file "reaches the server inside the build context",
+# which is true of `docker buildx build` from the repository root and false of
+# `git archive`. Correct sentence, wrong deploy path. A comment cannot catch that. This
+# can.
+#
+# The rule: a file under app/ or config/ that git ignores is a file the running
+# application will look for and not find. Either it is in CLIENT_ASSETS, or it is not
+# needed and should not be on disk.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+SHIP_SCRIPT='script/commercial'
+[ -f "$SHIP_SCRIPT" ] || { echo "no $SHIP_SCRIPT"; exit 1; }
+
+# The paths the ship step carries by hand. Read from the script so the two cannot drift.
+assets=$(sed -n '/^CLIENT_ASSETS=(/,/^)/p' "$SHIP_SCRIPT" | grep -oE '"[^"]+"' | tr -d '"')
+
+# Locale files are appended at ship time from a glob rather than listed, so reading the
+# array alone reports every one of them as missing. A check that cries wolf is a check
+# nobody reads, which is how the real one would have been skipped.
+if grep -q 'CLIENT_ASSETS+=.*config/locales' "$SHIP_SCRIPT"; then
+  assets="$assets
+config/locales"
+fi
+
+# Built by the image, not carried. app/assets/builds is compiled during docker build,
+# so it is correctly absent from the archive and correctly absent from the list.
+BUILT_BY_IMAGE='^app/assets/builds/'
+
+# Files Rails will load that git does not have. Directories under app/ and config/ only:
+# everything there is autoloaded, eager loaded, or read at boot.
+missing=0
+checked=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  case "$f" in
+    */node_modules/*|*/tmp/*|*.log|*/.DS_Store|*/storage/*) continue ;;
+  esac
+  echo "$f" | grep -qE "$BUILT_BY_IMAGE" && continue
+  checked=$((checked + 1))
+
+  covered=0
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    # Covered by an exact match or by a directory prefix.
+    case "$f" in
+      "$a"|"$a"/*) covered=1; break ;;
+    esac
+  done <<< "$assets"
+
+  if [ "$covered" -eq 0 ]; then
+    missing=$((missing + 1))
+    printf '  %s\n' "$f"
+  fi
+done <<< "$(git ls-files --others --ignored --exclude-standard -- app config 2>/dev/null)"
+
+echo ''
+if [ "$missing" -eq 0 ]; then
+  echo "ok — $checked ignored files under app/ and config/, all carried by the deploy"
+  exit 0
+fi
+
+cat <<MSG
+$missing file(s) the application loads are ignored by git AND not in CLIENT_ASSETS.
+
+git archive will not carry them, so the server gets a tree that is missing code it
+needs. In production Rails eager loads, so this is not a quiet degradation: the
+container will not start.
+
+Add the path to CLIENT_ASSETS in $SHIP_SCRIPT, or delete the file if it is not needed.
+MSG
+exit 1
