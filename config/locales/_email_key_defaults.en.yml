@@ -11,7 +11,7 @@
 # has not written yet belongs missing, so it is visible.
 #
 #   shop_country  The templates use it as the logo's alt text and as a line in the
-#                 text footer. the client's answer was that the shop has no country
+#                 text footer. The shop's answer was that the shop has no country
 #                 because it is global, which is a decision rather than an
 #                 oversight. Empty is therefore correct twice over: a decorative
 #                 logo beside the shop name wants empty alt text, and the footer

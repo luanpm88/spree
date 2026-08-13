@@ -1,6 +1,6 @@
 # Copy for the email that tells the shop somebody has signed up and is waiting.
 #
-# Ours, not the client's, so this one IS committed, unlike the client's own locale files
+# Ours, not the client's, so this one IS committed, unlike the shop's own locale files
 # which carries his brand copy and stays out of a public repo.
 #
 # Written as an internal note. The reader is the shop, they already know what the shop

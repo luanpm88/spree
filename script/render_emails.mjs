@@ -10,7 +10,7 @@
 // produce a 200 and a plausible-looking file.
 //
 //   - A missing i18n key renders as EMPTY, not as an error. The layout survives, the
-//     words vanish. the client's templates use four custom scopes, so this is the most
+//     words vanish. The shop's templates use four custom scopes, so this is the most
 //     likely failure and the least visible one.
 //   - A view override that keeps its own <!DOCTYPE> while the mailer layout supplies
 //     another produces nested <html>. Clients strip the inner document and the design

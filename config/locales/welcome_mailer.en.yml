@@ -1,6 +1,6 @@
 # Copy for the welcome email that Spree 5.6 does not ship.
 #
-# Ours, not the client's, so this one IS committed — unlike the client's own locale files
+# Ours, not the client's, so this one IS committed — unlike the shop's own locale files
 # which carries his brand copy and stays out of a public repo. When his own welcome
 # template and wording arrive, these keys are what his file overrides.
 #

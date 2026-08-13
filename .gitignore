@@ -127,3 +127,6 @@ docs/VOICE.md
 # trích nguyên lời client và ghi ngày chốt. Nội dung kỹ thuật chung đã tách sang
 # docs/DISCOVERIES.md §1.24, §1.25, §2.16 dưới dạng trung tính, không định danh ai.
 docs/MIGRATION_RUNBOOK.md
+
+# Everything the client sends us: dumps, templates, brand files, screenshots.
+tmp/client/

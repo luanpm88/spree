@@ -5,7 +5,7 @@
 # and user_emails.payment_link, so there is nothing here that could contradict what his
 # payment email says.
 #
-# Named admin_invoice.en.yml so it loads before the client.*.yml and his keys stay able to
+# Named admin_invoice.en.yml so it loads before the shop's own locale files and their keys stay able to
 # win, the same rule as approval_workflow.en.yml.
 en:
   spree:
