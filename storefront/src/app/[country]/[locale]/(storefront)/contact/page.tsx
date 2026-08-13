@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import type { Locale } from "next-intl";
 import { getTranslations } from "next-intl/server";
 import EmbeddedForm from "@/components/contact/EmbeddedForm";
 import { getStoreName } from "@/lib/store";
@@ -37,7 +38,7 @@ export async function generateMetadata({
   params,
 }: ContactPageProps): Promise<Metadata> {
   const { locale } = await params;
-  const t = await getTranslations({ locale, namespace: "contact" });
+  const t = await getTranslations({ locale: locale as Locale, namespace: "contact" });
   const storeName = getStoreName();
 
   return {
@@ -48,7 +49,7 @@ export async function generateMetadata({
 
 export default async function ContactPage({ params }: ContactPageProps) {
   const { locale } = await params;
-  const t = await getTranslations({ locale, namespace: "contact" });
+  const t = await getTranslations({ locale: locale as Locale, namespace: "contact" });
 
   const title = TITLE_OVERRIDE || t("title");
   // Split on a real blank line, and on the two characters backslash-n twice. A value

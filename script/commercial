@@ -49,6 +49,12 @@ CLIENT_ASSETS=(
   "app/views/spree/reimbursement_mailer"
   "app/models/spree/calculator/shipping"
   "config/rural_postcodes.txt"
+  # The autoload rule the calculators above depend on. It is gitignored for the same
+  # reason they are, so git archive leaves it behind, and without it Zeitwerk cannot
+  # derive the constant one of those files declares. In production Rails eager loads,
+  # so that is not a quiet failure: the container will not boot at all. It took the
+  # backend down on the first deploy after the calculator went up without it.
+  "config/initializers/inflections.rb"
 )
 # Locale files are a glob, so they are collected at ship time rather than listed.
 while IFS= read -r f; do CLIENT_ASSETS+=("$f"); done < <(cd "$ROOT" && ls config/locales/*.yml 2>/dev/null | grep -vE "/(en|ar|bg|ca|cs|da|de|el|es|et|fa|fi|fr|he|hi|hr|hu|id|it|ja|ko|lt|lv|mk|nb|nl|pl|pt|ro|ru|sk|sl|sq|sr|sv|th|tr|uk|vi|zh)\.yml$" || true)
