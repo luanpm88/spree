@@ -79,13 +79,29 @@ ok "control copy $PRISTINE"
 
 # Separated by a character that survives the whitespace strip, because the line this
 # feeds is the one that answers "did we lose anything" and 899352416 answers nothing.
+# Not every shop has every table. One arrived with no spree_product_properties at all.
+# A CASE guard does not help: PostgreSQL resolves every table reference while parsing,
+# so naming a missing table fails even in a branch that would never run. Count each
+# table on its own, after asking whether it exists.
+#
+# It failed silently the first time. set -e killed the run inside a command
+# substitution, which prints nothing, so the output simply stopped after "control copy"
+# and looked like work in progress.
 counts() {
-  $PSQL -d "$1" -tAc "
-    SELECT 'products='||(SELECT count(*) FROM spree_products)||
-           ' variants='||(SELECT count(*) FROM spree_variants)||
-           ' orders='||(SELECT count(*) FROM spree_orders)||
-           ' users='||(SELECT count(*) FROM spree_users)||
-           ' properties='||(SELECT count(*) FROM spree_product_properties)" 2>/dev/null | tr -d '\r' | sed 's/^ *//;s/ *$//'
+  local db="$1" out="" n
+  for t in spree_products spree_variants spree_orders spree_users spree_product_properties; do
+    if [ "$($PSQL -d "$db" -tAc "SELECT to_regclass('$t') IS NOT NULL" 2>/dev/null | tr -d '\r ')" = "t" ]; then
+      n=$($PSQL -d "$db" -tAc "SELECT count(*) FROM $t" 2>/dev/null | tr -d '\r ')
+    else
+      n="n/a"
+    fi
+    out="$out ${t#spree_}=$n"
+  done
+  echo "${out# }"
+}
+
+has_table() {
+  [ "$($PSQL -d "$DB" -tAc "SELECT to_regclass('$1') IS NOT NULL" 2>/dev/null | tr -d '\r ')" = "t" ]
 }
 BEFORE="$(counts "$PRISTINE")"
 info "$BEFORE"
@@ -98,7 +114,13 @@ eval "$RUN bin/rails runner script/check_sti_classes.rb 2>&1 | $QUIET | grep -iE
 #       and the 5.6 migration converts most rows but not all of them.
 step "Exporting product properties (must happen BEFORE migrating)"
 PROPS="db/${NAME}_properties.json"
-eval "$RUN bin/rails properties:export FILE=$PROPS 2>&1 | $QUIET | tail -2"
+HAS_PROPS=0
+if has_table spree_product_properties; then
+  HAS_PROPS=1
+  eval "$RUN bin/rails properties:export FILE=$PROPS 2>&1 | $QUIET | tail -2"
+else
+  info "no spree_product_properties table in this shop, nothing to carry"
+fi
 
 # ── 4. migrate ───────────────────────────────────────────────────────────────
 step "Cleanup, then migrations one at a time"
@@ -145,8 +167,12 @@ eval "$RUN bin/rails runner '
 
 # ── 6. properties back in, and the bank wording ──────────────────────────────
 step "Importing properties and carrying the payment wording"
-eval "$RUN bin/rails properties:import FILE=$PROPS 2>&1 | $QUIET | tail -3"
-eval "$RUN bin/rails properties:verify FILE=$PROPS 2>&1 | $QUIET | tail -2"
+if [ "$HAS_PROPS" = "1" ]; then
+  eval "$RUN bin/rails properties:import FILE=$PROPS 2>&1 | $QUIET | tail -3"
+  eval "$RUN bin/rails properties:verify FILE=$PROPS 2>&1 | $QUIET | tail -2"
+else
+  info "no properties were exported, so none to import"
+fi
 eval "$RUN bin/rails rehearsal:carry_payment_instructions 2>&1 | $QUIET | tail -2"
 
 # ── 7. did anything go missing ───────────────────────────────────────────────

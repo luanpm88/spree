@@ -74,7 +74,13 @@ namespace :properties do
 
     # LongText, not ShortText. Their values run to 485 characters and nearly all of
     # them are multi-line bullet lists; ShortText is for a word or two.
-    type = 'Spree::Metafields::LongText'
+    #
+    # This is only the type for a definition WE create. Where one already exists, its own
+    # metafield_type wins, because Spree validates that a metafield matches its
+    # definition and refuses the save otherwise. One shop had definitions already made by
+    # the 5.6 migration as RichText, and forcing LongText there aborted the whole import
+    # with "Type must match metafield definition" after the first product.
+    default_type = 'Spree::Metafields::LongText'
     # 'properties', because that is the namespace the client's own half-finished
     # conversion already used. Inventing a new one produced a second copy of every
     # value sitting beside the first, which is worse than not converting at all.
@@ -87,7 +93,7 @@ namespace :properties do
       d = Spree::MetafieldDefinition.find_or_initialize_by(key: key, namespace: namespace,
                                                           resource_type: 'Spree::Product')
       if d.new_record?
-        d.assign_attributes(name: presentation.presence || name, metafield_type: type, display_on: 'both')
+        d.assign_attributes(name: presentation.presence || name, metafield_type: default_type, display_on: 'both')
         d.save!
         created_defs += 1
       end
@@ -108,11 +114,19 @@ namespace :properties do
       end
 
       d = definitions.fetch(r['property_name'])
-      m = Spree::Metafield.find_or_initialize_by(metafield_definition_id: d.id,
-                                                 resource_type: 'Spree::Product',
-                                                 resource_id: product.id)
+
+      # Build it as the RIGHT CLASS, not as the base class with a type attribute set
+      # afterwards. Spree::Metafields::RichText overrides value= to write through an
+      # ActionText association rather than the value column, and assigning `type` does
+      # not change the Ruby class of an object that already exists. So the base class
+      # value= ran, wrote the column, and RichText then read from ActionText and found
+      # nothing. 73 product specifications imported as empty on one shop, with the task
+      # reporting them as created and no error anywhere. Only properties:verify caught it.
+      klass = (d.metafield_type.presence || default_type).constantize
+      m = klass.find_or_initialize_by(metafield_definition_id: d.id,
+                                      resource_type: 'Spree::Product',
+                                      resource_id: product.id)
       was_new = m.new_record?
-      m.type = type
       m.value = r['value']
       m.save!
       was_new ? created += 1 : updated += 1
@@ -138,6 +152,7 @@ namespace :properties do
 
     ok = 0
     bad = []
+    markup = []
     rows.each do |r|
       product = Spree::Product.find_by(slug: r['product_slug']) || Spree::Product.find_by(id: r['product_id'])
       key = r['property_name'].to_s.parameterize.underscore
@@ -146,16 +161,32 @@ namespace :properties do
                                                    resource_type: 'Spree::Product', resource_id: product.id)
       # Compare the VALUE, not merely that a row exists. A metafield that arrived
       # empty would otherwise count as success.
+      #
+      # Two kinds of difference, and only one of them is a problem. A RichText metafield
+      # can come back wrapped by a Spree admin partial, comment header and all, so byte
+      # equality called three products different when every word was identical. Strip
+      # the markup and compare the words: if those match, say so and move on. A check
+      # that cries wolf is a check nobody reads the next time.
+      strip = lambda do |v|
+        v.to_s.gsub(/<!--.*?-->/m, '').gsub(/<[^>]+>/, ' ').gsub('&nbsp;', ' ').gsub(/\s+/, ' ').strip
+      end
+
       if m && m.value.to_s == r['value'].to_s
         ok += 1
+      elsif m && strip.call(m.value) == strip.call(r['value'])
+        markup << "#{r['product_slug']} / #{key}"
       else
         bad << "#{r['product_slug']} / #{key}: #{m ? 'value differs' : 'missing'}"
       end
     end
 
     puts "verified #{ok}/#{rows.size} properties"
+    unless markup.empty?
+      puts "#{markup.size} identical in wording, different in markup:"
+      markup.first(10).each { |b| puts "  #{b}" }
+    end
     if bad.empty?
-      puts 'ok — every exported property is present with the same value'
+      puts 'ok — every exported property is present with the same wording'
     else
       puts "#{bad.size} problem(s):"
       bad.first(25).each { |b| puts "  #{b}" }

@@ -138,10 +138,18 @@ end
 # ── 7. product properties became metafields ─────────────────────────────────
 if table.call('spree_product_properties') && table.call('spree_metafields')
   safely(rows, 'product properties present as metafields') do
-    props = conn.select_value('SELECT count(*) FROM spree_product_properties').to_i
+    # LIVE products only. The export deliberately skips properties belonging to deleted
+    # products, so counting the raw table against metafields reported a shortfall on a
+    # shop with 36 such rows and nothing actually missing. A check that cries wolf is a
+    # check nobody reads the next time.
+    props = conn.select_value(<<~SQL).to_i
+      SELECT count(*) FROM spree_product_properties pp
+      JOIN spree_products p ON p.id = pp.product_id
+      WHERE p.deleted_at IS NULL
+    SQL
     metas = conn.select_value("SELECT count(*) FROM spree_metafields WHERE resource_type = 'Spree::Product'").to_i
     status('product properties present as metafields',
-           metas >= props ? :pass : :fail, "#{metas} metafields for #{props} properties")
+           metas >= props ? :pass : :fail, "#{metas} metafields for #{props} live properties")
   end
 end
 
