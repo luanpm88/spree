@@ -1,0 +1,16 @@
+<%# Deliberately empty. Overrides
+    spree_admin-5.6.1/app/views/spree/admin/shared/sidebar/_enterprise_edition_notice.html.erb
+
+    That partial is an upsell: it renders for anyone who can manage the store while
+    SpreeEnterprise is not defined, and links to spreecommerce.org/pricing. The client
+    asked for it gone — "Can you block the Enterprise notice from showing?" — and this is
+    his shop, on his server, shown to his staff.
+
+    An empty override rather than dismissing it, because dismissal is stored in the SESSION
+    (session[:spree_enterprise_edition_notice_dismissed]), so it returns for every new
+    sign-in and on every other browser.
+
+    A view override is last in the order of preference in CLAUDE.md, and here there is no
+    hook to use instead. The usual cost of an override is going stale against the gem, and
+    an empty file cannot: there is nothing in it to fall behind.
+%>

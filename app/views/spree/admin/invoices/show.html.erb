@@ -25,7 +25,7 @@
 <% t_common = ->(key, **args) { Spree.t(key, scope: [:user_emails, :common], default: '', **args) } %>
 <% t_bank = ->(key, **args) { Spree.t(key, scope: [:user_emails, :payment_link], default: '', **args) } %>
 <% shop_name = t_common.call(:shop).presence || @store.name %>
-<% bank_lines = %i[bank_name account_name account_number swift_code].filter_map { |k| t_bank.call(k).presence } %>
+<% bank_lines = %i[bank_name bank_address account_name account_holder_address account_number bank_code branch_code swift_code].filter_map { |k| t_bank.call(k).presence } %>
 <% bank_title = t_bank.call(:bank_details_title) %>
 <% payment_reference = t_bank.call(:payment_reference, number: @order.number) %>
 <% payment_note = t_bank.call(:payment_note) %>

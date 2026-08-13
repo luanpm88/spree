@@ -144,6 +144,22 @@ Rails.application.config.after_initialize do
   end
 end
 
+# Order numbers start EB on this shop, at the client's request: "Please change the Order
+# Number prefix is EB so all orders will look like this: EB96546767398".
+#
+# Spree builds the number in Spree::Core::NumberGenerator, included into Spree::Order as
+#   include Spree::Core::NumberGenerator.new(prefix: 'R')
+# and the generator exposes prefix as an accessor, so this needs no decorator on the model.
+#
+# Only NEW orders are affected. Numbers already issued are stored on the row and never
+# regenerated, which is correct: an order number is what a customer quotes in an email.
+#
+# to_prepare, because Spree::Order is reloadable in development and an assignment made
+# once at boot is lost on the first code reload.
+Rails.application.config.to_prepare do
+  Spree::Order.number_generator.prefix = ENV.fetch('ORDER_NUMBER_PREFIX', 'R')
+end
+
 Spree.user_class = 'Spree::User'
 Spree.admin_user_class = 'Spree::AdminUser'
 
