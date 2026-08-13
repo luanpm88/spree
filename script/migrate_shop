@@ -50,11 +50,24 @@ if [ "${KEEP:-0}" = "1" ] && $PSQL -tAc "SELECT 1 FROM pg_database WHERE datname
 else
   $PSQL -c "DROP DATABASE IF EXISTS $DB" >/dev/null
   $PSQL -c "CREATE DATABASE $DB" >/dev/null
+  # Check the file BEFORE the pipeline. die inside a pipeline exits only the subshell,
+  # so the real reason printed and then "restore failed" printed underneath it and
+  # buried it. Say which of the two things went wrong, once.
   case "$DUMP" in
-    *.gz)  gunzip -c "$DUMP" ;;
+    *.zip)
+      unzip -l "$DUMP" 2>/dev/null | grep -qi '\.sql' \
+        || die "$DUMP is a zip with no .sql inside it. Wrong file?" ;;
+    *.gz) : ;;
+    *)
+      head -c 400 "$DUMP" | grep -qiE 'CREATE|INSERT|COPY|PostgreSQL' \
+        || warn "does not look like SQL in the first 400 bytes, trying anyway" ;;
+  esac
+
+  case "$DUMP" in
     *.zip) unzip -p "$DUMP" '*.sql' ;;
+    *.gz)  gunzip -c "$DUMP" ;;
     *)     cat "$DUMP" ;;
-  esac | $PSQL -d "$DB" -q >/dev/null 2>&1 || die "restore failed"
+  esac | $PSQL -d "$DB" -q >/dev/null 2>&1 || die "restore failed: $DUMP loaded no tables"
   ok "restored"
 fi
 
