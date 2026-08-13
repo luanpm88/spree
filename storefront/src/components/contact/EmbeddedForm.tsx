@@ -86,23 +86,29 @@ export default function EmbeddedForm({
     return () => window.removeEventListener("message", onMessage);
   }, [minHeight]);
 
+  // The form's own page is a few pixels wider than the frame and lives on another
+  // origin, so no stylesheet here can fix it. scrolling="no" is ignored by current
+  // browsers for the horizontal bar, which is why the first attempt did nothing.
+  //
+  // So give the frame more width than it needs and clip the excess. The wrapper hides
+  // the overflow, the iframe is wide enough that the form's own page never overflows
+  // it, and the negative margin keeps the visible width the same as before.
   return (
-    <iframe
-      src={src}
-      title={title}
-      height={height}
-      className="w-full border-0"
-      // The form's own page is 3 pixels wider than the frame, so the browser draws a
-      // horizontal scrollbar over someone else's stylesheet that we cannot reach from
-      // here. scrolling="no" removes it. It cannot clip anything vertically either:
-      // the height below comes from the form itself and carries a buffer.
-      scrolling="no"
-      // The form collects contact details and runs a captcha, so it needs forms,
-      // scripts and same-origin against ITS own origin. No allow-top-navigation: a
-      // framed page should not be able to move the tab it sits in.
-      sandbox="allow-forms allow-scripts allow-same-origin allow-popups"
-      referrerPolicy="strict-origin-when-cross-origin"
-      loading="lazy"
-    />
+    <div className="overflow-hidden">
+      <iframe
+        src={src}
+        title={title}
+        height={height}
+        className="border-0"
+        style={{ width: "calc(100% + 32px)", marginRight: "-32px" }}
+        scrolling="no"
+        // The form collects contact details and runs a captcha, so it needs forms,
+        // scripts and same-origin against ITS own origin. No allow-top-navigation: a
+        // framed page should not be able to move the tab it sits in.
+        sandbox="allow-forms allow-scripts allow-same-origin allow-popups"
+        referrerPolicy="strict-origin-when-cross-origin"
+        loading="lazy"
+      />
+    </div>
   );
 }
