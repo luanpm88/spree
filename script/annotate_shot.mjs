@@ -77,19 +77,21 @@ try {
     const ctx = await browser.newContext({ viewport: shot.viewport, deviceScaleFactor: 2 });
     const page = await ctx.newPage();
 
-    let res;
-    try {
-      res = await page.goto(shot.url, { waitUntil: 'networkidle', timeout: 60000 });
-    } catch (e) {
-      console.log(`  skip  ${shot.name}  (${e.message.split('\n')[0].slice(0, 70)})`);
-      await ctx.close();
-      continue;
+    // This page embeds a third party form that pulls in a captcha, so networkidle is at
+    // the mercy of someone else's server. One retry, and a skip is FATAL rather than a
+    // shrug: a missing shot leaves the previous run's file sitting there, which is how
+    // an unlabelled screenshot ends up in a set that is supposed to be labelled.
+    let res = null;
+    for (const attempt of [1, 2]) {
+      try {
+        res = await page.goto(shot.url, { waitUntil: 'networkidle', timeout: 90000 });
+        break;
+      } catch (e) {
+        if (attempt === 2) die(`${shot.name}: ${e.message.split('\n')[0].slice(0, 80)}`);
+        console.log(`  retry ${shot.name}`);
+      }
     }
-    if (!res || res.status() >= 400) {
-      console.log(`  skip  ${shot.name}  HTTP ${res ? res.status() : '?'}`);
-      await ctx.close();
-      continue;
-    }
+    if (!res || res.status() >= 400) die(`${shot.name}: HTTP ${res ? res.status() : '?'}`);
 
     // A Next dev error overlay returns 200 and looks like a page. Refuse to ship one.
     const broken = await page.locator('text=/Runtime .*Error|Call Stack/').count();
@@ -136,6 +138,21 @@ try {
       boxes.push({ box, note });
     }
     // A shot with no notes is deliberate: a clean picture with nothing drawn on it.
+
+    // A banner saying where the shot came from. A screenshot of a local machine sent to
+    // a client reads as production unless it says otherwise, and the difference between
+    // "this is live" and "this is ready to go live" is the whole message.
+    if (process.env.LABEL) {
+      await page.evaluate((text) => {
+        const b = document.createElement('div');
+        b.textContent = text;
+        b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483646;' +
+          'background:#1f2937;color:#fff;padding:7px 14px;font:600 13px/1.3 -apple-system,' +
+          'BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;letter-spacing:.02em;' +
+          'text-align:center;pointer-events:none';
+        document.body.appendChild(b);
+      }, process.env.LABEL);
+    }
 
     if (boxes.length) await page.evaluate((items) => {
       const COLOUR = { ok: '#1f7a3d', warn: '#c2410c' };
