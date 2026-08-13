@@ -213,7 +213,11 @@ cmd_up() {
   host "cd '$dir' && docker compose --profile storefront build --progress plain storefront 2>&1 | tail -20"
 
   step "Starting"
-  host "cd '$dir' && docker compose up -d"
+  # --profile storefront, or the storefront service is skipped entirely. It carries
+  # profiles: ["storefront"], so a bare `up -d` starts postgres and web, reports
+  # success, and leaves the front end on the image it was already running. The
+  # build above would have been thrown away.
+  host "cd '$dir' && docker compose --profile storefront up -d"
 
   step "Waiting for health"
   host "cd '$dir' && for i in \$(seq 1 60); do
