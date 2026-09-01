@@ -49,7 +49,26 @@
 #
 # SHOP unset is not an error: that is local development and the test suite.
 # script/shop_host leaves it unset, loudly, for a shop that has no file yet.
-shop = ENV['SHOP'].to_s.strip
+#
+# ── SHOP_KEY first, and why there are two names ─────────────────────────────
+#
+# SHOP names the DEPLOYMENT: the container, the image, the directory under /srv.
+# SHOP_KEY names the SET OF WORDS. On the seven shops of the retail estate they
+# are the same string, so one variable did for both and nobody noticed there were
+# two ideas in it.
+#
+# The commercial shop is deployed under one name and its wording is filed under
+# another. On 1 Sep this initializer asked for a file named after the DEPLOYMENT,
+# found nothing, and refused to boot while the shop's real wording file sat in the
+# same directory under its own key. The backend went down and took the storefront
+# with it, because the storefront waits on the backend's health.
+#
+# That is the guard working exactly as designed: it would rather stop than send
+# another brand's wording, and it named the missing file in the log. The bug was
+# that it was asking for the wrong name. Same distinction the storefront draws in
+# storefront/src/lib/shop-key.ts, and the same fallback, so a shop that does not
+# set SHOP_KEY behaves exactly as before.
+shop = ENV['SHOP_KEY'].presence&.strip || ENV['SHOP'].to_s.strip
 
 if shop.present?
   dir = Rails.root.join('config', 'shop_locales')
