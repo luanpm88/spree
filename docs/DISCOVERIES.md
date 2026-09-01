@@ -4882,11 +4882,50 @@ Nghĩa là thứ nó Publish sẽ không xuất hiện trên các shop này. Mu�
 đọc `spree_themes` / `spree_page_blocks` qua API rồi tự render bên Next, tức viết
 lại phần render — không phải cài thêm một gem.
 
+### Nhưng "trống" và "hỏng" cũng là hai chuyện, và phải thử tiếp mới biết
+
+Bản ghi đầu của mục này dừng ở đây, và nó để lại đúng câu hỏi mà người đọc sẽ hỏi:
+*editor trống thế là đúng, hay là nó hỏng?* Ba phép đo ở trên **không** trả lời được
+câu đó. Nên thử tiếp.
+
+`spree_storefront` v5.4.6 tồn tại, cùng số phiên bản với page builder, tức bộ đôi
+đi kèm. App này **không cài gem storefront nào**. Cài cả hai vào site thử:
+
+```
+bundle install                          sach, 5.6.1 thoa het rang buoc
+spree:storefront:install                chay xong
+Rails /                                 500  "asset tailwind.css khong tim thay"
+bin/rails tailwindcss:build             570ms
+Rails /                                 200  "Shop"  58 KB
+```
+
+Cái 500 đó là **thiếu bước build asset**, không phải không tương thích — phân biệt
+được hai thứ đó là toàn bộ giá trị của phép thử này.
+
+Mở lại editor:
+
+```
+iframe src   /?page_preview_id=17&theme_id=1&theme_preview_id=4&page_builder=true
+noi dung     600 ky tu
+tieu de      Shop, Heading Default, About us
+```
+
+Khung xem trước render đúng các section trong panel bên trái. **Editor không hỏng.**
+Ô xám trống lúc đầu là trạng thái ĐÚNG của một editor không có storefront để vẽ.
+
+### Kết luận cho câu hỏi thật
+
+Với khách dùng storefront Rails của Spree, đây là lựa chọn thật và tốt. Với shop
+headless Next như hệ này, muốn dùng thì phải đọc `spree_themes` / `spree_page_blocks`
+qua API rồi tự render bên Next — tức viết lại lớp render, không phải cài một gem.
+
 ### Bài học về cách thử
 
 Câu "cài được không" và câu "dùng được không" là **hai câu khác nhau**, và cái thứ
-hai chỉ trả lời được bằng cách mở ra xem. Nếu dừng ở ảnh chụp trang Themes thì báo
-cáo sẽ là "chạy tốt", và nó sai.
+hai chỉ trả lời được bằng cách mở ra xem. Nhưng còn một câu thứ ba dễ bỏ sót hơn:
+**"trống thế là đúng hay là hỏng"** — và cách duy nhất trả lời là dựng đủ điều kiện
+cho nó chạy rồi so hai trạng thái. Nếu dừng ở kết luận "không có storefront nên
+trống", báo cáo vẫn đúng chữ mà chưa chứng minh được gì.
 
 Việc thử để lại rác phải dọn: bộ cài ghi **5 file migration** vào `db/migrate/` và
 sửa `db/schema.rb`. Để nguyên thì lần deploy sau sẽ tạo bảng page builder trên mọi
