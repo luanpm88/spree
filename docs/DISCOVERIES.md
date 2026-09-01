@@ -4838,3 +4838,56 @@ Hai dòng đó phải đi **cùng nhau** vào compose, và lý do được viế
 thứ.** Chúng chỉ chưa khác nhau. Chỗ để phát hiện là trường hợp đầu tiên phá vỡ sự
 trùng khớp, và ở đó thứ đắt nhất không phải là lỗi — mà là bản sửa nửa vời trông như
 đã xong.
+
+## 30. `spree_page_builder` cài được trên 5.6.1, và nó dựng cho một storefront mà hệ này không có (1 Sep)
+
+Chủ shop hỏi: gem `spree_page_builder` có tồn tại không, cài lên được không, và
+editor có hiện trong admin không. Đo trên **site thử cục bộ**, không đụng shop nào
+đang bán.
+
+### Có, và cài sạch
+
+```
+spree_page_builder  v5.4.6   28/07/2026   Vendo (chinh cong ty lam Spree)
+  phu thuoc: spree >= 5.4.0, spree_admin >= 5.4.0, spree_posts >= 0
+```
+
+Ràng buộc là `>=`, không phải `~>`, nên **5.6.1 thoả**. `bundle install` xong không
+xung đột, app vẫn khởi động, `bin/rails generate spree:page_builder:install` chạy
+hết và tạo `spree_themes`, `spree_page_links`, `spree_page_blocks`, `spree_posts`,
+`spree_post_categories`.
+
+Admin mọc thêm **Storefront → Pages / Settings**, **Posts**, và trang **Themes** có
+thư viện theme kèm ảnh xem trước, nút Add, và cơ chế sao chép theme rồi đẩy lên live.
+
+Editor mở thật ở `/admin/themes/1/edit`: panel Page sections (Announcement Bar,
+Header, Image With Text, Newsletter, Footer), mỗi mục có **Add Page Block**, có
+**ADD SECTION**, chọn trang, chuyển mobile/desktop, **Preview** và **Publish**.
+
+### Nhưng khung xem trước rỗng, và đó mới là câu trả lời
+
+Đo tiếp thay vì kết luận sớm:
+
+```
+iframe xem truoc      src = rong          392x800
+Rails /               200  "Dashboard"    578 ky tu   <- trang admin
+Rails /products       404
+```
+
+**Ứng dụng này không có storefront Rails nào cả.** Nó headless: khách được phục vụ
+bởi một app Next.js riêng, gọi vào Spree qua API. Page builder được viết để dựng
+**storefront Rails của Spree**, nên editor chạy đúng và không có gì để render.
+
+Nghĩa là thứ nó Publish sẽ không xuất hiện trên các shop này. Muốn dùng thì phải
+đọc `spree_themes` / `spree_page_blocks` qua API rồi tự render bên Next, tức viết
+lại phần render — không phải cài thêm một gem.
+
+### Bài học về cách thử
+
+Câu "cài được không" và câu "dùng được không" là **hai câu khác nhau**, và cái thứ
+hai chỉ trả lời được bằng cách mở ra xem. Nếu dừng ở ảnh chụp trang Themes thì báo
+cáo sẽ là "chạy tốt", và nó sai.
+
+Việc thử để lại rác phải dọn: bộ cài ghi **5 file migration** vào `db/migrate/` và
+sửa `db/schema.rb`. Để nguyên thì lần deploy sau sẽ tạo bảng page builder trên mọi
+shop. Đã gỡ gem, xoá migration, trả `schema.rb`, và xác nhận shop thật còn 0 dòng.
