@@ -330,7 +330,14 @@ export interface FeatureListBlock {
   /** Sits under the heading, before the items. */
   intro?: string[];
   numbered?: boolean;
-  columns?: 2 | 3 | 4;
+  /**
+   * 5 exists for one band and it is his: the feature strip across the bottom of
+   * his front page design runs Premium Materials / Sustainable Choice / Bulk
+   * Pricing / Global Shipping / Dedicated Support, five across. Forced into four
+   * it breaks 4+1 and the last one sits alone under a row of four, which is
+   * exactly the shape he draws a box around.
+   */
+  columns?: 2 | 3 | 4 | 5;
   /**
    * Heading in the shop's named accent colour.
    *

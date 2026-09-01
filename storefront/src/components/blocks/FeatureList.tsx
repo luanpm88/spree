@@ -36,8 +36,8 @@ import type { FeatureListBlock } from "@/lib/blocks/types";
 // groups do not each need a hand-set number, which is fifteen chances to differ.
 function columnsFor(
   items: FeatureListBlock["items"],
-  asked?: 2 | 3 | 4,
-): 2 | 3 | 4 {
+  asked?: 2 | 3 | 4 | 5,
+): 2 | 3 | 4 | 5 {
   if (asked) return asked;
   const anyProse = items.some(
     (i) => (i.body?.length ?? 0) > 0 || (i.bullets?.length ?? 0) > 0,
@@ -51,6 +51,10 @@ const GRID = {
   2: "sm:grid-cols-2",
   3: "sm:grid-cols-2 lg:grid-cols-3",
   4: "sm:grid-cols-2 lg:grid-cols-4",
+  // Five is asked for explicitly and never chosen automatically: five equal
+  // columns is a strip of short labels, and it is the wrong grid for anything
+  // carrying prose.
+  5: "sm:grid-cols-2 lg:grid-cols-5",
 } as const;
 
 /**
