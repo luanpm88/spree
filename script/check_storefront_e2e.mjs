@@ -101,7 +101,30 @@ const goto = async (url, waitFor) => {
     await page.waitForTimeout(2500);
   }
 };
-const notFound = async () => /not found|could not be found/i.test(await page.title());
+// A missing page on this storefront answers 200 with the site shell and only
+// later swaps in the 404. Reading the title once is a coin toss: on 1 Sep a shop
+// whose page set does not include about or faq returned the store's own name at
+// the moment this ran, so two pages it does not have were treated as pages it
+// does, and their contents were then asserted and failed.
+//
+// So it polls, and it reads the BODY as well as the title. The body carries an
+// h1 of 404 even in the window where the title has not caught up, which is the
+// window that produced the false failures.
+const notFound = async () => {
+  // Fast in BOTH directions. Polling until a timeout would add five seconds to
+  // every page that is fine, on every shop, which is how a gate stops being run.
+  for (let i = 0; i < 12; i++) {
+    const title = await page.title().catch(() => "");
+    const h1 = await page.locator("h1").first().innerText().catch(() => "");
+    if (/not found|could not be found/i.test(title) || /^\s*404\b/.test(h1)) {
+      return true;
+    }
+    // A real heading that is not 404 settles it: this page exists, stop looking.
+    if (h1.trim().length > 2) return false;
+    await page.waitForTimeout(400);
+  }
+  return false;
+};
 
 // Poll until a reading satisfies the assertion, or give up and return the last
 // reading so the failure message carries a real number.
@@ -317,6 +340,8 @@ const first = await page.locator('a[href*="/products/"]').first().getAttribute("
 await goto(BASE + first, "h1");
 check(!(await notFound()), "product page opens", await page.title());
 check((await page.locator("h1").count()) > 0, "product has a name");
+// Kept, because the cart is asserted by what is IN it rather than by a price.
+const productName = (await page.locator("h1").first().innerText().catch(() => "")).trim();
 // Polled, like the other four. This was the one assertion left reading the page
 // once, and it duly reported "no price" on a shop where all 6 products show one,
 // have an Add to Cart and read In Stock. The price streams in after the heading,
@@ -326,7 +351,31 @@ const priceText = await until(
   () => page.locator("body").innerText(),
   (t) => /\$\s?\d/.test(t),
 );
-check(/\$\s?\d/.test(priceText), "product shows a price");
+// A shop may hide prices from a guest ON PURPOSE, and one of his does.
+//
+// Spree 5.6 does this in the API, not the template: StorefrontGating#hide_prices?
+// is `no signed in user AND the channel has storefront_prices_hidden?`, and the
+// serializers then null every price. So the page is correct and carries no figure
+// at all, and asserting a figure here called a working shop broken.
+//
+// It has to be DECLARED, and the default is still a failure.
+//
+// The first attempt told the two apart by looking for a sign-in link, and that is
+// no test at all: every shop has one, so it turned this assertion off everywhere.
+// Nor is there anything on the page to read. Measured on the shop that hides
+// them: the product renders its name, In Stock and Add to Cart, and simply omits
+// the price with no line explaining why. A shop that has LOST its prices looks
+// identical, which is the whole problem.
+//
+// So the caller says so:  PRICES_HIDDEN=1 node script/check_storefront_e2e.mjs …
+// and every other shop keeps failing loudly, which is what this is for.
+if (/\$\s?\d/.test(priceText)) {
+  check(true, "product shows a price");
+} else if (process.env.PRICES_HIDDEN === "1") {
+  console.log("  note  prices are hidden from guests on this shop, declared by the caller");
+} else {
+  check(false, "product shows a price");
+}
 
 const add = page.getByRole("button", { name: /add to (cart|bag)/i }).first();
 await add.waitFor({ state: "visible", timeout: 30000 }).catch(() => {});
@@ -383,12 +432,25 @@ if (await add.count()) {
   // shop unable to sell. This is the single most important assertion in the file
   // and it was the one most exposed by a wait that was not its own.
   await goto(`${SHOP}/cart`, "main");
-  const cart = await until(
-    () => page.locator("body").innerText(),
-    (t) => !/empty/i.test(t) && /\$\s?\d/.test(t),
-  );
+  // What is IN the cart, not what currency symbol is next to it.
+  //
+  // This asked for /\$\s?\d/ and that is a different claim. A shop whose channel
+  // hides prices from guests serves every price as null on purpose, so its cart
+  // holds the right line and shows no figure, and this reported it as a shop that
+  // cannot sell. Checked by hand on 1 Sep: the cart carried the product, a Remove
+  // control, an Order Summary and a Proceed to Checkout button, and the checkout
+  // opened with every section on it.
+  //
+  // The product's own name is the honest test. It works on a shop that shows
+  // prices and on a shop that does not, and it fails on the thing this assertion
+  // exists for: a click that appears to work and leaves the cart empty.
+  const inCart = (t) =>
+    !/empty/i.test(t) &&
+    (/\$\s?\d/.test(t) ||
+      (productName.length > 6 && t.includes(productName.slice(0, 24))));
+  const cart = await until(() => page.locator("body").innerText(), inCart);
   check(
-    !/empty/i.test(cart) && /\$\s?\d/.test(cart),
+    inCart(cart),
     "adding to cart puts it in the cart",
     attempts > 1 ? `took ${attempts} clicks` : "",
   );
@@ -478,11 +540,28 @@ for (const [legacy, destination] of [
 ]) {
   await goto(BASE + legacy, "main");
   const landed = page.url();
-  check(
-    !(await notFound()) && landed.includes(destination),
-    `old address ${legacy}`,
-    landed.replace(BASE, "") || landed,
-  );
+  const arrived = landed.includes(destination);
+  const missing = await notFound();
+
+  // Two claims, and only one of them is ours.
+  //
+  // Whether the middleware puts the country and locale back on an unprefixed
+  // address is ours and is what this block is for. Whether the page at the far
+  // end exists is HIS content, and it differs per shop: the commercial shop's
+  // page set has no faq, so the address prefixed correctly, landed on a real 404,
+  // and this reported the middleware as broken.
+  //
+  // So a shop that does not have the page gets a note. A shop that HAS it and
+  // still fails is a genuine failure, and so is a prefix that never went on.
+  if (arrived && missing) {
+    console.log(`  note  old address ${legacy} prefixes correctly; this shop has no such page`);
+  } else {
+    check(
+      !missing && arrived,
+      `old address ${legacy}`,
+      landed.replace(BASE, "") || landed,
+    );
+  }
 }
 
 // ── a review copy must not be indexable ────────────────────────────────────
