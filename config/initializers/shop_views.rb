@@ -40,7 +40,9 @@
 # config/shop_locales and app/models/spree/calculator/shipping.
 
 Rails.application.config.after_initialize do
-  shop = ENV['SHOP'].to_s.strip
+  # SHOP_KEY first: these overrides are WORDS and layout, so they follow the
+  # shop's content key, not the deployment's name. See shop_locale.rb.
+  shop = ENV['SHOP_KEY'].presence&.strip || ENV['SHOP'].to_s.strip
   next if shop.empty?
 
   dir = Rails.root.join('app', 'views', 'shops', shop)

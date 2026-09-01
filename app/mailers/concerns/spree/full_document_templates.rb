@@ -51,7 +51,9 @@ module Spree
         # layout was skipped, and the shop's own fragment went out with no
         # <html>, no head, no logo and no footer. The mail built, the smoke run
         # said ok, and the whole shell was simply gone.
-        shop = ENV['SHOP'].to_s.strip
+        # SHOP_KEY first: a mailer template is wording, so it follows the shop's
+        # content key rather than the deployment's name. See shop_locale.rb.
+        shop = ENV['SHOP_KEY'].presence&.strip || ENV['SHOP'].to_s.strip
         if shop.present?
           own = Rails.root.join('app/views/shops', shop, 'spree', dir, "#{action}.html.erb")
           return detect_cached(own) if own.exist?
