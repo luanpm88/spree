@@ -269,7 +269,7 @@ module Spree
       # was cleared.
       return if store.new_order_notifications_email.blank?
 
-      # A shop where nobody can be approved must not announce that somebody is
+      # A shop that does not do approvals must not announce that somebody is
       # waiting for approval.
       #
       # This was missing, and it reached the client as a real mail from a RETAIL
@@ -282,17 +282,28 @@ module Spree
       # notifications address like every shop, and a retail customer belongs to no
       # group. So every retail signup announced itself.
       #
-      # Customer groups are the test rather than a per-shop flag, because approval on
-      # this shop IS a customer group: the admin approves by moving somebody into one,
-      # and the three outcomes are three groups. A shop with none has no way to
-      # approve anybody, so the mail cannot be acted on and is meaningless by
-      # construction. Measured across the estate on 1 Sep: the wholesale shop has 3
-      # groups, every retail shop has 0.
+      # ── the first fix inferred it, and he caught that too ─────────────────────
       #
-      # It also needs no maintenance. Give a retail shop its first customer group and
-      # approval genuinely becomes possible there, and the mail starts on its own.
-      return unless store.respond_to?(:customer_groups)
-      return unless store.customer_groups.where(deleted_at: nil).exists?
+      # It asked whether the shop had any customer groups, on the reasoning that
+      # approval here IS a customer group. Measured and true at the time: the
+      # wholesale shop had 3 and every retail shop had 0.
+      #
+      # He replied before it could bite:
+      #
+      #   "I can see us using the customer groups for things like VIP, Loyalty,
+      #    Staff, etc which would trigger the email, or have you setup a
+      #    customer_approval_required = true / false?"
+      #
+      # He is right, and it is worth being plain about why. A group is how an
+      # approval is RECORDED. It is not what decides whether a shop does approvals
+      # at all, and the day a retail shop gets a VIP group it would have started
+      # announcing every retail signup again: the exact fault he had just reported.
+      #
+      # So it is declared per shop in config/approval_shops and nothing is inferred.
+      # A shop that is not listed sends nothing, which is the safe direction: the
+      # failure of a missing line is a wholesale shop that stays quiet, and the
+      # failure of a wrong inference is a retail customer's signup announced to him.
+      return unless Spree::ApprovalShops.required?
 
       # Somebody who belongs to a group has already been approved, which is what has
       # happened when the shop creates a trade customer and assigns them in one sitting.

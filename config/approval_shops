@@ -1,0 +1,55 @@
+# Which shops require a new customer to be APPROVED before they can buy.
+#
+# One shop key per line. A shop listed here announces a new signup to the address
+# in its New Order Notifications field, and its customers see the approval
+# wording. A shop that is not listed sends neither.
+#
+# ── why this file exists, in the client's own words ─────────────────────────
+#
+# The first version of this guard had no file. It asked whether the shop had any
+# customer groups at all, on the reasoning that approval on this setup IS a
+# customer group: the admin approves somebody by moving them into one. That was
+# true of the estate as it stood, and it was measured: the wholesale shop had 3
+# groups and every retail shop had 0.
+#
+# He read it and said what was wrong with it before it could bite:
+#
+#   "I am thinking about how our retail shops will be used very soon when orders
+#    start to move. I can see us using the customer groups for things like VIP,
+#    Loyalty, Staff, etc which would trigger the email, or have you setup a
+#    customer_approval_required = true / false?"
+#
+# He is right. The day he adds a VIP group to a retail shop, that shop starts
+# announcing every retail signup as waiting for approval, which is the exact fault
+# he reported on 1 September and which the guard was written to stop. A group is
+# how approval is RECORDED; it is not what decides whether a shop does approvals.
+#
+# So it is declared, per shop, and nothing is inferred.
+#
+# ── the shape ───────────────────────────────────────────────────────────────
+#
+#   <shop>            one per line, comments and blank lines ignored
+#
+# Matched against SHOP_KEY first and then SHOP, the same order every other
+# per-shop lookup uses, so a shop whose deployment name differs from its content
+# key can be named by either.
+#
+# Tracked rather than gitignored: a shop key is not client data, and a policy that
+# lives on one laptop is a policy that comes off the next time somebody else
+# deploys. Same reasoning as config/gated_shops.
+
+# The New Zealand wholesale shop. Trade accounts are approved by hand before they
+# see trade pricing.
+b2b
+
+# The commercial shop on the other server. Prices are hidden from guests by its
+# channel, so a customer who has not been approved cannot see a figure anywhere,
+# and nobody would know they were waiting without this.
+#
+# Named by its SHOP_KEY, not by its deployment name: this repository is public and
+# the deployment name carries his brand. That is safe rather than fragile, because
+# a deployment that forgets SHOP_KEY does not boot at all: config/initializers/
+# shop_locale.rb cannot find its wording file and raises. So the failure mode of a
+# missing key is a container that will not start, not a shop that quietly stops
+# telling anyone that somebody is waiting.
+business
