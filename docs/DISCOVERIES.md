@@ -4779,3 +4779,62 @@ khi tin là đã dọn sạch, hãy hỏi trạng thái nào đã thay đổi m�
 Và cái thứ hai, đắt ngang: **một dấu vân tay chỉ là dấu vân tay sau khi đã đếm xem
 bao nhiêu thứ khác cũng mang nó.** Ở đây là 221. Lập luận "chỉ probe mới để lại như
 vậy" nghe kín kẽ và không tốn gì để kiểm, mà tôi vẫn viết nó ra trước khi đếm.
+
+## 30. Tên shop và tên quốc gia trùng nhau ở bảy shop, nên không ai thấy chúng là hai thứ (1 Sep)
+
+Storefront tra mọi thứ riêng của từng shop bằng **một** khoá: `NEXT_PUBLIC_DEFAULT_COUNTRY`.
+Trang chủ, sáu trang nội dung, ảnh thương hiệu, liên kết chân trang, thanh thông báo,
+màu chủ đề — 14 chỗ, tất cả dùng chung nó.
+
+Điều đó đúng suốt vì bảy shop bán lẻ có tên shop **bằng** tên quốc gia: shop `nz` ở
+quốc gia `nz`.
+
+Shop thương mại phá vỡ giả định đó. Nó là một doanh nghiệp New Zealand, nên quốc gia
+là `nz` — đúng cho tiền tệ, thị trường và đường dẫn. Nhưng nó **không phải** shop bán
+lẻ New Zealand.
+
+### Hậu quả đo được
+
+```
+/pages/about              404
+/pages/faq                404
+/pages/product-sourcing   404
+```
+
+Ba trang đó, cùng ba trang nữa, nằm sẵn trong repo dưới khoá `business` và **không ai
+từng tra tới**. `content.ts` đã ghi nhận đúng nửa vấn đề này và dừng ở đó:
+
+> *"A key of its own exists because the commercial shop had none ... That is the
+> reason these pages had nowhere correct to go and is why moving them is only half
+> the fix."*
+
+### Cái bẫy nằm ở nửa còn lại
+
+Compose của shop đó **không truyền quốc gia như build arg**, chỉ đặt ở khối
+`environment` lúc chạy. Với một tên `NEXT_PUBLIC_*` thì việc đó **không có tác dụng
+gì**: Next nướng chúng vào bundle lúc build.
+
+Nên bản build hiện tại không có quốc gia, mọi phép tra đều trượt, và trang chủ ra bản
+mặc định của framework.
+
+Chỗ nguy hiểm: **sửa đúng một dòng đó là làm mọi thứ tệ hơn.** Thêm mỗi quốc gia thì
+mọi phép tra ăn về `nz`, và shop bán sỉ lập tức hiện lời chào, câu chuyện About và ô
+đăng ký nhận thư của shop **bán lẻ**. Đúng cái lỗi mà `content.ts` mở đầu bằng lời
+cảnh báo, và đúng cái chủ shop đã tự bắt được trên shop Canada.
+
+Mìn đã cài sẵn, chỉ chưa nổ, vì shop chưa được build lại từ 13/08.
+
+### Cách sửa
+
+Một khoá riêng, `NEXT_PUBLIC_SHOP_KEY`, **rơi về quốc gia khi không đặt**. Bảy shop
+bán lẻ không đặt nó nên tra y như cũ và không thể hỏng vì thay đổi này. Chỉ shop nào
+có lời khác quốc gia mới đặt.
+
+Hai dòng đó phải đi **cùng nhau** vào compose, và lý do được viết ngay trên chúng.
+
+### Điều tổng quát
+
+**Hai thứ trùng giá trị nhau trong mọi trường hợp đang có không có nghĩa chúng là một
+thứ.** Chúng chỉ chưa khác nhau. Chỗ để phát hiện là trường hợp đầu tiên phá vỡ sự
+trùng khớp, và ở đó thứ đắt nhất không phải là lỗi — mà là bản sửa nửa vời trông như
+đã xong.
