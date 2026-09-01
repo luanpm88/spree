@@ -4913,11 +4913,42 @@ tieu de      Shop, Heading Default, About us
 Khung xem trước render đúng các section trong panel bên trái. **Editor không hỏng.**
 Ô xám trống lúc đầu là trạng thái ĐÚNG của một editor không có storefront để vẽ.
 
+### Và hoá ra chủ shop đã dùng nó hơn một năm
+
+Kiểm hệ thật xem có bị lây từ phép thử không (không, phép thử chỉ chạy cục bộ). Kết
+quả ngoài dự tính: **sáu trên bảy shop đã có sẵn 4 bảng page-builder**, trong khi gem
+không hề được cài.
+
+```
+shop        spree_themes   spree_page_blocks
+ban le A       1499             21535
+ban le B       1394             19753
+ban le C       1377             19536
+ban le D       1373             19491
+ban le E       1347             19267
+ban si          203              2623
+shop moi dung     0                 0
+```
+
+Theme sớm nhất 30/05/2025, mới nhất 14/08/2026 — tức tới sát ngày cắt chuyển. Đó là
+**sử dụng thật, hơn một năm**, không phải cài nhầm. Shop duy nhất trống là shop dựng
+mới từ đầu, đúng như dự đoán.
+
+Các bảng này theo dump của ông sang 5.6.1 và **đang nằm im**: shop mới dùng storefront
+Next, nên không gì đọc chúng.
+
+Con số 1.499 theme cũng đáng nói: quy trình của page builder là *sao chép theme rồi
+đẩy bản sao lên live*, nên mỗi lần sửa là một bản sao. Gần 1.400 bản sao cũ mỗi shop.
+
 ### Kết luận cho câu hỏi thật
 
-Với khách dùng storefront Rails của Spree, đây là lựa chọn thật và tốt. Với shop
-headless Next như hệ này, muốn dùng thì phải đọc `spree_themes` / `spree_page_blocks`
-qua API rồi tự render bên Next — tức viết lại lớp render, không phải cài một gem.
+Với khách dùng storefront Rails của Spree, đây là lựa chọn thật và tốt — và chủ shop
+này là một trong số đó, ông đã dùng nó suốt trên bản 5.2.
+
+Với shop headless Next như hệ hiện tại, muốn dùng thì phải đọc `spree_themes` /
+`spree_page_blocks` qua API rồi tự render bên Next — tức viết lại lớp render, không
+phải cài một gem. Nội dung ông đã dựng vẫn còn nguyên trong database nếu sau này
+muốn dùng lại.
 
 ### Bài học về cách thử
 
