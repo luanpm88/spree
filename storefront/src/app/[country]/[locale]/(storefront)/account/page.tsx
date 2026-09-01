@@ -32,6 +32,7 @@ import { BRAND_BY_SHOP, SIGN_IN_BY_SHOP } from "@/lib/blocks/content";
 import { isAccountRequired } from "@/lib/store";
 import { resolveAccountRedirect } from "@/lib/utils/account-redirect";
 import { extractBasePath } from "@/lib/utils/path";
+import { shopKey } from "@/lib/shop-key";
 
 export default function AccountPage() {
   const router = useRouter();
@@ -43,7 +44,7 @@ export default function AccountPage() {
   // He built his own login page for the wholesale shop and photographed ours
   // beside it; the five retail shops keep what they have, because he has not
   // reviewed those and changing copy he has not asked about is not ours to do.
-  const shop = (process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || "").toLowerCase();
+  const shop = shopKey();
   const shopWords = SIGN_IN_BY_SHOP[shop] ?? {};
   const tt = (key: string) => shopWords[key] ?? t(key);
   // The framed mark above the card. Only the wholesale shop has one, so on the

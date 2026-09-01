@@ -1,4 +1,5 @@
 import { THEME_BY_SHOP } from "@/lib/blocks/content";
+import { shopKey } from "@/lib/shop-key";
 
 /**
  * Which palette this build wears, as the value of `data-theme` on `<html>`.
@@ -26,6 +27,6 @@ import { THEME_BY_SHOP } from "@/lib/blocks/content";
  * key in tracked source, and this repo is public.
  */
 export function shopTheme(): string | undefined {
-  const shop = (process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || "").toLowerCase();
+  const shop = shopKey();
   return THEME_BY_SHOP[shop];
 }

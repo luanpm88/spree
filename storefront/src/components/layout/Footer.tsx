@@ -11,6 +11,7 @@ import { getPolicies } from "@/lib/data/policies";
 import { isWholesaleEnabled } from "@/lib/spree";
 import { getStoreName } from "@/lib/store";
 import { CurrentYear } from "./CurrentYear";
+import { shopKey } from "@/lib/shop-key";
 
 const storeName = getStoreName();
 
@@ -38,7 +39,7 @@ const POLICY_ORDER_BY_SHOP: Record<string, string[]> = {
 const POLICY_ORDER_DEFAULT = ["privacy", "terms", "returns", "shipping"];
 
 function policyOrder(): string[] {
-  const shop = (process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || "").toLowerCase();
+  const shop = shopKey();
   return POLICY_ORDER_BY_SHOP[shop] ?? POLICY_ORDER_DEFAULT;
 }
 

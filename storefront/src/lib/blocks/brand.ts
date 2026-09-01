@@ -1,4 +1,5 @@
 import { BRAND_BY_SHOP } from "@/lib/blocks/content";
+import { shopKey } from "@/lib/shop-key";
 
 /**
  * This shop's own images: logo, favicon, social card, home page photographs.
@@ -55,8 +56,6 @@ export interface ShopBrand {
 const EMPTY: ShopBrand = {};
 
 export function shopBrand(): ShopBrand {
-  const shop = (
-    process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || ""
-  ).toLowerCase() as keyof typeof BRAND_BY_SHOP;
+  const shop = shopKey() as keyof typeof BRAND_BY_SHOP;
   return BRAND_BY_SHOP[shop] ?? EMPTY;
 }

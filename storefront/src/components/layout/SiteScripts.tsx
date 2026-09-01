@@ -1,4 +1,5 @@
 import { SCRIPTS_BY_SHOP } from "@/lib/blocks/content";
+import { shopKey } from "@/lib/shop-key";
 
 /**
  * The client's own third-party scripts.
@@ -35,7 +36,7 @@ import { SCRIPTS_BY_SHOP } from "@/lib/blocks/content";
  */
 
 function scripts() {
-  const shop = (process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || "").toLowerCase();
+  const shop = shopKey();
   return SCRIPTS_BY_SHOP[shop];
 }
 

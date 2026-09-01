@@ -27,6 +27,7 @@ import { type CountryWithMarket, useStore } from "@/contexts/StoreContext";
 import { useCountrySwitch } from "@/hooks/useCountrySwitch";
 import { MARKET_BY_SHOP } from "@/lib/blocks/content";
 import { cn } from "@/lib/utils";
+import { shopKey } from "@/lib/shop-key";
 
 interface RegionPreferencesProps {
   variant: "menu" | "header";
@@ -152,10 +153,10 @@ export function RegionPreferences({ variant }: RegionPreferencesProps) {
   const isHeaderVariant = variant === "header";
   // The 2 letter code to show in the header: the address segment when it is one,
   // otherwise the market this shop sells into.
-  const shopKey = (process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || "").toLowerCase();
+  const shop = shopKey();
   const headerFlag = /^[a-z]{2}$/.test(country)
     ? country.toLowerCase()
-    : (MARKET_BY_SHOP[shopKey] ?? "");
+    : (MARKET_BY_SHOP[shop] ?? "");
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>

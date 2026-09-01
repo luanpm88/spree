@@ -1,6 +1,7 @@
 import { getTranslations } from "next-intl/server";
 import { Inline } from "@/components/blocks/Inline";
 import { ANNOUNCEMENT_BY_SHOP } from "@/lib/blocks/content";
+import { shopKey } from "@/lib/shop-key";
 
 interface AnnouncementBarProps {
   locale: Locale;
@@ -24,7 +25,7 @@ export async function AnnouncementBar({ locale }: AnnouncementBarProps) {
   // string for six shops was right until two of them wanted different words:
   // his wholesale bar names the portal, the retail bars carry his
   // sustainability line.
-  const shop = (process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || "").toLowerCase();
+  const shop = shopKey();
   const text = ANNOUNCEMENT_BY_SHOP[shop] ?? t("text");
   if (!text) return null;
 

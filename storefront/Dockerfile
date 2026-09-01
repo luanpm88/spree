@@ -133,6 +133,17 @@ ARG NEXT_PUBLIC_CATEGORY_NEW=""
 # would build as "off" and the shop would look correct while being open, which
 # is the failure that is hardest to notice by looking at it.
 ARG NEXT_PUBLIC_REQUIRE_ACCOUNT=""
+# Which shop's WORDS this build carries, when that is not the same as its
+# country. Empty on the seven retail shops, where shop and country are one word,
+# so it changes nothing for them. The commercial shop is a New Zealand business
+# and NOT the New Zealand shop: without this it builds with country=nz and reads
+# the retail shop's home page, About story and newsletter. See src/lib/shop-key.ts.
+# The test card hint under the card field on a shop still in review. Read by
+# PaymentSection since 31 Aug and never declared here, so every build that passed
+# it dropped it and the hint could not be turned on at all. Found by this file's
+# own gate on 1 Sep, which is exactly what it is for.
+ARG NEXT_PUBLIC_SHOW_TEST_CARD=""
+ARG NEXT_PUBLIC_SHOP_KEY=""
 ARG NEXT_PUBLIC_CLEAN_URLS=""
 ARG NEXT_PUBLIC_PUBLIC_PATHS=""
 ENV NEXT_PUBLIC_LOGO_URL=$NEXT_PUBLIC_LOGO_URL \
@@ -142,6 +153,8 @@ ENV NEXT_PUBLIC_LOGO_URL=$NEXT_PUBLIC_LOGO_URL \
     NEXT_PUBLIC_CONTACT_TITLE=$NEXT_PUBLIC_CONTACT_TITLE \
     NEXT_PUBLIC_CONTACT_INTRO=$NEXT_PUBLIC_CONTACT_INTRO \
     NEXT_PUBLIC_DEFAULT_COUNTRY=$NEXT_PUBLIC_DEFAULT_COUNTRY \
+    NEXT_PUBLIC_SHOP_KEY=$NEXT_PUBLIC_SHOP_KEY \
+    NEXT_PUBLIC_SHOW_TEST_CARD=$NEXT_PUBLIC_SHOW_TEST_CARD \
     NEXT_PUBLIC_DEFAULT_LOCALE=$NEXT_PUBLIC_DEFAULT_LOCALE \
     NEXT_PUBLIC_STORE_DESCRIPTION=$NEXT_PUBLIC_STORE_DESCRIPTION \
     NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=$NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY \

@@ -1,7 +1,8 @@
 import { shopBrand } from "@/lib/blocks/brand";
 import { HOME_BY_SHOP } from "@/lib/blocks/content";
-import type { PageDefinition } from "@/lib/blocks/types";
+import type { Block, PageDefinition } from "@/lib/blocks/types";
 import { isAccountRequired } from "@/lib/store";
+import { shopKey } from "@/lib/shop-key";
 
 /**
  * The home page, as a list of blocks.
@@ -61,9 +62,7 @@ function categoryId(key: keyof typeof CATEGORY_IDS): string | undefined {
  * everywhere. Each shop writes its own, down to the year in the About story.
  */
 function copy() {
-  const shop = (
-    process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || ""
-  ).toLowerCase() as keyof typeof HOME_BY_SHOP;
+  const shop = shopKey() as keyof typeof HOME_BY_SHOP;
   return HOME_BY_SHOP[shop] ?? HOME_BY_SHOP.nz;
 }
 
@@ -79,11 +78,41 @@ export function homePage(storeName: string): PageDefinition {
   return {
     name: storeName,
     blocks: [
-      {
-        type: "text_image",
-        heading: C.hero.heading,
-        body: [...C.hero.body],
-        ...(B.hero ? { image: B.hero, imageSide: "right" as const } : {}),
+      // The commercial shop opens with a sliding banner instead of a hero. His
+      // words, first of the four lines that are the whole front end brief for
+      // that shop: "A full-width top sliding banner about 400-500px high".
+      //
+      // Declared by the shop rather than switched on by name, like every other
+      // block here. The seven retail shops do not declare it and are unchanged.
+      ...("banner" in C
+        ? ([
+            {
+              type: "banner_slider",
+              slides: [...C.banner.slides],
+              ...(C.banner.height ? { height: C.banner.height } : {}),
+              ...(C.banner.intervalMs
+                ? { intervalMs: C.banner.intervalMs }
+                : {}),
+            },
+          ] as Block[])
+        : []),
+
+      // Conditional now, where it used to be unconditional.
+      //
+      // Every shop that existed when this was written had a hero, so reading
+      // C.hero straight off was safe. The commercial shop does not: his brief
+      // puts a banner at the top and the products directly under it, with no
+      // welcome copy between them. Making it conditional is what lets a shop say
+      // that, and it changes nothing for the seven that do declare one.
+      ...("hero" in C
+        ? ([
+            {
+              type: "text_image",
+              heading: C.hero.heading,
+              body: [...C.hero.body],
+              ...(B.hero
+                ? { image: B.hero, imageSide: "right" as const }
+                : {}),
         // No button on the five retail shops. He drew an arrow at it and wrote
         // "remove": his own retail home page ends the welcome copy on the last
         // sentence and sends people on with the product rows underneath, so a
@@ -96,11 +125,36 @@ export function homePage(storeName: string): PageDefinition {
         // shop's hero carries one, and the sixth shop's does not, so reading the
         // property directly stopped the whole file type checking the moment that
         // shop was added. Same shape as the `in` checks on the rows below.
-        ...(isAccountRequired() && "ctaLabel" in C.hero && C.hero.ctaLabel
-          ? { cta: { label: C.hero.ctaLabel, href: "/products" } }
-          : {}),
-        background: "default",
-      },
+              // The gate, OR an explicit opt in.
+              //
+              // Keyed on the gate alone until 1 Sep, which was right for the eight
+              // shops that existed: five retail shops had the button removed at his
+              // request and the closed shop keeps it. The commercial shop is neither
+              // gated nor retail and his own design draws two buttons in the hero,
+              // so it says so rather than the condition being loosened for everyone.
+              ...((isAccountRequired() ||
+                ("showCta" in C.hero && C.hero.showCta)) &&
+              "ctaLabel" in C.hero &&
+              C.hero.ctaLabel
+                ? { cta: { label: C.hero.ctaLabel, href: "/products" } }
+                : {}),
+              background: "default",
+            },
+          ] as Block[])
+        : []),
+
+      // Section 4 of his front page design, the TRUST BAR. Four of his phrases
+      // across, no icons: his mockup draws one over each and none has been sent,
+      // and FeatureList already refuses to invent a picture for that reason.
+      ...("trust" in C
+        ? ([
+            {
+              type: "feature_list",
+              columns: C.trust.columns,
+              items: C.trust.items.map((title) => ({ title })),
+            },
+          ] as Block[])
+        : []),
 
       // Three ordinary categories. Each renders nothing at all if its id is not
       // set for this shop, rather than showing an empty row under a heading.
@@ -109,7 +163,9 @@ export function homePage(storeName: string): PageDefinition {
       // Opportunities, because its catalogue is a different one. The build arg
       // that carries the id is the same either way, so the only per-shop part is
       // which word sits above the row.
-      ...(standouts && ("standouts" in C.rows || "wholesale" in C.rows)
+      ...("rows" in C &&
+      standouts &&
+      ("standouts" in C.rows || "wholesale" in C.rows)
         ? ([
             {
               type: "collection" as const,
@@ -124,7 +180,7 @@ export function homePage(storeName: string): PageDefinition {
       // A wholesale shop has no sale row: its prices are the trade prices and
       // there is no consumer promotion behind them. Absent from its copy, so
       // absent from its page, by the same rule as the three rows around it.
-      ...("onSale" in C.rows
+      ...("rows" in C && "onSale" in C.rows
         ? ([
             {
               type: "collection" as const,
@@ -148,7 +204,7 @@ export function homePage(storeName: string): PageDefinition {
           ] as const)
         : []),
 
-      ...(combos && "combos" in C.rows
+      ...("rows" in C && combos && "combos" in C.rows
         ? ([
             {
               type: "collection" as const,
@@ -159,7 +215,7 @@ export function homePage(storeName: string): PageDefinition {
           ] as const)
         : []),
 
-      ...(newProducts
+      ...("rows" in C && newProducts
         ? ([
             {
               type: "collection" as const,
@@ -174,11 +230,41 @@ export function homePage(storeName: string): PageDefinition {
           ] as const)
         : []),
 
-      {
-        type: "text_image",
-        heading: C.about.heading,
-        body: [...C.about.body],
-        ...(B.about ? { image: B.about } : {}),
+      // His third line for the commercial shop: "Products showing below under
+      // Main categories, then show 4 products per category". One row per category
+      // he has, read from his own catalogue rather than from build args, so a
+      // category he creates in the admin appears here without a rebuild.
+      ...("categoryRows" in C
+        ? ([
+            {
+              type: "category_rows",
+              perRow: C.categoryRows.perRow,
+              viewAllLabel: C.categoryRows.viewAll,
+            },
+          ] as Block[])
+        : []),
+
+      // Section 11 of his front page design, the FEATURE STRIP. Five of his
+      // phrases, below the products, same treatment as the trust bar above them.
+      ...("featureStrip" in C
+        ? ([
+            {
+              type: "feature_list",
+              columns: C.featureStrip.columns,
+              items: C.featureStrip.items.map((title) => ({ title })),
+            },
+          ] as Block[])
+        : []),
+
+      // Conditional, for the same reason the hero is. The commercial shop's brief
+      // has no About panel and this file does not write one for him.
+      ...("about" in C
+        ? ([
+            {
+              type: "text_image",
+              heading: C.about.heading,
+              body: [...C.about.body],
+              ...(B.about ? { image: B.about } : {}),
         // Image right. It was left, and he marked it "wrong side, need to flip".
         imageSide: "right",
         // Green on the retail shops, BLACK on the wholesale one. Both are his.
@@ -194,10 +280,10 @@ export function homePage(storeName: string): PageDefinition {
         // Keyed on the gate rather than on the shop name, the same way the
         // footer chooses its livery, so a second closed shop inherits it
         // without anyone remembering to add its name.
-        background: isAccountRequired()
-          ? ("dark" as const)
-          : ("brand" as const),
-      },
+              background: isAccountRequired() ? "dark" : "brand",
+            },
+          ] as Block[])
+        : []),
 
       // Both of the blocks below are retail furniture. The notice is the consumer
       // shipping and tax line, and the subscribe box is a newsletter for

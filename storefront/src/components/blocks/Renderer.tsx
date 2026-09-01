@@ -1,3 +1,5 @@
+import { BannerSlider } from "@/components/blocks/BannerSlider";
+import { CategoryRows } from "@/components/blocks/CategoryRows";
 import { Collection } from "@/components/blocks/Collection";
 import { Downloads } from "@/components/blocks/Downloads";
 import { Embed } from "@/components/blocks/Embed";
@@ -37,6 +39,17 @@ export function Renderer({ blocks, basePath, currency }: RendererProps) {
         switch (block.type) {
           case "text_image":
             return <TextImage key={key} {...block} basePath={basePath} />;
+          case "banner_slider":
+            return <BannerSlider key={key} {...block} />;
+          case "category_rows":
+            return (
+              <CategoryRows
+                key={key}
+                {...block}
+                basePath={basePath}
+                currency={currency}
+              />
+            );
           case "collection":
             return (
               <Collection

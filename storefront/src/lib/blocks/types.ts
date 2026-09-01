@@ -79,6 +79,106 @@ export interface CollectionBlock {
   limit?: number;
 }
 
+/**
+ * A full width banner that slides, at the top of a page.
+ *
+ * His specification for the commercial shop, in his own words on task 4430:
+ *
+ *   "A full-width top sliding banner about 400-500px high"
+ *
+ * The retail shops have no such thing. Their hero is a text block beside one
+ * photograph, and it is the same photograph every visit. This is a different
+ * shape and it is his, so it is a block of its own rather than a flag on
+ * TextImageBlock: a hero states one thing well, and this one rotates.
+ *
+ * ── the height ──────────────────────────────────────────────────────────────
+ *
+ * `height` is his 400 to 500, in pixels, and it is the DESKTOP height. On a
+ * phone a fixed 450px band is most of the screen, so the component scales it
+ * down rather than letting one number govern every width. Declared here so a
+ * shop can say what it wants instead of a number being buried in a component.
+ *
+ * ── why every slide carries its own dimensions ──────────────────────────────
+ *
+ * next/image needs real width and height or it reserves the wrong space and the
+ * page jumps as each slide loads. The client's own files were served at 800x600
+ * once while the srcset was computed for a shape none of them had, which is why
+ * this asks for the file's true size rather than assuming a ratio.
+ *
+ * A slide may carry a link, and need not. A banner that goes nowhere is still a
+ * banner; a banner that pretends to be clickable and is not is worse than one
+ * that does not.
+ */
+export interface BannerSlide {
+  src: string;
+  alt: string;
+  width: number;
+  height: number;
+  /** Optional words drawn over the image. */
+  heading?: string;
+  body?: string;
+  /** Optional destination for the whole slide. */
+  href?: string;
+  ctaLabel?: string;
+}
+
+export interface BannerSliderBlock {
+  type: "banner_slider";
+  slides: BannerSlide[];
+  /** Desktop height in pixels. His range is 400 to 500. */
+  height?: number;
+  /** Milliseconds between slides. 0 or absent means it does not advance itself. */
+  intervalMs?: number;
+}
+
+/**
+ * One product row per main category, built from the shop's own catalogue.
+ *
+ * His specification for the commercial shop, third of four lines on task 4430:
+ *
+ *   "Products showing below under Main categories, then show 4 products per
+ *    category as static or scrolling"
+ *
+ * ── why this is not four CollectionBlocks ───────────────────────────────────
+ *
+ * The retail shops name three categories in the build (`standouts`, `combos`,
+ * `new`) and pass their ids in as build args. That works when a shop has three
+ * rows chosen by hand and they never change.
+ *
+ * This shop has thirteen main categories and he intends to add more: "Once the
+ * main site is up I can do all the config inside the shop and create some
+ * products." Wiring thirteen build args would mean a rebuild every time he adds a
+ * category, and an id typed by hand is an id that can be wrong. So the rows are
+ * read from his catalogue instead, and a category he creates tomorrow appears on
+ * the home page without anybody being asked.
+ *
+ * ── which categories count as "main" ────────────────────────────────────────
+ *
+ * The roots, by default, because on this shop each main category IS a taxonomy of
+ * its own: thirteen roots, measured on 1 Sep. On the retail shops the roots are
+ * the filter axes (Colour, Size, ECO Values) and the real categories sit under a
+ * root called Categories, so `under` names that root there. Getting this wrong
+ * shows a shopper a row headed Colour, which is why it is a setting and not a
+ * guess.
+ *
+ * An empty category renders nothing at all rather than a heading over a gap. On
+ * the day this ships eleven of his thirteen are empty, so without that rule the
+ * page would be a column of headings.
+ */
+export interface CategoryRowsBlock {
+  type: "category_rows";
+  /** Only categories under this root permalink. Absent means the roots. */
+  under?: string;
+  /** Products per row. His figure is 4. */
+  perRow?: number;
+  /** Cap on how many rows, so a shop with fifty categories is still a page. */
+  maxRows?: number;
+  /** Label for the link at the right of each heading. */
+  viewAllLabel?: string;
+  /** Permalinks to leave out, for a category that is not a shopping row. */
+  exclude?: string[];
+}
+
 /** One line across the page. His shipping and customs notice. */
 export interface NoticeBlock {
   type: "notice";
@@ -296,6 +396,8 @@ export interface FeatureListBlock {
 export type Block =
   | FaqBlock
   | TextImageBlock
+  | BannerSliderBlock
+  | CategoryRowsBlock
   | CollectionBlock
   | NoticeBlock
   | EnquiryBlock

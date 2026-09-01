@@ -9,6 +9,7 @@ import {
   type SubscribeState,
   subscribeToNewsletter,
 } from "@/lib/data/newsletter";
+import { shopKey } from "@/lib/shop-key";
 
 const INITIAL: SubscribeState = { ok: false, message: null };
 
@@ -54,7 +55,7 @@ export function Subscribe({
   // shop's wording reached a customer once already.
   const shopFields =
     SUBSCRIBE_FIELDS_BY_SHOP[
-      (process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || "").toLowerCase()
+      shopKey()
     ] ?? {};
 
   // Both, or neither. A sentence promising terms that answer 404 is worse than

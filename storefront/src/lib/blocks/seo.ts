@@ -1,4 +1,5 @@
 import { SCRIPTS_BY_SHOP } from "@/lib/blocks/content";
+import { shopKey } from "@/lib/shop-key";
 
 /**
  * The search engine title and description, per shop.
@@ -20,9 +21,7 @@ export interface ShopSeo {
 }
 
 export function shopSeo(): ShopSeo | undefined {
-  const shop = (
-    process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || ""
-  ).toLowerCase() as keyof typeof SCRIPTS_BY_SHOP;
+  const shop = shopKey() as keyof typeof SCRIPTS_BY_SHOP;
   const entry = SCRIPTS_BY_SHOP[shop];
   if (!entry) return undefined;
 

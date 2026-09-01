@@ -151,6 +151,26 @@ services:
         NEXT_PUBLIC_CONTACT_FORM_URL: ${CONTACT_FORM_URL:-}
         NEXT_PUBLIC_CONTACT_TITLE: ${CONTACT_TITLE:-}
         NEXT_PUBLIC_CONTACT_INTRO: ${CONTACT_INTRO:-}
+        # Country and shop key, and they must travel TOGETHER.
+        #
+        # Both were only in the runtime `environment` block below, which does
+        # nothing at all for a NEXT_PUBLIC_ name: Next inlines those while
+        # building. So this shop built with neither, every per-shop lookup missed,
+        # and its home page rendered the framework default while its own About,
+        # FAQ and product-sourcing pages answered 404 with the copy for them
+        # sitting in the repository.
+        #
+        # The trap is in fixing only the first line. Adding the country alone makes
+        # every lookup resolve to `nz`, and this shop is a New Zealand business but
+        # NOT the New Zealand shop, so it would immediately serve the NZ RETAIL home
+        # page, About story and newsletter box on a business to business site. That
+        # is the fault content.ts opens by warning about and the one he caught
+        # himself on Canada. The key is what separates the two, and it defaults to
+        # the country so the seven retail shops are unaffected.
+        # See storefront/src/lib/shop-key.ts.
+        NEXT_PUBLIC_DEFAULT_COUNTRY: ${STORE_COUNTRY:-nz}
+        NEXT_PUBLIC_DEFAULT_LOCALE: ${STORE_LOCALE:-en}
+        NEXT_PUBLIC_SHOP_KEY: ${SHOP_KEY:-}
     image: storefront-${SHOP:?}:latest
     restart: always
     depends_on:

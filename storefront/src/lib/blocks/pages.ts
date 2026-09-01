@@ -8,6 +8,7 @@ import type {
   FaqBlock,
   PageDefinition,
 } from "@/lib/blocks/types";
+import { shopKey } from "@/lib/shop-key";
 
 /**
  * The content pages, as block lists, per shop.
@@ -23,10 +24,6 @@ import type {
  * copy, which is what the first build did: it served one country's FAQ, heading
  * and all, on another country's shop.
  */
-function shopKey(): string {
-  return (process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || "").toLowerCase();
-}
-
 function pagesForShop() {
   return PAGES_BY_SHOP[shopKey()] ?? {};
 }

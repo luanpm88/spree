@@ -1,4 +1,5 @@
 import { FOOTER_BY_SHOP } from "@/lib/blocks/content";
+import { shopKey } from "@/lib/shop-key";
 
 /**
  * The footer's legal name and outside links, for this shop.
@@ -17,8 +18,6 @@ export interface ShopFooter {
 const EMPTY: ShopFooter = {};
 
 export function shopFooter(): ShopFooter {
-  const shop = (
-    process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || ""
-  ).toLowerCase() as keyof typeof FOOTER_BY_SHOP;
+  const shop = shopKey() as keyof typeof FOOTER_BY_SHOP;
   return FOOTER_BY_SHOP[shop] ?? EMPTY;
 }

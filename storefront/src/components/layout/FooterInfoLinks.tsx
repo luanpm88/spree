@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { livery } from "@/components/layout/footerLivery";
 import { SITE_LINKS } from "@/lib/blocks/content";
+import { shopKey } from "@/lib/shop-key";
 
 interface FooterInfoLinksProps {
   basePath: string;
@@ -29,7 +30,7 @@ interface FooterInfoLinksProps {
  */
 export function FooterInfoLinks({ basePath }: FooterInfoLinksProps) {
   const l = livery();
-  const shop = (process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || "").toLowerCase();
+  const shop = shopKey();
   const links = SITE_LINKS[shop];
   if (!links) return null;
 

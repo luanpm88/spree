@@ -1,4 +1,5 @@
 import { CONTACT_BY_SHOP } from "@/lib/blocks/content";
+import { shopKey } from "@/lib/shop-key";
 
 /**
  * This shop's contact page: its own form, its own words.
@@ -16,6 +17,6 @@ export interface ShopContact {
 }
 
 export function shopContact(): ShopContact | undefined {
-  const shop = (process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || "").toLowerCase();
+  const shop = shopKey();
   return CONTACT_BY_SHOP[shop];
 }
