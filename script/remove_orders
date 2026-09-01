@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+#
+# Remove orders and customer accounts the shop owner has asked to remove.
+#
+#   script/remove_orders nz <order> <order>                     dry run, prints what would go
+#   APPLY=1 script/remove_orders nz <order>                     removes them
+#   script/remove_orders nz --user test@example.com            an account, and its orders
+#
+# ── why this is a script and not a few DELETE statements ────────────────────
+#
+# An order owns rows in eleven tables, and several counter caches count it. A
+# hand written DELETE leaves the counters wrong and, if the FK order is off by
+# one table, leaves a half deleted order that the admin cannot open.
+#
+# Spree's own admin does `@order.destroy`, which runs the dependent: rules and
+# the callbacks. This does the same thing, so what happens here is what would
+# have happened if the owner had clicked the button, once per order, without the
+# clicking.
+#
+# ── the guards, and the reason for each ─────────────────────────────────────
+#
+#   dry run by default        nothing is removed until APPLY=1 is passed. The
+#                             list is printed first so it can be read back to the
+#                             owner before anything happens.
+#   a completed order stops   an order with a captured payment is money in his
+#                             books. Removing it changes his sales figures, so it
+#                             takes a second, separate flag.
+#   an account with orders    removing an account whose orders are not all on the
+#   not on the list stops     list would orphan or destroy an order nobody asked
+#                             about. Measured for real: an account of 10 orders
+#                             where the owner listed 9.
+#   it names a backup         and refuses to run without one taken today.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+SHOP="${1:-}"
+shift || true
+[[ -n "$SHOP" && $# -gt 0 ]] || {
+  cat >&2 <<USAGE
+usage: script/remove_orders <shop> <order_number> [order_number ...]
+       script/remove_orders <shop> --user <email> [--user <email> ...]
+
+  APPLY=1                 actually remove. Without it this only prints.
+  FORCE_COMPLETED=1       allow removing an order that is complete and paid.
+  FORCE_EXTRA_ORDERS=1    allow removing an account that owns orders not listed.
+USAGE
+  exit 2
+}
+
+# shellcheck source=/dev/null
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_HOST:?no SSH_HOST, source .estate.env}"
+: "${SSH_PORT:=22}"
+: "${SSH_KEY:?no SSH_KEY}"
+eval K="$SSH_KEY"; P=$(printf '%s' "$SSH_PORT" | tr -d '"')
+
+APPLY="${APPLY:-0}"
+FORCE_COMPLETED="${FORCE_COMPLETED:-0}"
+FORCE_EXTRA_ORDERS="${FORCE_EXTRA_ORDERS:-0}"
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_BLD=$'\e[1m'; C_OFF=$'\e[0m'
+step() { printf '\n%s==>%s %s\n' "$C_BLD" "$C_OFF" "$*"; }
+ok()   { printf '  %sok%s   %s\n' "$C_GRN" "$C_OFF" "$*"; }
+warn() { printf '  %s!%s    %s\n' "$C_YEL" "$C_OFF" "$*"; }
+info() { printf '  %s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
+die()  { printf '\n%sFAILED%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+
+declare -a ORDERS=()
+declare -a USERS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --user) shift; [[ -n "${1:-}" ]] || die "--user needs an email"; USERS+=("$1") ;;
+    *)      ORDERS+=("$1") ;;
+  esac
+  shift
+done
+
+DB="${SHOP}_shop"
+rsh() { ssh -n -i "$K" -p "$P" -o BatchMode=yes "$SSH_HOST" "$@"; }
+runner() { rsh "docker exec ${SHOP}_web bin/rails runner '$1'" 2>/dev/null | tr -d '\r' | grep -viE 'spree events|jwt secret'; }
+
+# ── a backup from today, or nothing happens ─────────────────────────────────
+step "Backup"
+if [[ "$APPLY" == "1" ]]; then
+  stamp=$(rsh "date +%Y%m%d-%H%M%S" | tr -d '\r')
+  dump="/root/${SHOP}-before-removal-${stamp}.sql.gz"
+  rsh "docker exec estate-postgres pg_dump -U postgres --no-owner --no-acl $DB | gzip -9 > $dump" \
+    || die "the backup did not run, so nothing was removed"
+  rsh "gzip -t $dump" || die "the backup does not read back, so nothing was removed"
+  size=$(rsh "stat -c %s $dump" | tr -d '\r')
+  [[ "${size:-0}" -gt 100000 ]] || die "the backup is $size bytes, too small to be this shop"
+  ok "$dump  $size bytes, reads back"
+else
+  info "dry run, no backup taken and nothing will be removed"
+fi
+
+# ── what is about to go ─────────────────────────────────────────────────────
+step "What this would remove from $DB"
+
+# `set -u` treats an array that was never assigned as unbound, and "${ARR[@]}"
+# on an empty one aborts the script. Declared empty above and expanded with a
+# default here, so a run with only orders and no --user works.
+report=$(runner "
+  wanted   = %w[${ORDERS[*]:-}]
+  emails   = %w[${USERS[*]:-}]
+  orders   = Spree::Order.where(number: wanted)
+  missing  = wanted - orders.pluck(:number)
+  users    = Spree.user_class.where(email: emails)
+  puts \"FOUND|#{orders.count}|#{wanted.size}\"
+  missing.each { |m| puts \"MISSING|#{m}\" }
+  orders.order(:created_at).each do |o|
+    paid = o.payments.where(state: %q{completed}).sum(:amount)
+    puts [\"ORDER\", o.number, o.state, o.completed_at ? %q{da hoan tat} : %q{chua hoan tat},
+          o.total.to_s, paid.to_s, o.email.to_s].join(\"|\")
+  end
+  users.each do |u|
+    own   = Spree::Order.where(user_id: u.id).pluck(:number)
+    extra = own - wanted
+    puts [\"USER\", u.email, own.size.to_s, extra.join(\",\")].join(\"|\")
+  end
+  (emails - users.pluck(:email)).each { |e| puts \"NOUSER|#{e}\" }
+")
+
+printf '%s\n' "$report" | grep -q '^FOUND|' || die "could not read $DB (is ${SHOP}_web running?)"
+
+found=$(printf '%s' "$report" | sed -n 's/^FOUND|\([0-9]*\)|.*/\1/p')
+asked=$(printf '%s' "$report" | sed -n 's/^FOUND|[0-9]*|\([0-9]*\)/\1/p')
+info "$found of $asked order number(s) exist on this shop"
+
+blocked=0
+printf '%s\n' "$report" | grep '^MISSING|' | while IFS='|' read -r _ n; do
+  warn "no order $n on this shop"
+done
+
+printf '%s\n' "$report" | grep '^ORDER|' | while IFS='|' read -r _ n st done_s total paid email; do
+  if [[ "$done_s" == "da hoan tat" && "$paid" != "0.0" && "$paid" != "0.00" && -n "$paid" ]]; then
+    printf '    %s%-14s %-10s %-14s %8s  paid %s  %s%s\n' \
+      "$C_YEL" "$n" "$st" "$done_s" "$total" "$paid" "$email" "$C_OFF"
+  else
+    printf '    %-14s %-10s %-14s %8s  paid %s  %s\n' "$n" "$st" "$done_s" "$total" "$paid" "$email"
+  fi
+done
+
+paid_count=$(printf '%s\n' "$report" | grep '^ORDER|' | awk -F'|' '$4=="da hoan tat" && $6+0 > 0' | wc -l | tr -d ' ')
+if [[ "${paid_count:-0}" -gt 0 ]]; then
+  warn "$paid_count of these are complete AND have money captured against them"
+  info "removing those changes his sales figures. FORCE_COMPLETED=1 to allow it."
+  [[ "$FORCE_COMPLETED" == "1" ]] || blocked=1
+fi
+
+printf '%s\n' "$report" | grep '^NOUSER|' | while IFS='|' read -r _ e; do
+  warn "no account $e on this shop"
+done
+
+extra_seen=0
+while IFS='|' read -r _ email owncount extra; do
+  [[ -n "$email" ]] || continue
+  printf '    account %-26s owns %s order(s)\n' "$email" "$owncount"
+  if [[ -n "$extra" ]]; then
+    warn "  it also owns order(s) NOT on your list: $extra"
+    extra_seen=1
+  fi
+done < <(printf '%s\n' "$report" | grep '^USER|')
+
+if [[ "$extra_seen" == "1" ]]; then
+  info "removing that account would take those with it. FORCE_EXTRA_ORDERS=1 to allow it."
+  [[ "$FORCE_EXTRA_ORDERS" == "1" ]] || blocked=1
+fi
+
+# `blocked` is set inside a while-read subshell above for the paid case, so it is
+# recomputed here rather than trusted across the pipe.
+if [[ "${paid_count:-0}" -gt 0 && "$FORCE_COMPLETED" != "1" ]]; then blocked=1; fi
+if [[ "$extra_seen" == "1" && "$FORCE_EXTRA_ORDERS" != "1" ]]; then blocked=1; fi
+
+if [[ "$blocked" == "1" ]]; then
+  die "stopped on a guard above. Nothing was removed. Read the warnings, then set the flag they name if the owner has said so."
+fi
+
+if [[ "$APPLY" != "1" ]]; then
+  echo
+  info "dry run. Nothing was removed. Add APPLY=1 to do it."
+  exit 0
+fi
+
+# ── remove, through Rails, exactly as the admin would ───────────────────────
+step "Removing"
+# ── why the Ruby below carries no prose ─────────────────────────────────────
+#
+# It is embedded in a single-quoted argument for the remote shell, so ONE
+# apostrophe anywhere inside closes that quote and the command dies with no
+# output at all. Explanatory comments with words like "client's" did exactly
+# that, and the failure looked like the removal simply not running.
+#
+# What the Ruby does, and why:
+#
+#   completed_at is cleared first. Spree::LineItem has a before_destroy that
+#   refuses while its order is complete, so the cascade aborts on the first line
+#   item without it. update_column runs no callbacks.
+#
+#   ONE TRANSACTION PER ORDER, rolled back the moment the row survives. The first
+#   version cleared completed_at for all thirteen and then found twelve would not
+#   delete, leaving twelve real orders quietly un-completed. Spree only refuses to
+#   delete a customer who still HAS completed orders, so both accounts then
+#   deleted cleanly and orphaned those twelve.
+#
+#   destroy is judged by ABSENCE, not by its return value: measured on a real
+#   order, destroy returned nil while the order and all its children went.
+#
+#   an account is removed only once it owns NO order in any state, which is
+#   stricter than Spree own guard and is what stops the orphaning above.
+result=$(runner "
+  wanted = %w[${ORDERS[*]:-}]
+  emails = %w[${USERS[*]:-}]
+  gone = 0
+  Spree::Order.where(number: wanted).to_a.each do |o|
+    n = o.number; oid = o.id; done = false
+    Spree::Order.transaction do
+      o.update_column(:completed_at, nil)
+      o.destroy
+      if Spree::Order.exists?(id: oid) then raise ActiveRecord::Rollback else done = true end
+    end
+    if done then gone += 1; puts \"REMOVED|order|#{n}\" else puts \"STUCK|order|#{n}\" end
+  end
+  Spree.user_class.where(email: emails).to_a.each do |u|
+    e = u.email; uid = u.id
+    left = Spree::Order.where(user_id: uid).pluck(:number)
+    if left.any?
+      puts \"STUCK|account|#{e} still owns #{left.size} order(s)\"
+      next
+    end
+    u.destroy
+    if Spree.user_class.exists?(id: uid) then puts \"STUCK|account|#{e}\" else puts \"REMOVED|account|#{e}\" end
+  end
+  puts \"DONE|#{gone}\"
+")
+printf '%s\n' "$result" | grep '^REMOVED|' | while IFS='|' read -r _ kind what; do
+  ok "removed $kind $what"
+done
+printf '%s\n' "$result" | grep '^STUCK|' | while IFS='|' read -r _ kind what; do
+  warn "$kind $what is STILL THERE, something refused to let it go"
+done
+printf '%s\n' "$result" | grep -q '^DONE|' || die "the removal did not report finishing. Check $dump before retrying."
+
+step "Reading it back"
+left=$(runner "
+  wanted = %w[${ORDERS[*]:-}]
+  emails = %w[${USERS[*]:-}]
+  puts \"LEFT|#{Spree::Order.where(number: wanted).count}|#{Spree.user_class.where(email: emails).count}\"
+")
+o_left=$(printf '%s' "$left" | sed -n 's/^LEFT|\([0-9]*\)|.*/\1/p')
+u_left=$(printf '%s' "$left" | sed -n 's/^LEFT|[0-9]*|\([0-9]*\)/\1/p')
+[[ "${o_left:-1}" == "0" ]] || die "$o_left of the orders are still there"
+[[ "${u_left:-1}" == "0" ]] || die "$u_left of the accounts are still there"
+ok "none of them are in $DB any more"
+info "the copy taken before this is at $dump"

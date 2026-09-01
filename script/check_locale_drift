@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+#
+# The wording a shop is actually running, compared with the wording in this repo.
+#
+#   script/check_locale_drift          every shop that has a container
+#   script/check_locale_drift b2b      one shop
+#
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# On 18 Aug a corrected b2b.en.yml was pushed to its container with
+#
+#     cat config/shop_locales/b2b.en.yml | ssh -n host "cat > /tmp/f && docker cp ..."
+#
+# `ssh -n` attaches /dev/null to stdin. It is there on purpose: without it, an
+# ssh inside a `while read` loop swallows the loop's input and the loop prints
+# one row and exits 0. So the flag that fixed one silent failure caused another
+# one. `cat` received /dev/null, wrote a 0-byte file, and `docker cp` copied that
+# empty file over the shop's entire email vocabulary.
+#
+# Every step reported success. scp said nothing, docker cp said nothing, the
+# container kept running. The shop was left with no wording of its own, which is
+# the exact failure check_shop_locales exists to prevent — except that gate reads
+# the repository, where the file was perfect.
+#
+# That is the gap this closes. A gate that reads the repo cannot see the running
+# system, and the two drift for reasons that have nothing to do with the file:
+# a failed copy, a rebuilt image, a hand edit on the server, a deploy that did
+# not carry it.
+#
+# So this asks the container what it is holding, and compares the hash.
+#
+# ── what it does not do ──────────────────────────────────────────────────────
+#
+# It never writes. It reads a checksum out of each container and compares. A shop
+# with no container yet is reported as such and is not a failure: a shop whose
+# wording has been prepared here but whose server is not built yet is the normal
+# state between those two steps, and two shops are in it today.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_DIM=$'\e[2m'; C_OFF=$'\e[0m'
+
+if [ ! -f .estate.env ]; then
+  printf '  %sskipped: .estate.env is not on this machine, so there is no server to ask%s\n' "$C_DIM" "$C_OFF"
+  exit 0
+fi
+set -a; . ./.estate.env; set +a
+
+WANT="${1:-}"
+SSH="ssh -n -i $SSH_KEY -p ${SSH_PORT:-22} -o StrictHostKeyChecking=no -o ConnectTimeout=10 $SSH_HOST"
+
+drift=0; matched=0; absent=0
+
+for f in config/shop_locales/*.yml; do
+  [ -e "$f" ] || continue
+  b=$(basename "$f"); s=${b%%.*}
+  case "$s" in _*) continue;; esac
+  [ -n "$WANT" ] && [ "$s" != "$WANT" ] && continue
+
+  local_sum=$(shasum -a 256 "$f" | cut -c1-16)
+  cont_sum=$($SSH "docker exec ${s}_web sha256sum /rails/config/shop_locales/$b 2>/dev/null | cut -c1-16" 2>/dev/null)
+
+  if [ -z "$cont_sum" ]; then
+    printf '  %s%-10s not deployed yet%s\n' "$C_DIM" "$s" "$C_OFF"
+    absent=$((absent + 1))
+  elif [ "$local_sum" = "$cont_sum" ]; then
+    matched=$((matched + 1))
+  else
+    size=$($SSH "docker exec ${s}_web stat -c%s /rails/config/shop_locales/$b 2>/dev/null" 2>/dev/null)
+    printf '  %s%-10s the running shop holds different wording%s\n' "$C_RED" "$s" "$C_OFF"
+    printf '             repo      %s  (%s bytes)\n' "$local_sum" "$(wc -c < "$f" | tr -d ' ')"
+    printf '             container %s  (%s bytes)\n' "$cont_sum" "${size:-?}"
+    [ "${size:-1}" = "0" ] && printf '             %sthe file in the container is empty: a copy failed and reported success%s\n' "$C_DIM" "$C_OFF"
+    drift=$((drift + 1))
+  fi
+done
+
+if [ "$drift" -eq 0 ]; then
+  printf '  %sok%s — %d shop(s) running the wording in this repo' "$C_GRN" "$C_OFF" "$matched"
+  [ "$absent" -gt 0 ] && printf ', %d not deployed yet' "$absent"
+  printf '\n'
+  exit 0
+fi
+printf '\n  %s%d shop(s) are serving wording this repo does not have%s\n' "$C_RED" "$drift" "$C_OFF"
+exit 1

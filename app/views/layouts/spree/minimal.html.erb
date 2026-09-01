@@ -1,0 +1,42 @@
+<%#
+  The sign-in layout, copied from spree_admin 5.6.1 with one line changed.
+
+  The client asked for his own picture on the admin sign-in screen, a different
+  one per shop. The gem hardcodes `asset_path('login_sidebar_background.png')`,
+  and that resolves to a digested file baked into the image at build time. Every
+  shop here runs the SAME image, so there is no way to bake six different
+  pictures in: the asset pipeline gives all six the one file.
+
+  So the path comes from the environment instead, and each shop mounts its own
+  picture at /rails/public/brand. Unset, it falls back to the gem's own asset and
+  the screen looks exactly as it does today, which is what a shop with no picture
+  supplied should get.
+
+  Overridden rather than decorated because this is a view: Rails resolves the
+  application's copy ahead of the engine's, and there is no hook in the middle of
+  a layout to reach for instead.
+%>
+<% login_image = ENV["ADMIN_LOGIN_IMAGE"].presence || asset_path("login_sidebar_background.png") %>
+<!DOCTYPE html>
+<html lang="<%= I18n.locale %>" dir="<%= html_dir %>">
+  <head>
+    <%= render "spree/admin/shared/head" %>
+  </head>
+  <body class="admin min-h-screen <%= controller_name %> <%= action_name %>" data-controller="dialog">
+    <div class="grid grid-cols-1 lg:grid-cols-2 min-h-screen">
+      <div
+        class="hidden lg:block bg-gray-25 bg-cover bg-center bg-no-repeat"
+        style="background-image: url('<%= login_image %>');"
+      >
+      </div>
+      <div class="flex flex-col justify-center items-center p-6 lg:p-12">
+        <div class="w-full max-w-md">
+          <%= yield %>
+        </div>
+      </div>
+    </div>
+    <%= render "spree/admin/shared/dialog" %>
+    <%= render "spree/admin/shared/alerts" %>
+    <%= render "spree/admin/shared/turbo_confirm_dialog" %>
+  </body>
+</html>

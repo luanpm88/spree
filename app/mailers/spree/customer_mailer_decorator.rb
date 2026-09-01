@@ -62,27 +62,65 @@ module Spree
       #
       # The fallback matters: on a checkout without his file, every one of these keys is
       # absent and the email has to still say something.
-      his_copy = Spree.t(:heading, scope: [:user_emails, :welcome], default: '').present?
-      @copy_scope = his_copy ? [:user_emails, :welcome] : nil
-      @note = ''
-      @contact_url = Spree.t(:contact_url, scope: [:user_emails, :common], default: @storefront_url)
-
-      if self.class.welcome_includes_password_link
-        # append_token comes from Spree::BaseMailer and uses ?token= / &token=, which is
-        # the parameter name the storefront's reset page reads. Do not invent another.
-        @reset_url = append_token(
-          "#{@storefront_url}#{self.class.welcome_reset_path}",
-          reset_token
-        )
-      end
-
-      subject = if his_copy
-                  Spree.t(:subject, scope: [:user_emails, :welcome], store: store.name)
-                else
-                  Spree.t('customer_mailer.welcome_email.subject', store: store.name)
-                end
-
+      # ── every lookup inside the store's locale, not only the render ──────────
+      #
+      # with_store_locale was already here, around mail() alone. That renders the
+      # BODY in the shop's locale and leaves every decision above it at the
+      # default one, which is where this went wrong.
+      #
+      # Measured on Canada, whose wording lives under en-CA:
+      #
+      #     store.default_locale      en-CA
+      #     I18n.locale in the mailer en
+      #     welcome_message at en     (absent)
+      #     welcome_message at en-CA  <the shop's own welcome heading>
+      #
+      # So his_copy came out false, @copy_scope was nil, and the shop sent our
+      # generic wording while his own sat one locale away. The subject fell to
+      # Spree's default the same way. Canada, Australia and New Zealand all did
+      # this; the United States and nolocal did not, and only because their
+      # wording happens to sit under plain en.
+      #
+      # It was hidden until this morning: one brand file supplied every key under
+      # plain en, so there was always something to find. Removing it uncovered it.
+      #
+      # with_store_locale, not I18n.with_locale: Spree's version also sets the
+      # Mobility fallbacks for the store, and a locale switch without them reads
+      # translated records differently.
       with_store_locale(store) do
+        # Two vocabularies, both his. His COMMERCIAL file names the heading `heading`;
+        # his RETAIL files name it `welcome_message`. Same role, different word, and
+        # the difference is not cosmetic: this line decides whether his copy is used
+        # at all.
+        #
+        # Checking only `heading` meant every retail shop failed this test and fell
+        # back to ours. It did not look that way, because one brand's file sat in
+        # config/locales and was read by every shop on the box, so retail borrowed
+        # the commercial heading and shipped it: "Your Account Is Awaiting Final
+        # Approval", to customers of a retail shop who have no approval step.
+        his_copy = [
+          Spree.t(:heading, scope: [:user_emails, :welcome], default: ''),
+          Spree.t(:welcome_message, scope: [:user_emails, :welcome], default: '')
+        ].any?(&:present?)
+        @copy_scope = his_copy ? [:user_emails, :welcome] : nil
+        @note = ''
+        @contact_url = Spree.t(:contact_url, scope: [:user_emails, :common], default: @storefront_url)
+
+        if self.class.welcome_includes_password_link
+          # append_token comes from Spree::BaseMailer and uses ?token= / &token=, which is
+          # the parameter name the storefront's reset page reads. Do not invent another.
+          @reset_url = append_token(
+            "#{@storefront_url}#{self.class.welcome_reset_path}",
+            reset_token
+          )
+        end
+
+        subject = if his_copy
+                    Spree.t(:subject, scope: [:user_emails, :welcome], store: store.name)
+                  else
+                    Spree.t('customer_mailer.welcome_email.subject', store: store.name)
+                  end
+
         mail(to: user.email, subject: subject, store_url: store.storefront_url)
       end
     end
@@ -96,9 +134,10 @@ module Spree
     # WHERE HIS COPY ACTUALLY LIVES, read out of the file he sent rather than assumed:
     #
     #   user_emails.account_approval                          the approved email
-    #   user_emails.account_approval.account_not_approved      the "we need more" email
-    #                                                          (NESTED inside the first,
-    #                                                           which is how he wrote it)
+    #   user_emails.account_not_approved                      the "we need more" email
+    #                                                          (it was nested inside the
+    #                                                           first until 19 Aug, when
+    #                                                           he moved it up a level)
     #   user_emails.not_approved                              does not exist
     #
     # The third has no copy because his flow does not need one: "If no reply, the account
@@ -111,7 +150,7 @@ module Spree
     #
     #   account_approval.body                    uses %{note}
     #   account_approval.what_bullets.3          uses %{contact_url}
-    #   account_approval.account_not_approved.body  uses %{note}
+    #   account_not_approved.body                uses %{note}
     #
     # I18n raises MissingInterpolationArgument for an argument a string USES and ignores
     # ones it does not, so passing both everywhere is safe and means his wording can move
@@ -170,7 +209,12 @@ module Spree
       return if declining.any? && user.customer_groups.exists?(id: declining)
       return if in_approving_group?(user, store)
 
-      deliver_outcome(user, store, [:user_emails, :account_approval, :account_not_approved])
+      # Two levels, not three. He moved this section up a level in the file he sent
+      # on 19 Aug, and a scope that names a level his file no longer has resolves
+      # to nothing: the email would send with an empty heading and an empty body,
+      # because I18n's default is the empty string here rather than an error.
+      # Only the commercial shop has this section at all, so nothing else moves.
+      deliver_outcome(user, store, [:user_emails, :account_not_approved])
     end
 
     # Tells the applicant the shop has declined the account.
@@ -286,17 +330,26 @@ module Spree
     # Spree.t returns a translation_missing SPAN rather than raising, so `default: ''` is
     # what makes this a real check.
     def deliver_outcome(user, store, scope)
-      return if Spree.t(:heading, scope: scope, default: '').blank?
-
-      @user = user
-      @current_store = store
-      @storefront_url = store.storefront_url.to_s.chomp('/')
-      @copy_scope = scope
-      @note = customer_note(user)
-      # From his own common section, so the shop can change it without touching code.
-      @contact_url = Spree.t(:contact_url, scope: [:user_emails, :common], default: @storefront_url)
-
+      # The whole method inside the store's locale, including the guard.
+      #
+      # The guard used to sit outside it, so on a shop whose wording lives under a
+      # regional root (en-CA, en-AU, en-NZ) the heading read as blank and the
+      # email silently did not send. Silently is the point: no error, no log, and
+      # the customer simply never hears back about their account.
+      #
+      # `next`, not `return`: this is a block. It leaves the block without
+      # calling mail, which is what the guard has always meant.
       with_store_locale(store) do
+        next if Spree.t(:heading, scope: scope, default: '').blank?
+
+        @user = user
+        @current_store = store
+        @storefront_url = store.storefront_url.to_s.chomp('/')
+        @copy_scope = scope
+        @note = customer_note(user)
+        # From his own common section, so the shop can change it without touching code.
+        @contact_url = Spree.t(:contact_url, scope: [:user_emails, :common], default: @storefront_url)
+
         mail(
           to: user.email,
           subject: Spree.t(:subject, scope: scope, store: store.name, note: @note, contact_url: @contact_url),

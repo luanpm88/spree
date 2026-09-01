@@ -1,0 +1,209 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#
+# What a wording file he just sent would do to the one already installed.
+#
+#   script/locale_diff <his-file.yml> <shop>          report only
+#   script/locale_diff <his-file.yml> <shop> --merge  write the merge
+#
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# He sends wording as whole files, and a whole file is not a superset of the one
+# it replaces. On 19 Aug the commercial shop's new file was SMALLER than the
+# installed one, 136 keys against 148, and the shrinkage was not tidying:
+#
+#   16 keys were the entire shipping notice
+#    6 were the payment lines in the cancellation mail
+#    2 were a payment link section
+#    8 had merely moved up one level
+#
+# Copied over the top, that shop loses its shipping email. It does not fail: a
+# shop with no wording of its own falls through to whatever else is on the load
+# path, which is how four shops came to print another country's support address.
+# Nothing logs it.
+#
+# And it was not a mistake on his part. The same message said "I am still
+# working on each template", so the file was a stage, not a replacement. That is
+# the normal case, not the exception, which is why this is a script rather than
+# a note.
+#
+# ── what --merge does ────────────────────────────────────────────────────────
+#
+# His file wins for every key it contains. Keys only the installed file has are
+# carried underneath. Nothing of his is ever overwritten, and the report says
+# how many of his values survived so that claim is checked rather than asserted.
+#
+# A key that moved to a different level appears as one lost and one gained. The
+# report groups by section so that pattern is visible, and the merge keeps both
+# unless --drop is given: the old path is dead weight, but deleting a section
+# because it looks like a move is how real wording gets lost.
+
+require 'yaml'
+require 'set'
+
+def flatten(node, prefix = '', out = {})
+  if node.is_a?(Hash)
+    node.each { |k, v| flatten(v, prefix.empty? ? k.to_s : "#{prefix}.#{k}", out) }
+  else
+    out[prefix] = node
+  end
+  out
+end
+
+def short(key)
+  key.sub('en.spree.user_emails.', '').sub('en.spree.', '')
+end
+
+def section(key)
+  short(key).split('.').first
+end
+
+incoming, shop, *flags = ARGV
+merge = flags.include?('--merge')
+drop  = flags.include?('--drop')
+
+if incoming.nil? || shop.nil?
+  warn 'usage: script/locale_diff <his-file.yml> <shop> [--merge] [--drop]'
+  exit 2
+end
+
+installed = File.join('config', 'shop_locales', "#{shop}.en.yml")
+
+unless File.exist?(incoming)
+  warn "  #{incoming} is not on this machine"
+  exit 1
+end
+
+unless File.exist?(installed)
+  puts "  #{shop} has no wording file yet, so this one is not replacing anything."
+  puts "  Copy it to #{installed} and the shop has its own copy for the first time."
+  exit 0
+end
+
+begin
+  new_tree = YAML.safe_load(File.read(incoming), aliases: true)
+rescue StandardError => e
+  warn "  #{incoming} will not parse, so it would take the shop down at boot:"
+  warn "    #{e.message.lines.first.to_s.strip}"
+  exit 1
+end
+
+cur_tree = YAML.safe_load(File.read(installed), aliases: true)
+
+new_flat = flatten(new_tree)
+cur_flat = flatten(cur_tree)
+
+gained  = (new_flat.keys - cur_flat.keys).sort
+lost    = (cur_flat.keys - new_flat.keys).sort
+changed = (new_flat.keys & cur_flat.keys).reject { |k| new_flat[k] == cur_flat[k] }.sort
+
+puts
+puts "  #{shop}: #{cur_flat.size} keys installed, #{new_flat.size} in the file he sent"
+puts
+
+unless changed.empty?
+  puts "  #{changed.size} reworded:"
+  changed.first(12).each { |k| puts "      #{short(k)}" }
+  puts "      … and #{changed.size - 12} more" if changed.size > 12
+  puts
+end
+
+unless gained.empty?
+  puts "  #{gained.size} new:"
+  gained.group_by { |k| section(k) }.sort.each { |s, ks| puts "      #{s} (#{ks.size})" }
+  puts
+end
+
+if lost.empty?
+  puts '  nothing would be lost.'
+else
+  puts "  #{lost.size} WOULD BE LOST, by section:"
+  lost.group_by { |k| section(k) }.sort.each do |s, ks|
+    # A section that vanished from one level and appeared at another is a move,
+    # not a loss, and saying so saves asking him about it.
+    moved = ks.count { |k| new_flat.key?(k.split('.').reject { |p| p == s }.join('.')) }
+    note = moved.positive? ? "  (#{moved} of them exist elsewhere in his file, so that part is a move)" : ''
+    puts "      #{s} (#{ks.size})#{note}"
+  end
+  puts
+  puts '  A shop with no wording of its own does not send a blank email. It sends'
+  puts '  whatever else is on the load path, which is another of his brands.'
+end
+
+if merge
+  merged = new_tree
+  carried = []
+
+  walk = lambda do |dst, src, path|
+    src.each do |k, v|
+      if v.is_a?(Hash)
+        dst[k] = {} unless dst[k].is_a?(Hash)
+        walk.call(dst[k], v, path + [k])
+      elsif !dst.key?(k)
+        dst[k] = v
+        carried << (path + [k]).join('.')
+      end
+    end
+  end
+  walk.call(merged, cur_tree, [])
+
+  # --drop removes a carried key whose leaf name he has placed somewhere else,
+  # which is what a section moving up a level looks like from here. Off by
+  # default, and it has to be: "the same leaf name exists elsewhere" is evidence
+  # of a move, not proof of one, and deleting real wording because two keys share
+  # a name is a worse outcome than leaving a dead path in the file.
+  dropped = []
+  if drop
+    moved = carried.select do |key|
+      parts = key.split('.')
+      (1...parts.length - 1).any? do |i|
+        candidate = (parts[0...i] + parts[(i + 1)..]).join('.')
+        new_flat.key?(candidate)
+      end
+    end
+    moved.each do |key|
+      parts = key.split('.')
+      parent = parts[0..-2].reduce(merged) { |node, k| node.is_a?(Hash) ? node[k] : nil }
+      next unless parent.is_a?(Hash)
+
+      parent.delete(parts[-1])
+      dropped << key
+    end
+    # Prune the sections those keys left empty, so the file does not keep a
+    # heading with nothing under it.
+    prune = lambda do |node|
+      next unless node.is_a?(Hash)
+
+      node.each_value { |v| prune.call(v) }
+      node.reject! { |_, v| v.is_a?(Hash) && v.empty? }
+    end
+    prune.call(merged)
+    carried -= dropped
+  end
+
+  File.write(installed, merged.to_yaml)
+
+  # Proving it rather than claiming it: every value he sent must still be his.
+  after = flatten(YAML.safe_load(File.read(installed), aliases: true))
+  overwritten = new_flat.reject { |k, v| after[k] == v }
+
+  puts
+  puts "  written to #{installed}"
+  puts "      #{carried.size} key(s) carried from the installed file"
+  if overwritten.empty?
+    puts "      #{new_flat.size} of #{new_flat.size} of his values kept exactly"
+  else
+    puts "      #{overwritten.size} OF HIS VALUES WERE CHANGED, which is a bug in this script:"
+    overwritten.keys.first(5).each { |k| puts "        #{short(k)}" }
+    exit 1
+  end
+  if drop
+    puts "      #{dropped.size} old path(s) dropped, each one a key he has placed elsewhere"
+    dropped.first(8).each { |k| puts "        #{short(k)}" }
+  else
+    puts '      (--drop was not given, so any old path he moved away from is still here)'
+  end
+end
+
+puts
+exit(lost.empty? ? 0 : 1)

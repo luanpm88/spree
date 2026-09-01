@@ -15,7 +15,6 @@ export async function HeroSection({ basePath, locale }: HeroSectionProps) {
   });
   const storeName = getStoreName();
 
-
   return (
     <section className="border-b border-gray-200 min-h-[823px] md:min-h-0 flex items-center">
       <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-12 md:py-24">

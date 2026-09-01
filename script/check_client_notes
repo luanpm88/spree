@@ -1,0 +1,472 @@
+#!/usr/bin/env node
+// Every value the client has stated, asserted against the live page, per shop.
+//
+//   script/check_client_notes              every shop in .client_notes
+//   script/check_client_notes <shop> ...   only these
+//
+// ── why this gate exists ────────────────────────────────────────────────────
+//
+// He reviews by drawing an arrow on a screenshot and writing the number beside
+// it. Those numbers are exact, so they are checkable, and every one of them has
+// at some point been applied once and then quietly lost:
+//
+//   the hero heading was two lines in his mock and shipped as one, twice
+//   the card hover colour was set, then killed by generated overrides
+//   the header took the bar's colour and drew one tall block, hiding the line
+//   the About photograph lost 29% of its width, including the words in it
+//
+// None of those were misread. Each was read correctly, fixed, and then undone
+// by something else: a rebuild, a shared component, a token copied from the shop
+// next door. The cost lands on him, because the only thing that noticed was him
+// saying it a second time.
+//
+// So the numbers live in .client_notes and this asserts them. A note said twice
+// becomes a red gate here rather than a message from him.
+//
+// Read only. It opens pages and hovers. Exits 1 on any drift.
+
+import { readFileSync, existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { chromium } from 'playwright'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const NOTES = join(ROOT, '.client_notes')
+const ESTATE = join(ROOT, '.estate')
+
+const C = process.stdout.isTTY
+  ? { red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', dim: '\x1b[2m', off: '\x1b[0m' }
+  : { red: '', green: '', yellow: '', dim: '', off: '' }
+
+// ── inputs ──────────────────────────────────────────────────────────────────
+
+if (!existsSync(NOTES)) {
+  // Not an error. A checkout without the client's file still has to pass, the
+  // same way check_shop_content does, or this gate cannot live in check_all.
+  console.log(`      ${C.dim}skipped — no .client_notes (see .client_notes.example)${C.off}`)
+  process.exit(0)
+}
+if (!existsSync(ESTATE)) {
+  console.log(`      ${C.dim}skipped — no .estate, so no hosts to check against${C.off}`)
+  process.exit(0)
+}
+
+// JSON with // comments, because the file is meant to be read by people and the
+// reason a value exists matters more than the value.
+const notes = JSON.parse(
+  readFileSync(NOTES, 'utf8').replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''),
+)
+const shared = notes.all || {}
+
+const hosts = new Map()
+for (const line of readFileSync(ESTATE, 'utf8').split('\n')) {
+  if (!line.trim() || line.trim().startsWith('#')) continue
+  const f = line.split('|')
+  // Live hostname first, temporary one only as a fallback. The temporary record
+  // is deleted once a shop is cut over, and reading it then fails as
+  // ERR_NAME_NOT_RESOLVED, which reads as a broken shop rather than a stale check.
+  if (f.length > 6 && f[0].trim()) hosts.set(f[0].trim(), (f[7] || '').trim().replace(/^https?:\/\//, '') || f[5].trim())
+}
+
+/** Credentials for a closed shop. Never printed, only used. Same file and same
+ *  key shape as script/shot_sections.mjs, so one place holds them. */
+function credentials(shop) {
+  const file = join(ROOT, '.shopauth')
+  if (!existsSync(file)) return null
+  const env = {}
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/)
+    if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '')
+  }
+  const key = shop.toUpperCase().replace(/[^A-Z0-9]/g, '_')
+  const email = env[`${key}_EMAIL`]
+  const password = env[`${key}_PASSWORD`]
+  return email && password ? { email, password } : null
+}
+
+const only = process.argv.slice(2)
+const shops = Object.keys(notes)
+  .filter((k) => k !== 'all')
+  .filter((k) => !only.length || only.includes(k))
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+const hex = (css) => {
+  const m = String(css).match(/[\d.]+/g)
+  if (!m) return String(css)
+  return '#' + m.slice(0, 3).map((n) => Math.round(+n).toString(16).padStart(2, '0').toUpperCase()).join('')
+}
+const norm = (h) => String(h).trim().toUpperCase().replace(/^#?/, '#')
+
+// Poll rather than sleep. Every wrong reading in this project's history came
+// from measuring a page that had not finished: a footer column that looked
+// empty, a heading with no line boxes, an image with naturalWidth 0. A fixed
+// wait is a guess about how slow the slowest shop is on the slowest day.
+const until = async (page, fn, ms = 25000) => {
+  const t = Date.now()
+  for (;;) {
+    const v = await fn().catch(() => null)
+    if (v !== null && v !== undefined && v !== false) return v
+    if (Date.now() - t > ms) return null
+    await page.waitForTimeout(250)
+  }
+}
+
+// ── the checks, one per kind of note ────────────────────────────────────────
+
+const CHECKS = {
+  async bar_bg(page, want) {
+    const got = await until(page, () => page.evaluate(() => {
+      const el = [...document.querySelectorAll('div,section,aside')].find((e) => {
+        const r = e.getBoundingClientRect()
+        return r.top === 0 && r.height > 10 && r.height < 60 && (e.textContent || '').trim().length > 4
+      })
+      return el ? getComputedStyle(el).backgroundColor : null
+    }))
+    if (!got) return 'no strip found above the header'
+    return norm(hex(got)) === norm(want) ? null : `bar background is ${hex(got)}`
+  },
+
+  async bar_text(page, want) {
+    const got = await until(page, () => page.evaluate(() => {
+      const bar = [...document.querySelectorAll('div,section,aside')].find((e) => {
+        const r = e.getBoundingClientRect()
+        return r.top === 0 && r.height > 10 && r.height < 60 && (e.textContent || '').trim().length > 4
+      })
+      if (!bar) return null
+      // The colour of the words, which is not always the strip's own `color`:
+      // the text can sit in a child that sets its own.
+      const t = [...bar.querySelectorAll('*')].find((e) => (e.textContent || '').trim().length > 4)
+      return getComputedStyle(t || bar).color
+    }))
+    if (!got) return 'no strip found above the header'
+    return norm(hex(got)) === norm(want) ? null : `bar text is ${hex(got)}`
+  },
+
+  async header_bg(page, want) {
+    const got = await page.evaluate(() => {
+      const h = document.querySelector('header')
+      return h ? getComputedStyle(h).backgroundColor : null
+    })
+    if (!got) return 'no <header>'
+    return norm(hex(got)) === norm(want) ? null : `header background is ${hex(got)}`
+  },
+
+  async header_line(page, want) {
+    const got = await page.evaluate(() => {
+      const h = document.querySelector('header')
+      if (!h) return null
+      const s = getComputedStyle(h)
+      return { w: parseFloat(s.borderBottomWidth), c: s.borderBottomColor, bg: s.backgroundColor }
+    })
+    if (!got) return 'no <header>'
+    if (!got.w) return 'the header has no bottom border at all, so there is no line'
+    if (norm(hex(got.c)) !== norm(want)) return `the line under the header is ${hex(got.c)}`
+    // The fault that shipped: the line was the right colour AND the header was
+    // filled with it, so a 1px border sat invisible inside a 64px block of
+    // itself. Right value, wrong result, and no colour check would catch it.
+    if (norm(hex(got.bg)) === norm(want))
+      return `the line is ${want} and so is the header behind it, so it cannot be seen`
+    return null
+  },
+
+  async logo_box(page, want) {
+    const [w, h] = String(want).split(/x/i).map(Number)
+    const got = await until(page, () => page.evaluate(() => {
+      const img = document.querySelector('header img')
+      if (!img || !img.complete) return null
+      const r = img.getBoundingClientRect()
+      return r.width > 1 ? { w: r.width, h: r.height } : null
+    }))
+    if (!got) return 'no logo image in the header'
+    // Half a pixel. He quotes these to two decimals off his own browser, and
+    // sub-pixel layout means an exact match is not a fair test.
+    if (Math.abs(got.w - w) > 0.5 || Math.abs(got.h - h) > 0.5)
+      return `logo draws ${got.w.toFixed(2)} x ${got.h.toFixed(2)}`
+    return null
+  },
+
+  async hero_heading_lines(page, want) {
+    const got = await until(page, () => page.evaluate(() => {
+      const h = document.querySelector('main h2, main h1')
+      if (!h) return null
+      const r = h.getBoundingClientRect()
+      if (r.height < 1) return null
+      const lh = parseFloat(getComputedStyle(h).lineHeight)
+      // Height over line-height, not the number of client rects: a rect count
+      // is inflated by inline markup, and a heading holding one <strong>
+      // reported two lines while measuring 36px tall.
+      return Number.isFinite(lh) && lh > 0 ? Math.round(r.height / lh) : null
+    }))
+    if (got === null) return 'no hero heading found, or it has no layout yet'
+    return got === want ? null : `the hero heading draws ${got} line(s)`
+  },
+
+  async card_hover(page, want) {
+    const n = await until(page, async () => {
+      const c = await page.locator('.group:has(h3)').count()
+      return c > 0 ? c : null
+    })
+    if (!n) return 'no product cards found'
+    const card = page.locator('.group:has(h3)').first()
+    const title = card.locator('h3').first()
+    // Centred, not merely "into view".
+    //
+    // scrollIntoViewIfNeeded leaves the card at the edge of the viewport, which
+    // on these shops is under the sticky header, and a hover that lands on the
+    // header is a hover on nothing. This check reported "the title does not
+    // change colour on hover, it stays #1C1D19" on a shop where hovering the
+    // same card by hand takes it to #065146, his value exactly. A gate that
+    // invents a failure on a correct page costs more than the check saves, and
+    // this is the second time this particular one has done it.
+    await title.evaluate((e) => e.closest('.group').scrollIntoView({ block: 'center' }))
+    await page.waitForTimeout(250)
+    const before = await title.evaluate((e) => getComputedStyle(e).color)
+    // Hover the GROUP, and read the title inside it. Reading the title after
+    // hovering the title is a different question, and reading an ancestor
+    // anchor is a third: the link is a descendant here, not a parent.
+    await card.hover()
+    // SETTLE, do not take the first change. These titles have a colour
+    // transition, so the first frame after the cursor lands is a blend: this
+    // check reported #0D4138 on a card that ends at #065146, and #0D4138 is
+    // simply a point on the line between the resting colour and the target.
+    // A gate that reads mid-transition invents a failure on a correct page,
+    // which costs more than the check saves.
+    // Wait for the colour to STOP moving, rather than for it to differ from
+    // where it started. The old shape needed a reading that was both different
+    // and already settled, so a transition that had not begun in the poll's
+    // window looked like a transition that never happened. This one takes the
+    // last stable value whatever it is, and the assertion below decides.
+    const got = await until(page, async () => {
+      const a = await title.evaluate((e) => getComputedStyle(e).color)
+      await page.waitForTimeout(150)
+      const b2 = await title.evaluate((e) => getComputedStyle(e).color)
+      if (a !== b2) return null
+      return a === before ? null : a
+    }, 8000)
+    await page.mouse.move(0, 0)
+    if (!got) return `the title does not change colour on hover, it stays ${hex(before)}`
+    return norm(hex(got)) === norm(want) ? null : `the title hovers to ${hex(got)}`
+  },
+
+  // ── the footer ────────────────────────────────────────────────────────────
+  //
+  // These four exist because of 24 Aug. `git checkout --` on Footer.tsx, to undo
+  // one small edit of my own, restored the file from the INDEX and threw away
+  // every unstaged change in it: the whole livery conversion and the policy
+  // order fix, weeks old. Two shops were rebuilt from it within the hour.
+  //
+  // Nothing noticed. The theme still applied, the header was right, the hero was
+  // right, and the gate above passed 8 of 8, because none of it looked at the
+  // footer. He noticed, from a screenshot: "why has the bottom gone back to the
+  // standard shop colours?"
+  //
+  // A gate that covers the top of the page and not the bottom is a gate that
+  // says a shop is correct when a third of it has reverted.
+
+  async footer_surface(page, want) {
+    const got = await until(page, () => page.evaluate(() => {
+      const f = document.querySelector('footer')
+      if (!f) return null
+      f.scrollIntoView()
+      return getComputedStyle(f).backgroundColor
+    }))
+    if (!got) return 'no <footer>'
+    return norm(hex(got)) === norm(want) ? null : `the footer is ${hex(got)}`
+  },
+
+  async footer_bar(page, want) {
+    const got = await until(page, () => page.evaluate(() => {
+      const f = document.querySelector('footer')
+      if (!f) return null
+      f.scrollIntoView()
+      // The last thing inside the footer carrying a background of its own: the
+      // copyright strip. Read by position rather than by class, so it survives
+      // the markup being reorganised.
+      const bands = [...f.querySelectorAll('*')].filter((e) => {
+        const cs = getComputedStyle(e)
+        return cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && e.getBoundingClientRect().height > 20
+      })
+      return bands.length ? getComputedStyle(bands[bands.length - 1]).backgroundColor : null
+    }))
+    if (!got) return 'the footer has no strip along the bottom'
+    return norm(hex(got)) === norm(want) ? null : `the strip under the footer is ${hex(got)}`
+  },
+
+  async footer_policies(page, want) {
+    // Stems, in his order. Matched as stems because his shops spell two of them
+    // differently and both spellings are his own data.
+    const wanted = String(want).split(',').map((s) => s.trim().toLowerCase())
+    const got = await until(page, () => page.evaluate(() => {
+      const f = document.querySelector('footer')
+      if (!f) return null
+      f.scrollIntoView()
+      const h = [...f.querySelectorAll('h3')].find((x) => /Terms|Policies/i.test(x.textContent || ''))
+      if (!h) return null
+      const a = [...h.parentElement.querySelectorAll('a')]
+      return a.length ? a.map((x) => (x.getAttribute('href') || '').split('/').pop()) : null
+    }))
+    if (!got) return 'no policy column found in the footer'
+    const rank = got.map((slug) => {
+      const i = wanted.findIndex((stem) => slug.startsWith(stem))
+      return i === -1 ? `?${slug}` : i
+    })
+    const sorted = rank.every((v, i) => i === 0 || (typeof v === 'number' && typeof rank[i - 1] === 'number' && v > rank[i - 1]))
+    if (!sorted) return `the policy column reads ${got.join(', ')}`
+    return null
+  },
+
+  async footer_absent(page, want) {
+    // Link labels that must NOT be in the footer. His Final List removed the
+    // Subscribe link from five shops and the sixth never had the page, and a
+    // reverted build put it back on two of them.
+    const banned = String(want).split(',').map((s) => s.trim().toLowerCase())
+    const got = await until(page, () => page.evaluate(() => {
+      const f = document.querySelector('footer')
+      if (!f) return null
+      f.scrollIntoView()
+      const a = [...f.querySelectorAll('a')]
+      return a.length ? a.map((x) => (x.textContent || '').trim()) : null
+    }))
+    if (!got) return 'no links in the footer'
+    const found = banned.filter((b) => got.some((label) => label.toLowerCase() === b))
+    return found.length ? `the footer still links to ${found.join(', ')}` : null
+  },
+
+  async section_image(page, want) {
+    const rules = String(want).split(',').map((s) => s.trim())
+    const got = await until(page, () => page.evaluate(async () => {
+      const h = [...document.querySelectorAll('h2')].find((x) => /^About /i.test((x.textContent || '').trim()))
+      if (!h) return 'none'
+      const sect = h.closest('section')
+      sect.scrollIntoView()
+      await new Promise((r) => setTimeout(r, 600))
+      const img = sect.querySelector('img')
+      if (!img) return 'none'
+      try { await img.decode() } catch {}
+      if (!img.naturalWidth) return null
+      const r = img.getBoundingClientRect()
+      const fit = getComputedStyle(img).objectFit
+      const s = fit === 'contain'
+        ? Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight)
+        : Math.max(r.width / img.naturalWidth, r.height / img.naturalHeight)
+      return {
+        fit,
+        scale: s,
+        cropW: 1 - Math.min(1, r.width / s / img.naturalWidth),
+        cropH: 1 - Math.min(1, r.height / s / img.naturalHeight),
+        file: `${img.naturalWidth}x${img.naturalHeight}`,
+        box: `${Math.round(r.width)}x${Math.round(r.height)}`,
+      }
+    }))
+    if (got === 'none') return null // no such section on this shop, not a fault
+    if (!got) return 'the section image never decoded'
+    const bad = []
+    // 1% of tolerance, so a sub-pixel box does not read as a crop.
+    if (rules.includes('no-crop') && (got.cropW > 0.01 || got.cropH > 0.01))
+      bad.push(`cropped ${(100 * got.cropW).toFixed(1)}% across and ${(100 * got.cropH).toFixed(1)}% down`)
+    if (rules.includes('no-enlarge') && got.scale > 1.01)
+      bad.push(`enlarged ${got.scale.toFixed(2)}x past the ${got.file} file`)
+    return bad.length ? `${bad.join(', ')} (box ${got.box}, fit ${got.fit})` : null
+  },
+}
+
+// ── run ─────────────────────────────────────────────────────────────────────
+
+let failures = 0
+let checked = 0
+const browser = await chromium.launch()
+
+for (const shop of shops) {
+  const host = hosts.get(shop)
+  if (!host) {
+    console.log(`      ${C.yellow}${shop}${C.off} — no row in .estate, skipped`)
+    continue
+  }
+  const want = { ...shared, ...notes[shop] }
+  const ctx = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 1000 } })
+  const page = await ctx.newPage()
+  const lines = []
+  try {
+    await page.goto(`https://${host}/`, { waitUntil: 'domcontentloaded', timeout: 60000 })
+
+    // A closed shop shows the sign-in page instead of its home page, and every
+    // check below then measures the wrong page: the first run of this reported
+    // "no strip found above the header" on a shop whose strip is perfectly
+    // fine, it is just behind a login. Reading a sign-in page as a home page is
+    // how a whole shop went unlooked-at for a week once already.
+    // Poll for it. The sign-in form is a client component, so at
+    // domcontentloaded there is no password field yet and this test read 0 on a
+    // page that has one. It then measured the sign-in screen as though it were
+    // the home page and reported the shop's own colours missing.
+    //
+    // Either answer ends the wait: a password field means gated, an
+    // announcement strip means the real page arrived.
+    const gated = await until(page, async () => {
+      if (await page.locator('input[type="password"]').count()) return 'gated'
+      const bar = await page.evaluate(() => [...document.querySelectorAll('div,section,aside')].some((e) => {
+        const r = e.getBoundingClientRect()
+        return r.top === 0 && r.height > 10 && r.height < 60 && (e.textContent || '').trim().length > 4
+      }))
+      return bar ? 'open' : null
+    }, 15000)
+    if (gated === 'gated') {
+      const creds = credentials(shop)
+      if (!creds) {
+        console.log(`      ${C.yellow}${shop}${C.off} — behind a login and no credentials in .shopauth, skipped`)
+        await ctx.close()
+        continue
+      }
+      await page.fill('input[type="email"], input[name="email"]', creds.email)
+      await page.fill('input[type="password"], input[name="password"]', creds.password)
+      await page.press('input[type="password"]', 'Enter')
+      await page.waitForLoadState('domcontentloaded').catch(() => {})
+      await page.waitForTimeout(1500)
+      // Proved, not assumed. A failed sign in re-renders the same form with an
+      // error, and carrying on from there measures the login screen.
+      if (await page.locator('input[type="password"]').count()) {
+        failures++
+        lines.push(['', 'sign in did not take, so nothing below could be measured', false])
+        throw new Error('__handled__')
+      }
+      await page.goto(`https://${host}/`, { waitUntil: 'domcontentloaded', timeout: 60000 })
+    }
+    for (const [key, spec] of Object.entries(want)) {
+      const check = CHECKS[key]
+      if (!check) { lines.push([`${key}`, `no check knows how to verify this`, false]); failures++; continue }
+      const value = spec && typeof spec === 'object' ? spec.value : spec
+      const said = spec && typeof spec === 'object' ? spec.said : null
+      const problem = await check(page, value)
+      checked++
+      if (problem) {
+        failures++
+        lines.push([key, `wants ${JSON.stringify(value)}${said ? `, said ${said}` : ''} — ${problem}`, false])
+        if (spec?.note) lines.push(['', `his words: ${spec.note}`, null])
+      } else {
+        lines.push([key, `${JSON.stringify(value)}`, true])
+      }
+    }
+  } catch (e) {
+    if (e.message !== '__handled__') {
+      failures++
+      lines.push(['', `could not load the page: ${e.message.split('\n')[0]}`, false])
+    }
+  }
+  await ctx.close()
+
+  console.log(`      ${shop}`)
+  for (const [key, msg, ok] of lines) {
+    const mark = ok === null ? ' ' : ok ? `${C.green}ok${C.off}` : `${C.red}!!${C.off}`
+    console.log(`        ${mark} ${key.padEnd(20)} ${msg}`)
+  }
+}
+
+await browser.close()
+
+if (failures) {
+  console.log(`\n      ${C.red}${failures} of his stated values do not hold${C.off}`)
+  console.log('      Each one is something he already said once. Fix the page, or if he')
+  console.log('      changed his mind, change .client_notes and put the new date on it.')
+  process.exit(1)
+}
+console.log(`      ${C.green}ok${C.off} — ${checked} stated value(s) hold across ${shops.length} shop(s)`)

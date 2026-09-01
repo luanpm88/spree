@@ -18,9 +18,17 @@
 # `git archive`. Correct sentence, wrong deploy path. A comment cannot catch that. This
 # can.
 #
-# The rule: a file under app/ or config/ that git ignores is a file the running
-# application will look for and not find. Either it is in CLIENT_ASSETS, or it is not
-# needed and should not be on disk.
+# The rule: a file under app/, config/, storefront/src or storefront/public that git
+# ignores is a file the running application will look for and not find. Either it is
+# in CLIENT_ASSETS, or it is not needed and should not be on disk.
+#
+# storefront/src was added on 14 Aug, when the page copy moved into a gitignored
+# module there. The Rails side had been guarded since the inflections incident;
+# the storefront had the identical hole and nobody had looked.
+#
+# storefront/public followed on 17 Aug, when his logo, favicons and social cards
+# arrived. Those fail differently from the copy and worse: a missing module stops
+# the build, a missing image builds fine and ships a shop with no logo.
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
@@ -67,11 +75,11 @@ while IFS= read -r f; do
     missing=$((missing + 1))
     printf '  %s\n' "$f"
   fi
-done <<< "$(git ls-files --others --ignored --exclude-standard -- app config 2>/dev/null)"
+done <<< "$(git ls-files --others --ignored --exclude-standard -- app config storefront/src storefront/public 2>/dev/null)"
 
 echo ''
 if [ "$missing" -eq 0 ]; then
-  echo "ok — $checked ignored files under app/ and config/, all carried by the deploy"
+  echo "ok — $checked ignored files under app/, config/ and storefront/, all carried by the deploy"
   exit 0
 fi
 

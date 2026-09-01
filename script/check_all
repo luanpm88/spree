@@ -1,0 +1,334 @@
+#!/usr/bin/env bash
+#
+# Every gate this repository has, in one command.
+#
+#   script/check_all                     the static gates, always safe to run
+#   script/check_all https://host ca en  those, plus a browser walk of that shop
+#
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# There are fifteen check scripts in script/ and no single door. Which ones apply
+# to a given change was carried in someone's head, and on 17 Aug that produced a
+# near miss: a new file went past the client-data scanner clean because the
+# scanner read only what git already tracked, and the person running it did not
+# think to check what else applied.
+#
+# A checklist written in prose gets skipped. A command that exits non-zero does
+# not, so the checklist is this file, and the docs point here rather than listing
+# steps that drift.
+#
+# ── what runs ────────────────────────────────────────────────────────────────
+#
+# Static gates run always: they are fast, need nothing running, and each one
+# guards a failure that has already happened once on this project.
+#
+# The browser walk needs a deployed shop, so it runs only when given a host. It
+# is the one that catches what markup cannot: a shop that renders perfectly and
+# cannot take an order.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+HOST="${1:-}"
+COUNTRY="${2:-}"
+LOCALE="${3:-en}"
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_BLD=$'\e[1m'; C_OFF=$'\e[0m'
+failed=0
+skipped=0
+
+run() {
+  local name="$1"; shift
+  printf '\n%s──%s %s\n' "$C_BLD" "$C_OFF" "$name"
+  if ! "$@" 2>&1 | sed 's/^/    /'; then
+    printf '  %sFAILED%s  %s\n' "$C_RED" "$C_OFF" "$name"
+    failed=$((failed + 1))
+    return 1
+  fi
+  # The pipe hides the exit status, so ask the pipeline directly.
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    printf '  %sFAILED%s  %s\n' "$C_RED" "$C_OFF" "$name"
+    failed=$((failed + 1))
+  fi
+}
+
+skip() {
+  printf '\n%s──%s %s\n    %sskipped: %s%s\n' "$C_BLD" "$C_OFF" "$1" "$C_DIM" "$2" "$C_OFF"
+  skipped=$((skipped + 1))
+}
+
+# ── static gates ────────────────────────────────────────────────────────────
+
+# Nothing in this repository may name the client: it is public. Reads tracked
+# files AND new ones, because a file is most dangerous in the minutes before it
+# is committed.
+run "no client data in the repository" script/check_no_client_data
+
+# A gitignored file the app loads is a file the deploy leaves behind. This has
+# taken the backend down once and failed a storefront build twice.
+run "gitignored files the app needs are carried" script/check_deploy_assets
+
+# An undeclared ARG is silently dropped by Docker, so the storefront builds
+# without the value and says nothing.
+if [ -f script/check_storefront_args.sh ]; then
+  run "storefront build args are declared" bash script/check_storefront_args.sh
+fi
+
+# A bold run or a link that is not closed prints its own markers to a customer.
+# It happens because the copy is pulled off the client's live pages, so a line
+# break inside a link label arrives as a paragraph break and splits the marker in
+# two. Four of them shipped; he found one and sent a screenshot of it.
+if [ -f script/check_copy_markup ]; then
+  run "page copy markup is closed" script/check_copy_markup
+fi
+
+# A shop with no entry of its own does not fail and does not render an empty
+# page. It renders another shop's page, wording and all. Three shops shipped that
+# way and one told customers a tax they do not pay had been pre-paid for them.
+if [ -f script/check_shop_content ]; then
+  run "every shop has its own copy" script/check_shop_content
+fi
+
+# The other direction of the same failure, and the one that reached the client. A
+# shop CAN have copy of its own and have it be another shop's: five pages written
+# for one shop were filed under another shop's key, and he found them in his own
+# footer. Their SEO titles named the shop they belonged to the whole time, and
+# nothing read them. It also catches one shop embedding another shop's booking
+# calendar, which the same morning produced.
+if [ -f script/check_shop_brand_drift ]; then
+  run "no shop's copy names another shop's brand" node script/check_shop_brand_drift
+fi
+
+# The same failure on the email side, and worse because it leaves the building.
+# A shop with no locale file of its own does not error and does not send a blank
+# email: it sends the shared file, which is another of his brands. Four of five
+# shops did, and every order confirmation, welcome, shipping notice and
+# cancellation they sent said so. Nothing failed and nothing logged.
+if [ -f script/check_shop_locales ]; then
+  run "every shop has its own email wording" script/check_shop_locales
+fi
+
+# The gate above reads this repository, where the file is usually perfect. It
+# cannot see that a copy to the server failed and reported success: `ssh -n`
+# attaches /dev/null to stdin, so a piped file arrives empty, and docker cp
+# writes that empty file over the shop's whole vocabulary without a word. This
+# one asks each container what it is actually holding.
+if [ -f script/check_locale_drift ]; then
+  run "shops are running the wording in this repo" script/check_locale_drift
+fi
+
+# Two shops wear a theme of their own now, and both ways of getting one wrong are
+# invisible: a token override that @theme inline has already made inert, and a
+# generated rule with a doubled brace that the CSS parser drops without a word.
+# The second one shipped 88 times and the measurement afterwards was byte for
+# byte the measurement before, which is what sent the search off in the wrong
+# direction for an hour.
+if [ -f script/check_theme_css ]; then
+  run "per-shop themes reach the utilities, not just the tokens" script/check_theme_css
+fi
+
+# The deploy sends `git ls-files`. A new controller, partial or rake task that is
+# not tracked never reaches the server, and the failure appears at runtime as a
+# missing constant or a missing partial. Three times in one afternoon.
+if [ -f script/check_untracked_source ]; then
+  run "source the deploy would carry is tracked" script/check_untracked_source
+fi
+
+# The publishable key is generated, not configured, and reloading a shop's
+# database from his dump mints a new one. The storefront's copy is baked in at
+# build time, so a reload silently invalidates the storefront built for it: every
+# page answers 200 and renders an empty shell. Happened to au on 30 Aug, twenty
+# minutes after the shop was reported cut over.
+if [ -f script/check_storefront_key ]; then
+  run "each storefront holds a key its database accepts" script/check_storefront_key
+fi
+
+# The old shop had a message box at checkout and the new one did not, and nobody
+# noticed until a customer wanted it. The shop owner asked for it back on every
+# shop and asked that it stay a requirement, so it is a gate rather than a note:
+# it opens a checkout, types into the box, reloads and reads it back.
+if [ -f script/check_note_box ]; then
+  run "every checkout has a message box that saves" script/check_note_box
+fi
+
+# A product in a shipping category no live method serves cannot be bought. The
+# page renders, the price is right, it goes in the cart, and at the delivery step
+# the customer is offered nothing. Found on two shops in one day, both times by
+# accident, both times with zero sales ever against a shop selling hundreds.
+if [ -f script/check_sellable ]; then
+  run "no product is stranded in a category nothing ships" script/check_sellable
+fi
+
+# His freight tables are his own classes and they declare defaults. A calculator
+# row created fresh rather than carried across takes those defaults, and his own
+# numbers are left behind on a row nothing points at. au quoted 6.79 where his
+# settings say 5.71, for five days, and every check passed because a wrong price
+# is still a price.
+if [ -f script/check_shipping_config ]; then
+  run "shipping quotes from his numbers, not from defaults" script/check_shipping_config
+fi
+
+# The mail header picks between an uploaded attachment and a url the shop names
+# in its own locale file, and which one wins is a branch order. The order was
+# corrected on one shop and the other six kept the old one for a week, so three
+# different shops were mailing the SAME logo while each had its own on file.
+#
+# The check that missed it grepped the template for "if fallback", which is a
+# substring of "elsif fallback", so the old order matched the test for the new
+# one and all seven reported green. This builds the real mail and reads the img
+# the customer receives, because a fragment cannot tell an order from its reverse.
+if [ -f script/check_email_logo ]; then
+  run "every shop mails its own logo, none shared" script/check_email_logo
+fi
+
+# Markdown for a caller that asks for it.
+#
+# The rule was Rack middleware and only rewrote text/html responses. On 5.6 Rails
+# serves no shop pages, so it had nothing to act on: it stopped applying without
+# erroring and stayed that way through seven cutovers, until he found it himself
+# while checking AI readiness. This asks for both representations of the same page,
+# because a shop that answers markdown to everything is as wrong as one that
+# answers html to everything.
+if [ -f script/check_markdown_negotiation ]; then
+  run "every shop serves markdown when asked for it" script/check_markdown_negotiation
+fi
+
+# The picture a shop shows when somebody shares a link.
+#
+# He found this one himself, on the seventh shop: six shops showed a card he had
+# made and the seventh was still on the 7 KB placeholder the Spree starter ships.
+# Nothing was broken in a way any other check could see. The tag was present, the
+# file answered 200, the page rendered. It was simply not his picture, and the
+# only place that shows is a link pasted into a message.
+if [ -f script/check_social_image ]; then
+  run "every shop shows its own picture when a link is shared" script/check_social_image
+fi
+
+# Every content page of every shop, asked at its live hostname.
+#
+# On 28 Aug four live shops answered 500 on /contact, every policy page and every
+# category page for about an hour, and nothing here noticed: the browser walk only
+# opens the home page, a category row and a product, and all three were served
+# from prerender that had not expired. The cause was a storefront built before its
+# shop was cut over, so the API hostname inside it no longer resolved.
+if [ -f script/check_content_pages ]; then
+  run "every shop's content pages answer" script/check_content_pages
+fi
+
+# Shipping an image is not deploying it.
+#
+# `ship` builds spree-estate:latest on the server and stops there. Nothing in it
+# restarts a container, so a fix can be written, shipped, and verified on the two
+# containers that happened to be recreated by hand, while five shops keep serving
+# the old code. That is exactly what happened on 27 Aug: the image fix for blank
+# product photographs had been shipped days earlier and one of his live shops was
+# still showing grey boxes.
+if [ -f script/check_containers_current ]; then
+  run "every shop container runs the image that was last built" script/check_containers_current
+fi
+
+# Every value he has stated, asserted against the live pages, all shops at once.
+#
+# This one is not about code being correct, it is about a number staying put. He
+# reviews by drawing an arrow on a screenshot and writing the value beside it,
+# and four of those values had been applied once and then quietly lost: to a
+# rebuild, to a theme token copied from the shop next door, to generated CSS that
+# outranked the rule it was meant to help. Nothing noticed, so he noticed, and
+# said it a second time.
+#
+# It needs the shops running, so it is last of the static gates and skips itself
+# when .client_notes or .estate is absent.
+if [ -f script/check_client_notes ]; then
+  run "every value the client has stated still holds" script/check_client_notes
+fi
+
+# The two questions only the running shop can answer: does every email build with
+# this shop's own words in it, and can the shop quote delivery for what it sells.
+#
+# Both were rake tasks run by hand when somebody remembered. shipping:smoke was
+# written on 24 August, run on three shops, and then nothing ran it again. It is
+# the check that found a shop which rendered perfectly, passed a 28 assertion
+# browser walk including add to cart, and could not take an order.
+if [ -f script/check_shop_runtime ]; then
+  run "every shop can send its emails and quote its delivery" script/check_shop_runtime
+fi
+
+# The plan is the source of truth and PLAN.md is generated from it. A stale
+# render means the next person reads yesterday.
+if [ -f docs/plan.json ]; then
+  run "plan is valid and rendered" script/plan check
+else
+  skip "plan is valid and rendered" "docs/plan.json is not on this machine"
+fi
+
+# ── the two gates that read the running estate, whatever host was passed ────
+#
+# Both of these read every shop in .estate rather than the one host on the
+# command line, because both faults they exist for are estate-wide and appeared
+# on a shop nobody was looking at.
+#
+# They are here and not in the section below because neither needs a country or
+# a locale, and neither cares whether the shop is gated: check_about_panel signs
+# itself in, and check_image_optimizer reads an asset URL that no login covers.
+
+# Every URL in each shop's llms files, called. A wrong link there fails in
+# complete silence: the file answers 200, reads perfectly, and nothing renders
+# it. The pair deployed before 26 August had one 404 in it for weeks.
+if [ -d tmp/client/shop_public ] && [ -f script/check_llms_urls ]; then
+  run "every llms URL resolves on the shop it describes" script/check_llms_urls
+else
+  skip "every llms URL resolves on the shop it describes" "no staged public files on this machine"
+fi
+
+# His own documents against the copy that was built from them. Needs the source
+# documents, which live in tmp/client and never leave this machine, so it skips
+# rather than fails where they are absent.
+if [ -d tmp/client ] && [ -f script/check_page_copy ]; then
+  run "every line he wrote is on the page" script/check_page_copy
+else
+  skip "every line he wrote is on the page" "his source documents are not on this machine"
+fi
+
+if [ -f .estate ] && [ -f script/check_about_panel ]; then
+  run "the About photograph fills its panel at every width" script/check_about_panel
+else
+  skip "the About photograph fills its panel at every width" "no .estate on this machine"
+fi
+
+if [ -f .estate ] && [ -f script/check_image_optimizer ]; then
+  run "images are resized before they are sent" script/check_image_optimizer
+else
+  skip "images are resized before they are sent" "no .estate on this machine"
+fi
+
+# ── the gate that needs a running shop ──────────────────────────────────────
+
+if [ -n "$HOST" ]; then
+  if [ -z "$COUNTRY" ]; then
+    printf '\n  %susage: script/check_all <https://host> <country> [locale]%s\n' "$C_YEL" "$C_OFF"
+    exit 2
+  fi
+  # Which of the two applies depends on whether this shop is closed, and the two
+  # are opposites: the browser walk shops as a visitor with no account, so on a
+  # correctly gated shop it fails on the first page. Running it anyway would
+  # make a green check_all evidence that the gate is OFF, and the quickest way
+  # to get a red one green again would be to turn the gate off.
+  if [ -f config/gated_shops ] && grep -qE "^${COUNTRY}([[:space:]]|$)" config/gated_shops 2>/dev/null; then
+    run "closed shop stays closed: $HOST" node script/check_shop_gate.mjs "$HOST" "$COUNTRY" "$LOCALE"
+  else
+    run "browser walk of $HOST" node script/check_storefront_e2e.mjs "$HOST" "$COUNTRY" "$LOCALE"
+  fi
+else
+  skip "browser walk of a deployed shop" "pass a host to run it: script/check_all https://host ca"
+fi
+
+# ── result ──────────────────────────────────────────────────────────────────
+
+printf '\n%s' "$C_BLD"
+if [ "$failed" -eq 0 ]; then
+  printf '%sok%s  every gate passed' "$C_GRN" "$C_OFF"
+  [ "$skipped" -gt 0 ] && printf ', %d skipped' "$skipped"
+  printf '%s\n' "$C_OFF"
+  exit 0
+fi
+printf '%s%d gate(s) failed%s\n' "$C_RED" "$failed" "$C_OFF"
+exit 1

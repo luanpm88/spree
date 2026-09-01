@@ -182,7 +182,9 @@
     "properties": "Proprietes",
     "yes": "Oui",
     "no": "Non",
-    "optionFilterChip": "{filter} : {value}"
+    "optionFilterChip": "{filter} : {value}",
+    "reviewsHeading": "Avis clients",
+    "reviewsCount": "({count, plural, one {# avis} other {# avis}})"
   },
   "navigation": {
     "home": "Accueil",
@@ -261,7 +263,13 @@
     "policyConsentRequired": "Vous devez accepter les politiques du magasin avant de passer votre commande",
     "iAgreeToThe": "J'accepte les",
     "policySeparatorComma": ", ",
-    "policySeparatorAnd": " et "
+    "policySeparatorAnd": " et ",
+    "noteTitle": "Notes de commande",
+    "noteHint": "Tout ce que nous devrions savoir sur cette commande ou la livraison.",
+    "notePlaceholder": "Par exemple : appeler avant d'arriver, ou laisser chez un voisin",
+    "noteSaving": "Enregistrement…",
+    "noteSaved": "Enregistré",
+    "noteNotSaved": "Nous n'avons pas pu enregistrer votre note. Votre commande n'est pas affectée."
   },
   "address": {
     "firstName": "Prenom",

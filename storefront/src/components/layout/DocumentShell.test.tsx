@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DocumentShell } from "./DocumentShell";
 
 vi.mock("next/font/google", () => ({
-  Geist: () => ({ variable: "--font-geist" }),
+  Roboto: () => ({ variable: "--font-roboto" }),
 }));
 
 vi.mock("@next/third-parties/google", () => ({

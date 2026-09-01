@@ -107,6 +107,28 @@ Rails.application.config.after_initialize do
     Spree::PermissionSets::UserManagement
   ])
 
+  # :sales, viết đúng tên role mà khách đã tự tạo trong shop của ông ấy.
+  #
+  # Shop của ông ấy có sẵn một Spree::Role tên "Sales" từ 30/5/2025, và ông ấy
+  # nói "nothing worked for Sales". Đúng như vậy, và không phải lỗi cấu hình:
+  # spree_roles chỉ có mỗi cột name, quyền nằm hoàn toàn trong file này, và
+  # không dòng nào đăng ký cho :sales. Một role không có bộ quyền nào thì đăng
+  # nhập được mà không thấy gì — im lặng, không báo lỗi.
+  #
+  # Đặt tên :sales chứ không phải :Sales vì Spree chuẩn hoá tên role về symbol
+  # viết thường, nên "Sales" trong database khớp với :sales ở đây.
+  #
+  # Quyền chọn theo nghĩa "bán hàng bán lẻ": xử lý đơn, xem khách, xem hàng và
+  # tồn kho. Không sửa giá, không sửa khuyến mãi, không đụng cấu hình, không tự
+  # cấp quyền. Khác :sales_b2b ở chỗ b2b cần UserManagement để gán nhóm khách.
+  Spree.permissions.assign(:sales, [
+    Spree::PermissionSets::DashboardDisplay,
+    Spree::PermissionSets::OrderManagement,
+    Spree::PermissionSets::ProductDisplay,
+    Spree::PermissionSets::StockDisplay,
+    Spree::PermissionSets::UserDisplay
+  ])
+
   # CSKH — chỉ đọc. Trả lời khách mà không sửa được gì.
   Spree.permissions.assign(:support, [
     Spree::PermissionSets::DashboardDisplay,

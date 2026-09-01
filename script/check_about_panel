@@ -1,0 +1,409 @@
+#!/usr/bin/env node
+// The About panel photograph, on every shop, at every width he might open.
+//
+//   script/check_about_panel                       every shop in .estate
+//   script/check_about_panel https://host [...]    just these
+//
+// ── the failure this exists for ──────────────────────────────────────────────
+//
+// One component draws this panel on all seven shops. The photograph keeps its
+// own shape, and the panel is as tall as the TEXT column beside it, so whenever
+// the text is taller than the picture the difference shows as a band of panel
+// colour. He has boxed that band and written "No space" beside it twice, and
+// both times it was read as a complaint about margins and answered with a
+// margin change.
+//
+// It is not a margin. It is arithmetic, and it moves with the viewport width:
+// the picture's height is (panel width / 3) / its own aspect ratio, while the
+// text's height is whatever the copy wraps to. Measured on 25 August, before
+// anything was changed:
+//
+//      768px    the five 351px band     the sixth 635px band
+//     1024px    the five 148px band     the sixth 427px band
+//     1280px    the five exact          the sixth 270px band
+//     1440px    the five exact          the sixth 205px band
+//     1600px    the five exact          the sixth 141px band
+//     1920px    the five exact          the sixth  10px band
+//
+// Every check before this one read the panel at one width, 1600 or whatever the
+// laptop happened to be, and at one width five of the shops look perfect. That
+// is why the band survived three rounds of review: the measurement was right
+// and it was taken in the one place the fault does not appear.
+//
+// ── what it asserts ──────────────────────────────────────────────────────────
+//
+// At each width, the drawn photograph must fill its box: no band of panel
+// colour wider than 2px, and nothing cropped off the artwork beyond BAND_FREE
+// below. The crop ceiling is generous on purpose. His About artwork has WORDS
+// burned into it, and on the sixth shop's file they occupy x 164..523 of 648, so a
+// crop only reaches them past 49% of the width. Anything over 15% means the
+// layout has drifted far enough to be looked at by a person.
+//
+// It reads the rendered element, not the source: object-fit, the box the
+// browser gave it, and the file the browser actually fetched. A change to the
+// component, to a shop's copy length, or to one of his photographs all show up
+// here, which is the point.
+
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// 390 is his phone, 768 and 1024 are the tablet widths where the band was
+// worst, and 1959 is the screen he reviews on. The rest are the common laptop
+// and desktop widths in between.
+const WIDTHS = [390, 768, 1024, 1280, 1440, 1600, 1920, 1959];
+
+const BAND_FREE = 2; // px of panel colour that may show. 2 absorbs rounding.
+const CROP_CEILING = 15; // % of the artwork that may be cut before this fails.
+
+const C = process.stdout.isTTY
+  ? { dim: "\x1b[2m", red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", off: "\x1b[0m" }
+  : { dim: "", red: "", green: "", yellow: "", off: "" };
+
+/** Credentials for a gated shop. Never printed, only used. */
+function credentials(shop) {
+  const file = join(ROOT, ".shopauth");
+  if (!existsSync(file)) return null;
+  const env = {};
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/);
+    if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
+  }
+  const key = shop.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  const email = env[`${key}_EMAIL`];
+  const password = env[`${key}_PASSWORD`];
+  return email && password ? { email, password } : null;
+}
+
+/**
+ * The shops and their storefront hostnames.
+ *
+ * Read from .estate, which is gitignored because it names his domains. The
+ * column that serves customers is NOT the one the header calls "storefront":
+ * measured on 25 August, one shop's two hostnames are the other way round from
+ * what the heading implies, and the one named for the store 301s to /admin. So
+ * the hostname is confirmed by fetching it, never by trusting the heading.
+ */
+function shopsFromEstate() {
+  const file = join(ROOT, ".estate");
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter((l) => l.includes("|") && !l.trimStart().startsWith("#"))
+    .map((l) => l.split("|").map((c) => c.trim()))
+    .filter((c) => c.length >= 7 && (c[7] || c[5]))
+    // Column 8 when it is there, column 6 otherwise.
+    .map((c) => ({ shop: c[0], host: (c[7] || `https://${c[5]}`).replace(/^(?!https?:)/, "https://") }));
+}
+
+async function signIn(page, host, creds) {
+  // Wherever the shop bounced to, not a guessed path. One of these shops sends
+  // an anonymous visitor to /account?redirect=%2F and renders the form after
+  // hydration, so both the path and the wait have to come from the page.
+  if (!/account|login|sign/i.test(page.url())) {
+    await page.goto(`${host}/account`, { waitUntil: "domcontentloaded", timeout: 90000 });
+  }
+  const field = page.locator('input[type="password"]');
+  await field.first().waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+  if ((await field.count()) === 0) return true; // not gated after all
+  await page.fill('input[type="email"], input[name="email"]', creds.email);
+  await page.fill('input[type="password"]', creds.password);
+  await page.locator('button[type="submit"], input[type="submit"]').first().click();
+  await page.waitForLoadState("domcontentloaded");
+  await page.waitForTimeout(2500);
+  return (await page.locator('input[type="password"]').count()) === 0;
+}
+
+/** The panel, as the browser drew it. Reads attributes, never a picture. */
+async function measure(page) {
+  return page.evaluate(() => {
+    const img = [...document.querySelectorAll("img")].find((i) =>
+      /about/i.test(i.currentSrc || i.src),
+    );
+    if (!img) return null;
+    const b = img.getBoundingClientRect();
+    const section = img.closest("section");
+    return {
+      src: decodeURIComponent(img.currentSrc || img.src).split("/").pop(),
+      bw: Math.round(b.width),
+      bh: Math.round(b.height),
+      nw: img.naturalWidth,
+      nh: img.naturalHeight,
+      fit: getComputedStyle(img).objectFit,
+      panelBg: section ? getComputedStyle(section).backgroundColor : null,
+    };
+  });
+}
+
+const argHosts = process.argv.slice(2).filter((a) => a.startsWith("http"));
+const targets = argHosts.length
+  ? argHosts.map((h) => ({ shop: h.replace(/^https?:\/\//, "").split(".")[0], host: h }))
+  : shopsFromEstate();
+
+if (!targets.length) {
+  console.error("  no shops to check: pass hostnames, or add an .estate file");
+  process.exit(2);
+}
+
+const browser = await chromium.launch();
+let failures = 0;
+let skipped = 0;
+
+for (const { shop, host } of targets) {
+  console.log(`\n  ${shop}  ${C.dim}${host.replace(/^https?:\/\//, "")}${C.off}`);
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+
+  try {
+    await page.goto(host, { waitUntil: "domcontentloaded", timeout: 90000 });
+    // A gated shop bounces to its sign-in, and a sign-in page has no About
+    // panel. Reporting that as "no band found" would be a check that passes by
+    // measuring nothing, which is the failure this project keeps repeating.
+    await page.waitForTimeout(1500);
+    const gated =
+      /sign_?in|login|\/account(\?|$)/i.test(page.url()) ||
+      (await page.locator('input[type="password"]').count()) > 0;
+    if (gated) {
+      const creds = credentials(shop);
+      if (!creds) {
+        console.log(`    ${C.yellow}gated, and no ${shop.toUpperCase()}_EMAIL in .shopauth. NOT CHECKED${C.off}`);
+        skipped += 1;
+        continue;
+      }
+      if (!(await signIn(page, host, creds))) {
+        console.log(`    ${C.red}gated, and the sign-in did not take. NOT CHECKED${C.off}`);
+        failures += 1;
+        continue;
+      }
+    }
+
+    // The signed-in state, kept, so the gated shop is measured at every width
+    // rather than only at the one where the sign-in happened.
+    const state = await context.storageState();
+    await page.close();
+
+    let measured = 0;
+    for (const width of WIDTHS) {
+      // A FRESH page per width, not one page resized.
+      //
+      // Resizing makes the srcset choose a different candidate, and while that
+      // one loads the browser keeps showing the previous decode. Reading
+      // naturalWidth then returns a size that belongs to neither: this probe
+      // reported a 648 x 756 photograph as 507 x 591 and as 388 x 453 on five
+      // shops, and reported "not decoded" on three more, purely from that race.
+      // A new page has nothing stale to show.
+      const wctx = await browser.newContext({ viewport: { width, height: 1000 }, storageState: state });
+      const page = await wctx.newPage();
+      // Note when the request for the photograph itself has finished, so the
+      // measurement waits on that response and not on a timer.
+      let arrived = false;
+      page.on("requestfinished", (req) => {
+        if (/about/i.test(req.url()) && req.resourceType() === "image") arrived = true;
+      });
+      try {
+      await page.goto(host, { waitUntil: "load", timeout: 90000 });
+      // The element first. Walking a page that has not rendered its About
+      // section yet scrolls past nothing, and the run then reports "no About
+      // photograph on the home page" for a shop that has one. That happened on
+      // three shops, at a different width each run, which is the signature of a
+      // race in the probe rather than a fault on the shop.
+      await page
+        .waitForFunction(
+          () =>
+            [...document.querySelectorAll("img")].some((x) => /about/i.test(x.src || x.currentSrc)),
+          { timeout: 30000 },
+        )
+        .catch(() => {});
+      // Then walk down the page rather than jumping to the bottom, so every
+      // lazily loaded image between here and the panel is asked for on the way.
+      await page.evaluate(async () => {
+        for (let y = 0; y <= document.body.scrollHeight; y += 400) {
+          window.scrollTo(0, y);
+          await new Promise((r) => setTimeout(r, 60));
+        }
+      });
+      // Walk it again if the photograph has not been asked for yet. The first
+      // walk uses the page height as it was when the walk began, and on these
+      // pages that height grows as the rows above the panel load their own
+      // images, so one pass can stop short of it.
+      for (let pass = 0; pass < 4 && !arrived; pass += 1) {
+        await page.evaluate(async () => {
+          for (let y = 0; y <= document.body.scrollHeight; y += 400) {
+            window.scrollTo(0, y);
+            await new Promise((r) => setTimeout(r, 60));
+          }
+        });
+        for (let i = 0; i < 60 && !arrived; i += 1) await page.waitForTimeout(100);
+      }
+      // Fully decoded and SETTLED, not merely complete.
+      //
+      // naturalWidth is 0 until the file has been read, and a 0 there makes the
+      // aspect ratio NaN, which compares false against every threshold and would
+      // pass silently. Waiting for complete is not enough either: Chromium
+      // exposes a progressive JPEG at a reduced intrinsic size part way through,
+      // and this probe read a 648 x 756 photograph as 388 x 453 on four shops
+      // that way. The verdict happened to survive, because 388/453 is the same
+      // aspect ratio, but the numbers printed were wrong and those numbers go
+      // to the client. So: decode(), then require two identical readings.
+      await page
+        .waitForFunction(
+          async () => {
+            const i = [...document.querySelectorAll("img")].find((x) =>
+              /about/i.test(x.currentSrc || x.src),
+            );
+            if (!i) return false;
+            i.scrollIntoView({ block: "center" });
+            // Ask for the file, do not wait to be given it.
+            //
+            // Flipping loading to eager is not enough on its own: Chromium had
+            // already chosen a candidate and left it deferred, and the probe
+            // then read naturalWidth 0 on a photograph that renders perfectly.
+            // Re-assigning src from the candidate the browser itself picked
+            // starts the fetch without changing which candidate that is, so the
+            // decoded size measured is still the one a visitor would get.
+            if (!i.complete || !i.naturalWidth) {
+              i.loading = "eager";
+              const chosen = i.currentSrc || i.src;
+              if (chosen && i.dataset.probePoked !== "1") {
+                i.dataset.probePoked = "1";
+                i.src = chosen;
+              }
+              return false;
+            }
+            try {
+              await i.decode();
+            } catch {
+              return false;
+            }
+            const first = `${i.naturalWidth}x${i.naturalHeight}`;
+            await new Promise((r) => setTimeout(r, 300));
+            return `${i.naturalWidth}x${i.naturalHeight}` === first;
+          },
+          { timeout: 30000 },
+        )
+        .catch(() => {});
+
+      let r = await measure(page);
+      // One retry, and only when the read came back undecoded.
+      //
+      // The first visit to a width is a cold cache for that candidate size, and
+      // on the two widths where the panel is full width the file is the largest
+      // one the optimizer produces. A second visit reads it out of cache. This
+      // retries the READ, never the assertion: a real band or crop measures the
+      // same both times, so nothing can be retried into passing.
+      if (!r || !r.nw || !r.nh) {
+        await page.reload({ waitUntil: "load", timeout: 90000 });
+        await page.evaluate(async () => {
+          for (let y = 0; y <= document.body.scrollHeight; y += 400) {
+            window.scrollTo(0, y);
+            await new Promise((x) => setTimeout(x, 60));
+          }
+        });
+        await page
+          .waitForFunction(
+            async () => {
+              const i = [...document.querySelectorAll("img")].find((x) =>
+                /about/i.test(x.currentSrc || x.src),
+              );
+              if (!i) return false;
+              i.scrollIntoView({ block: "center" });
+              if (!i.complete || !i.naturalWidth) {
+                i.loading = "eager";
+                const chosen = i.currentSrc || i.src;
+                if (chosen && i.dataset.probePoked !== "2") {
+                  i.dataset.probePoked = "2";
+                  i.src = chosen;
+                }
+                return false;
+              }
+              try {
+                await i.decode();
+              } catch {
+                return false;
+              }
+              return true;
+            },
+            { timeout: 40000 },
+          )
+          .catch(() => {});
+        r = await measure(page);
+      }
+      if (!r) {
+        console.log(`    ${String(width).padStart(4)}px  ${C.red}no About photograph on the home page${C.off}`);
+        failures += 1;
+        continue;
+      }
+      if (!r.nw || !r.nh || !r.bw || !r.bh) {
+        console.log(`    ${String(width).padStart(4)}px  ${C.red}not decoded: box ${r.bw}x${r.bh}, file ${r.nw}x${r.nh}${C.off}`);
+        failures += 1;
+        continue;
+      }
+
+      measured += 1;
+      const boxA = r.bw / r.bh;
+      const fileA = r.nw / r.nh;
+      let bad = false;
+      let verdict;
+
+      if (r.fit === "contain") {
+        const dw = boxA > fileA ? r.bh * fileA : r.bw;
+        const dh = boxA > fileA ? r.bh : r.bw / fileA;
+        const band = Math.round(Math.max(r.bw - dw, r.bh - dh));
+        bad = band > BAND_FREE;
+        verdict = band <= BAND_FREE ? "fills its box" : `${band}px band of panel colour`;
+      } else if (r.fit === "cover") {
+        const crop = 100 * (1 - Math.min(boxA, fileA) / Math.max(boxA, fileA));
+        bad = crop > CROP_CEILING;
+        // Under half a percent is the image optimizer rounding its own resize,
+        // not a crop. Half a percent of a 648px wide artwork is three pixels,
+        // and his words sit 164px inside the frame.
+        verdict =
+          crop < 0.5
+            ? "fills its box"
+            : `${crop.toFixed(1)}% of the photograph cut off${bad ? ` (over ${CROP_CEILING}%)` : ""}`;
+      } else {
+        bad = true;
+        verdict = `object-fit is ${r.fit}, which neither fills nor preserves the artwork`;
+      }
+
+      if (bad) failures += 1;
+      const mark = bad ? `${C.red}FAIL${C.off}` : `${C.green}ok  ${C.off}`;
+      console.log(
+        `    ${String(width).padStart(4)}px  ${mark}  box ${String(r.bw).padStart(4)} x ${String(r.bh).padStart(4)} (${boxA.toFixed(3)})  file ${r.nw} x ${r.nh} (${fileA.toFixed(3)})  ${r.fit}  ->  ${verdict}\n              ${C.dim}${r.src}${C.off}`,
+      );
+      } finally {
+        await wctx.close();
+      }
+    }
+    if (!measured) {
+      console.log(`    ${C.red}nothing was measured on this shop${C.off}`);
+      failures += 1;
+    }
+  } catch (e) {
+    console.log(`    ${C.red}FAILED ${e.message.split("\n")[0]}${C.off}`);
+    failures += 1;
+  } finally {
+    await context.close();
+  }
+}
+
+await browser.close();
+
+console.log();
+if (skipped) {
+  // Not a warning. A run that reports ok while a shop went unmeasured is the
+  // exact shape of the checklists that passed four broken shops in one day.
+  console.log(
+    `  ${C.red}${skipped} shop(s) NOT CHECKED: gated, and .shopauth has no credentials for them${C.off}`,
+  );
+  console.log(`  ${C.dim}add <SHOP>_EMAIL and <SHOP>_PASSWORD to .shopauth, which is gitignored${C.off}`);
+  process.exit(1);
+}
+if (failures) {
+  console.log(`  ${C.red}${failures} measurement(s) failed${C.off}`);
+  process.exit(1);
+}
+console.log(`  ${C.green}ok — the About photograph fills its panel on every shop, at every width${C.off}`);

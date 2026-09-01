@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy to retired-urls.json and fill in. That file is gitignored because the paths and destinations name the client.",
+  "redirects": [
+    { "from": "/:country/:locale/pages/some-retired-page", "to": "https://where-it-went-instead.example" }
+  ]
+}

@@ -148,6 +148,43 @@ export async function updateOrderAddresses(
   }, "Failed to update addresses");
 }
 
+/**
+ * The customer's own message with the order.
+ *
+ * ── why this exists ─────────────────────────────────────────────────────────
+ *
+ * The old shop had a message box at checkout and the new one did not. A real
+ * customer used it on nolocal on 12 Aug: "Call before arriving. Courier must use
+ * the Waze app to find the address". That instruction reaches the person packing
+ * the box, and without the field it has nowhere to go.
+ *
+ * The shop owner asked for it back on every shop, and asked that it stay a
+ * requirement. script/check_note_box is the gate that holds him to that.
+ *
+ * ── it is customer_note over the wire, special_instructions in the table ────
+ *
+ * Spree renamed it. The Store API v3 carts controller permits `customer_note`,
+ * the SDK types declare it, and the column underneath is still
+ * `special_instructions`, which is where the 12 Aug message still sits. Writing
+ * customer_note is what fills that column: sending special_instructions is
+ * silently dropped, because the controller permits a fixed list and anything
+ * outside it is discarded without an error.
+ */
+export async function updateCustomerNote(cartId: string, note: string) {
+  return actionResult(async () => {
+    const surface = await resolveSurfaceForCart(cartId);
+    const options = await getCartOptions(surface);
+    const id = await requireCartId(surface);
+    const cart = await getClientForSurface(surface).carts.update(
+      id,
+      { customer_note: note },
+      options,
+    );
+    updateTag(checkoutTag(surface));
+    return { cart };
+  }, "Failed to save your message");
+}
+
 export async function updateCartMarket(
   cartId: string,
   params: { currency: string; locale: string },

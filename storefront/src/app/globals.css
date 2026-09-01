@@ -8,7 +8,7 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist);
+  --font-sans: var(--font-roboto);
   --animate-slide-in-right: slide-in-right 0.3s ease-out;
   --animate-slide-in-left: slide-in-left 0.3s ease-out;
   --animate-hamburger-top-open: hamburger-top-open 0.35s ease-in-out forwards;
@@ -199,7 +199,7 @@
 }
 
 body {
-  font-family: var(--font-geist), system-ui, sans-serif;
+  font-family: var(--font-roboto), system-ui, sans-serif;
   font-weight: 400;
 }
 
@@ -267,6 +267,23 @@ input[type="search"]::-webkit-search-cancel-button {
   --card-foreground: #1C1D19;  /* matches --foreground */
   --popover: oklch(1 0 0);
   --popover-foreground: #1C1D19;  /* matches --foreground */
+  /* The announcement strip and the header surface, as tokens rather than as a
+     two-way branch in the component. There were two liveries when the bar was
+     written and there are three now, and the third one wanted a header colour
+     as well, which no branch on isAccountRequired() could ever express. */
+  /* The header mark. His sixth shop wants it half again as tall: measured off
+     his annotation, "190.09 x 48 (h-12 Max-W-[260px])", and 48px against that
+     file's own 1200 x 303 is exactly 190.09 wide, so the height is the only
+     number and the cap is headroom. The other six stay at 32. */
+  --logo-h: 2rem;
+  --logo-max-w: 190px;
+  /* The shipping band under the About panel. Measured, so the five retail
+     shops keep exactly what they render today: #F1F0F0, which is what
+     bg-neutral-100 resolves to for them. */
+  --notice: #F1F0F0;
+  --bar: #E5E8D9;  /* read off his live retail shop after he marked an earlier green-on-green version "wrong colour" */
+  --bar-foreground: #000000;
+  --header: #FFFFFF;
   --primary: #707757;  /* #707757, the shade that passes AA under white text */
   --primary-foreground: #FFFFFF;  /* #FFFFFF, his button text colour */
   --secondary: #E5E8D9;  /* #E5E8D9 */
@@ -293,6 +310,165 @@ input[type="search"]::-webkit-search-cancel-button {
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+}
+
+/* ── Per shop themes ─────────────────────────────────────────────────────────
+ *
+ * He gave both of these as a set of values rather than as a list of elements,
+ * and that is the right altitude for them: a token override reaches the pages
+ * nobody has looked at yet, which is exactly what "convert the whole shop"
+ * means. Every value below was read off his own theme editor or off the hex
+ * codes he wrote on his screenshots. Nothing here is chosen.
+ *
+ * Keyed on the THEME rather than on the shop, and not only for tidiness: a shop
+ * named after one of his brands cannot be written into a tracked file, because
+ * this repository is public and check_no_client_data refuses it. That is the
+ * third time that rule has been hit, after the locale table and the collections
+ * file, and the shape is always the same: anything keyed by shop NAME belongs in
+ * the gitignored client copy, and only the generic half belongs here.
+ *
+ * So the mapping from shop to theme lives in content.ts, which is already
+ * carried as a deploy asset. A second closed shop can wear "black" without a new
+ * selector being written.
+ *
+ * A shop with no theme matches nothing and keeps :root as it is, which is the 5
+ * retail shops.
+ */
+
+/* His words: "This shop has it own theme, BLACK."
+ *
+ * Read off the theme panel in his 22 August check, in his order:
+ *   brand #000000 · text #000000 · button text #FFFFFF · input text #6B7280
+ *   border #D7D7D7 · button border transparent · background #FFFFFF
+ *   accent #F5F5F5 · danger #C73528 · neutral #999999 · success #65981C
+ *
+ * --secondary and --ring are not in his list and are overridden anyway: both
+ * hold the retail olive, and leaving them is how the olive kept reappearing on
+ * pages he had already asked about.
+ */
+[data-theme="black"] {
+  /* The one green he has named on this shop.
+   *
+   * His wholesale theme is black by his own instruction, and it stays black.
+   * But beside one block on his Track Your Order document he wrote, in words,
+   * "I'd use  #4c5537 green here", and his mockups for the six business pages
+   * are green led throughout. Those two things disagree, so only the one he
+   * wrote down is applied, on the one block he wrote it beside, and the wider
+   * question of whether these pages should be green has gone back to him.
+   *
+   * A token rather than a hex in a component, because a colour spelled out in
+   * two files is how a column of black links shipped on a black ground here
+   * once already. */
+  --brand-accent: #4c5537;
+  --primary: #000000;
+  --primary-foreground: #FFFFFF;
+  --foreground: #000000;
+  --card-foreground: #000000;
+  --popover-foreground: #000000;
+  --secondary: #F5F5F5;
+  --secondary-foreground: #000000;
+  --accent: #F5F5F5;
+  --accent-foreground: #000000;
+  --muted: #F5F5F5;
+  --muted-foreground: #6B7280;
+  --border: #D7D7D7;
+  --input: #D7D7D7;
+  --ring: #000000;
+  --destructive: #C73528;
+
+  /* AND the neutral scale, which is the actual root of his list.
+   *
+   * globals.css warms Tailwind's greys toward the sage on purpose, so gray-200
+   * is #E5E8D9 and gray-900 is #1C1D19. That reaches 402 utility usages across
+   * 68 files and it is right on the 5 retail shops. On a shop whose theme is
+   * BLACK it is why the olive kept coming back: overriding --border fixed the
+   * components that read the token, and left every border-gray-200 in the cart,
+   * the account pages and the order list still sage.
+   *
+   * Measured after the token-only pass: 16 of the 18 places he named came out
+   * right and the 2 that did not were both border-gray-200.
+   *
+   * His numbers where he gave them: border #D7D7D7, input text #6B7280,
+   * neutral #999999, text #000000, accent #F5F5F5. The rest are true neutral
+   * steps between them.
+   */
+  /* The brand ramp too, or a bg-primary-600 still renders olive. */
+  /* The strip above the header, and the header itself. */
+  --notice: #F5F5F5;
+  --bar: #000000;
+  --bar-foreground: #FFFFFF;
+  --header: #FFFFFF;
+
+  /* The grey scale is NOT set here.
+   *
+   * It was, for one build: a --color-gray-* block per theme, twelve lines each.
+   * It reaches nothing. @theme at the top of this file is declared `inline`,
+   * which substitutes each value into the utilities at build time rather than
+   * emitting var(--color-gray-200), so a utility class carries the sage hex
+   * literally and redefining the variable cannot change it. The probe: under
+   * this selector --color-gray-200 read #d7d7d7 while a .border-gray-200
+   * element rendered rgb(229,232,217).
+   *
+   * The utilities are overridden explicitly instead, at the bottom of this
+   * file. Tokens here, utilities there, and both are needed because components
+   * read both. */
+
+}
+
+/* His words: "This shop has it own theme GREEN BLUE."
+ *
+ * #065146 is written 5 times across his 4 screenshots: the row pill, the COUNT
+ * ME IN button, the About panel, the footer and the product title on hover.
+ * #EAEEED is the announcement bar, the header and the shipping notice band.
+ */
+[data-theme="green-blue"] {
+  --primary: #065146;
+  --primary-foreground: #FFFFFF;
+  --secondary: #EAEEED;
+  --accent: #EAEEED;
+  --border: #EAEEED;
+  --input: #EAEEED;
+  --ring: #065146;
+
+  /* Neutral greys rather than the sage ones, for the same reason as above: his
+   * this brand's green blue has nothing to do with the sage above, so a border
+   * warmed toward sage reads as the wrong brand on his page.
+   */
+  /* The strip above the header, and the header itself. */
+  --logo-h: 3rem;
+  --logo-max-w: 260px;
+  --notice: #EAEEED;  /* his number, sampled off his mock at #EAEEED too */
+  --bar: #EAEEED;
+  --bar-foreground: #3D3D3D;
+  /* WHITE, and the #EAEEED lives on in the 1px border under it.
+   *
+   * This was #EAEEED, taken from the bar above it on the assumption that one
+   * number meant one band. It does not. The bar is filled #EAEEED and the header
+   * is white, so what shipped was a single 100px grey block: the header's border
+   * is #EAEEED as well, and a border cannot be seen against a fill of its own
+   * colour.
+   *
+   * He wrote it on the picture as "Line only", with the arrow on the header's
+   * bottom edge and #EAEEED beside it. Sampled off his image at three columns
+   * clear of the icons: bar #EAEEED, header #FFFFFF, then ONE row of #EAEEED,
+   * then white. The other two themes were already #FFFFFF here, so this shop was
+   * the only one out of step. */
+  --header: #FFFFFF;
+
+  /* The grey scale is NOT set here.
+   *
+   * It was, for one build: a --color-gray-* block per theme, twelve lines each.
+   * It reaches nothing. @theme at the top of this file is declared `inline`,
+   * which substitutes each value into the utilities at build time rather than
+   * emitting var(--color-gray-200), so a utility class carries the sage hex
+   * literally and redefining the variable cannot change it. The probe: under
+   * this selector --color-gray-200 read #d7d7d7 while a .border-gray-200
+   * element rendered rgb(229,232,217).
+   *
+   * The utilities are overridden explicitly instead, at the bottom of this
+   * file. Tokens here, utilities there, and both are needed because components
+   * read both. */
+
 }
 
 .dark {
@@ -329,6 +505,177 @@ input[type="search"]::-webkit-search-cancel-button {
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+
+
+/* ── the hover half, and why it needs its own rules ──────────────────────────
+ *
+ * The plain overrides below killed every hover state on the two themed shops.
+ *
+ * Tailwind emits a hover variant as
+ *   .group-hover\:text-primary:is(:where(.group):hover *)
+ * and :where() contributes nothing to specificity, so that whole selector is
+ * (0,2,0). `[data-theme="x"] .text-gray-900` is ALSO (0,2,0). A tie is settled
+ * by source order, the generated block sits last, so the base colour won and the
+ * hover silently stopped happening.
+ *
+ * Measured rather than reasoned: on a shop with no data-theme a product title
+ * hovers to rgb(112,119,87); on the two themed shops it stayed at its base
+ * colour. 18 distinct hover variants across 74 usages were affected, so this was
+ * every hover state on those shops, not one class.
+ *
+ * These carry the :hover in the selector, which makes them (0,3,0) and puts them
+ * above the base override rather than beside it. Generated from the variants
+ * actually used in src, same as the block below.
+ */
+@media (hover:hover){[data-theme="black"] .group-hover\:text-primary:is(:where(.group):hover *){color:#000000}}
+@media (hover:hover){[data-theme="black"] .hover\:bg-gray-100:hover{background-color:#F5F5F5}}
+@media (hover:hover){[data-theme="black"] .hover\:bg-gray-50:hover{background-color:#FAFAFA}}
+@media (hover:hover){[data-theme="black"] .hover\:bg-gray-900:hover{background-color:#000000}}
+@media (hover:hover){[data-theme="black"] .hover\:bg-primary-700:hover{background-color:#000000}}
+@media (hover:hover){[data-theme="black"] .hover\:bg-primary:hover{background-color:#000000}}
+@media (hover:hover){[data-theme="black"] .hover\:bg-slate-100:hover{background-color:#F5F5F5}}
+@media (hover:hover){[data-theme="black"] .hover\:bg-slate-200:hover{background-color:#D7D7D7}}
+@media (hover:hover){[data-theme="black"] .hover\:bg-slate-50:hover{background-color:#FAFAFA}}
+@media (hover:hover){[data-theme="black"] .hover\:bg-slate-800:hover{background-color:#27272A}}
+@media (hover:hover){[data-theme="black"] .hover\:border-gray-300:hover{border-color:#C4C4C4}}
+@media (hover:hover){[data-theme="black"] .hover\:border-gray-400:hover{border-color:#999999}}
+@media (hover:hover){[data-theme="black"] .hover\:text-gray-600:hover{color:#52525B}}
+@media (hover:hover){[data-theme="black"] .hover\:text-gray-700:hover{color:#3F3F46}}
+@media (hover:hover){[data-theme="black"] .hover\:text-gray-900:hover{color:#000000}}
+@media (hover:hover){[data-theme="black"] .hover\:text-neutral-600:hover{color:#52525B}}
+@media (hover:hover){[data-theme="black"] .hover\:text-primary:hover{color:#000000}}
+@media (hover:hover){[data-theme="black"] .hover\:text-slate-900:hover{color:#000000}}
+
+@media (hover:hover){[data-theme="green-blue"] .group-hover\:text-primary:is(:where(.group):hover *){color:#065146}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:bg-gray-100:hover{background-color:#F5F5F5}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:bg-gray-50:hover{background-color:#FAFAFA}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:bg-gray-900:hover{background-color:#1C1D19}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:bg-primary-700:hover{background-color:#054036}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:bg-primary:hover{background-color:#065146}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:bg-slate-100:hover{background-color:#F5F5F5}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:bg-slate-200:hover{background-color:#EAEEED}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:bg-slate-50:hover{background-color:#FAFAFA}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:bg-slate-800:hover{background-color:#27272A}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:border-gray-300:hover{border-color:#C4C4C4}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:border-gray-400:hover{border-color:#999999}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:text-gray-600:hover{color:#52525B}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:text-gray-700:hover{color:#3F3F46}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:text-gray-900:hover{color:#1C1D19}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:text-neutral-600:hover{color:#52525B}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:text-primary:hover{color:#065146}}
+@media (hover:hover){[data-theme="green-blue"] .hover\:text-slate-900:hover{color:#1C1D19}}
+
+/* ── Utility overrides, because @theme is declared inline ────────────────────
+ *
+ * MEASURED, after the token override did not work: --color-gray-200 reads
+ * #d7d7d7 under [data-theme="black"], and a .border-gray-200 element still
+ * renders rgb(229,232,217). @theme at the top of this file is `@theme inline`,
+ * which substitutes the value into each utility at build time instead of
+ * emitting var(--color-gray-200), so redefining the variable reaches the
+ * components that read tokens and none of the 402 utility usages.
+ *
+ * That is why his list had 10 items rather than 2, and why the first two passes
+ * closed only the ones a component happened to read from a token.
+ *
+ * So these rules are generated from the utilities ACTUALLY used in src, 44 of
+ * them, rather than hand written. Specificity does the rest: an attribute plus
+ * a class beats the class alone, so no !important is needed.
+ *
+ * If a new grey utility is added later it will render sage on these two shops
+ * until it is added here. The honest fix is to stop using `inline` for the
+ * colour scales, which is a change to all 7 shops and belongs in daylight.
+ */
+
+[data-theme="black"] .bg-gray-100{background-color:#F5F5F5}
+[data-theme="black"] .bg-gray-200{background-color:#D7D7D7}
+[data-theme="black"] .bg-gray-400{background-color:#999999}
+[data-theme="black"] .bg-gray-50{background-color:#FAFAFA}
+[data-theme="black"] .bg-gray-900{background-color:#000000}
+[data-theme="black"] .bg-neutral-100{background-color:#F5F5F5}
+[data-theme="black"] .bg-primary-600{background-color:#000000}
+[data-theme="black"] .bg-primary-700{background-color:#000000}
+[data-theme="black"] .bg-slate-100{background-color:#F5F5F5}
+[data-theme="black"] .bg-slate-200{background-color:#D7D7D7}
+[data-theme="black"] .bg-slate-50{background-color:#FAFAFA}
+[data-theme="black"] .bg-slate-800{background-color:#27272A}
+[data-theme="black"] .bg-slate-900{background-color:#000000}
+[data-theme="black"] .border-gray-100{border-color:#F5F5F5}
+[data-theme="black"] .border-gray-200{border-color:#D7D7D7}
+[data-theme="black"] .border-gray-300{border-color:#C4C4C4}
+[data-theme="black"] .border-gray-400{border-color:#999999}
+[data-theme="black"] .border-gray-500{border-color:#6B7280}
+[data-theme="black"] .border-gray-600{border-color:#52525B}
+[data-theme="black"] .border-gray-900{border-color:#000000}
+[data-theme="black"] .border-primary-600{border-color:#000000}
+[data-theme="black"] .border-slate-200{border-color:#D7D7D7}
+[data-theme="black"] .border-slate-600{border-color:#52525B}
+[data-theme="black"] .border-slate-700{border-color:#3F3F46}
+[data-theme="black"] .border-slate-800{border-color:#27272A}
+[data-theme="black"] .divide-gray-200>:not([hidden])~:not([hidden]){border-color:#D7D7D7}
+[data-theme="black"] .divide-slate-100>:not([hidden])~:not([hidden]){border-color:#F5F5F5}
+[data-theme="black"] .ring-primary-200{--tw-ring-color:#D7D7D7}
+[data-theme="black"] .text-gray-300{color:#C4C4C4}
+[data-theme="black"] .text-gray-400{color:#999999}
+[data-theme="black"] .text-gray-500{color:#6B7280}
+[data-theme="black"] .text-gray-600{color:#52525B}
+[data-theme="black"] .text-gray-700{color:#3F3F46}
+[data-theme="black"] .text-gray-800{color:#27272A}
+[data-theme="black"] .text-gray-900{color:#000000}
+[data-theme="black"] .text-neutral-600{color:#52525B}
+[data-theme="black"] .text-slate-100{color:#F5F5F5}
+[data-theme="black"] .text-slate-200{color:#D7D7D7}
+[data-theme="black"] .text-slate-300{color:#C4C4C4}
+[data-theme="black"] .text-slate-400{color:#999999}
+[data-theme="black"] .text-slate-500{color:#6B7280}
+[data-theme="black"] .text-slate-600{color:#52525B}
+[data-theme="black"] .text-slate-700{color:#3F3F46}
+[data-theme="black"] .text-slate-900{color:#000000}
+
+[data-theme="green-blue"] .bg-gray-100{background-color:#F5F5F5}
+[data-theme="green-blue"] .bg-gray-200{background-color:#EAEEED}
+[data-theme="green-blue"] .bg-gray-400{background-color:#999999}
+[data-theme="green-blue"] .bg-gray-50{background-color:#FAFAFA}
+[data-theme="green-blue"] .bg-gray-900{background-color:#1C1D19}
+[data-theme="green-blue"] .bg-neutral-100{background-color:#F5F5F5}
+[data-theme="green-blue"] .bg-primary-600{background-color:#065146}
+[data-theme="green-blue"] .bg-primary-700{background-color:#054036}
+[data-theme="green-blue"] .bg-slate-100{background-color:#F5F5F5}
+[data-theme="green-blue"] .bg-slate-200{background-color:#EAEEED}
+[data-theme="green-blue"] .bg-slate-50{background-color:#FAFAFA}
+[data-theme="green-blue"] .bg-slate-800{background-color:#27272A}
+[data-theme="green-blue"] .bg-slate-900{background-color:#1C1D19}
+[data-theme="green-blue"] .border-gray-100{border-color:#F5F5F5}
+[data-theme="green-blue"] .border-gray-200{border-color:#EAEEED}
+[data-theme="green-blue"] .border-gray-300{border-color:#C4C4C4}
+[data-theme="green-blue"] .border-gray-400{border-color:#999999}
+[data-theme="green-blue"] .border-gray-500{border-color:#6B7280}
+[data-theme="green-blue"] .border-gray-600{border-color:#52525B}
+[data-theme="green-blue"] .border-gray-900{border-color:#1C1D19}
+[data-theme="green-blue"] .border-primary-600{border-color:#065146}
+[data-theme="green-blue"] .border-slate-200{border-color:#EAEEED}
+[data-theme="green-blue"] .border-slate-600{border-color:#52525B}
+[data-theme="green-blue"] .border-slate-700{border-color:#3F3F46}
+[data-theme="green-blue"] .border-slate-800{border-color:#27272A}
+[data-theme="green-blue"] .divide-gray-200>:not([hidden])~:not([hidden]){border-color:#EAEEED}
+[data-theme="green-blue"] .divide-slate-100>:not([hidden])~:not([hidden]){border-color:#F5F5F5}
+[data-theme="green-blue"] .ring-primary-200{--tw-ring-color:#EAEEED}
+[data-theme="green-blue"] .text-gray-300{color:#C4C4C4}
+[data-theme="green-blue"] .text-gray-400{color:#999999}
+[data-theme="green-blue"] .text-gray-500{color:#6B7280}
+[data-theme="green-blue"] .text-gray-600{color:#52525B}
+[data-theme="green-blue"] .text-gray-700{color:#3F3F46}
+[data-theme="green-blue"] .text-gray-800{color:#27272A}
+[data-theme="green-blue"] .text-gray-900{color:#1C1D19}
+[data-theme="green-blue"] .text-neutral-600{color:#52525B}
+[data-theme="green-blue"] .text-slate-100{color:#F5F5F5}
+[data-theme="green-blue"] .text-slate-200{color:#EAEEED}
+[data-theme="green-blue"] .text-slate-300{color:#C4C4C4}
+[data-theme="green-blue"] .text-slate-400{color:#999999}
+[data-theme="green-blue"] .text-slate-500{color:#6B7280}
+[data-theme="green-blue"] .text-slate-600{color:#52525B}
+[data-theme="green-blue"] .text-slate-700{color:#3F3F46}
+[data-theme="green-blue"] .text-slate-900{color:#1C1D19}
+
 @layer base {
   * {
     @apply border-border;
@@ -341,6 +688,19 @@ input[type="search"]::-webkit-search-cancel-button {
     :focus-visible {
       outline-color: white;
     }
+  }
+  /* The rule above keys the ring on the VISITOR'S operating system theme, which
+     is the wrong signal for an element whose own ground is fixed. The wholesale
+     shop's footer is dark whatever the visitor has their machine set to, so
+     somebody in light mode tabs through it with a black ring on a black ground
+     and cannot see where they are.
+
+     Inside the footer the ring follows the text instead. The footer sets its own
+     colour per livery, white on the closed shop and black on the five retail
+     ones, so currentColor is correct on both without either knowing about the
+     other. */
+  footer :focus-visible {
+    outline-color: currentColor;
   }
   body {
     @apply bg-background text-foreground;

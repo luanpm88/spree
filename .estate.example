@@ -1,0 +1,39 @@
+# Copy to .estate and fill in. Gitignored, because the real one names the client.
+#
+# One line per shop:
+#   shop|remote dir|database here|admin port|storefront port|storefront domain|rails domain|live shop url|order prefix
+#
+# Read by script/shop_host as, in this order:
+#   S_NAME S_DIR S_DB S_PORT S_SPORT S_DOMAIN S_STORE S_LIVE S_PREFIX
+#
+# ── which of the two domains is which ────────────────────────────────────────
+#
+# Field 6 is the customer facing storefront, on the storefront port.
+# Field 7 is Rails: /admin and the Store API, on the admin port.
+#
+# That is the mapping the script actually writes into nginx:
+#
+#   write_vhost "$S_STORE"  "$S_PORT"   "Rails: admin and the Store API"
+#   write_vhost "$S_DOMAIN" "$S_SPORT"  "the customer facing storefront"
+#
+# This header used to name them the other way round, and it is worth saying why
+# the wrong order is easy to believe: field 6 holds a name like new<shop>, which
+# reads as a staging admin, and field 7 holds store.<shop>, which reads as the
+# shop. It is the reverse. The convention was corrected by the client after the
+# first pass had it backwards, and cmd_web in the same script still carries the
+# old mapping, so the header is the only place someone would look to settle it.
+#
+# Getting it wrong does not fail loudly. It issues a certificate for the right
+# hostname and points it at the wrong port, so the storefront answers on the
+# admin address and /admin answers on the shop address.
+#
+# Use - for a domain that does not exist yet; the script then refuses to publish
+# that shop rather than inventing a hostname.
+#
+# example|example_com|example_migrate|3011|3021|newexample.example.com|store.example.com|https://example.com|EXP
+#
+# And one LIVE_DOMAINS line: every hostname that serves real customers. The
+# script checks every domain against this before touching nginx or certbot, so a
+# typo cannot put a review copy in front of real shoppers. Space separated.
+#
+# LIVE_DOMAINS=example.com www.example.com shop.example.com

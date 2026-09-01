@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# The two checks that can only be answered by the running shop, on every shop.
+#
+#   script/check_shop_runtime            every shop in .estate
+#   script/check_shop_runtime nz b2b     only these
+#
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# Two rake tasks answer questions no static gate can:
+#
+#   emails:smoke     builds every transactional email against this shop's own
+#                    data and reads the rendered body. It has caught a shop
+#                    sending another brand's wording, raw ** markers, and an
+#                    unfilled %{...} that I18n does not raise on.
+#   store:urls       asks whether this shop's store record points customers at
+#                    this shop. Six of seven held a storefront_url that 301s to
+#                    /admin, so the payment link button in an email sent the
+#                    customer to an admin sign-in page.
+#   shipping:smoke   asks whether the shop can quote delivery for what it sells.
+#                    It exists because one shop rendered perfectly, passed a 28
+#                    assertion browser walk including add to cart, and could not
+#                    take an order: its products were in one shipping category
+#                    and its only shipping method served another.
+#
+# Both were being run by hand, per shop, when somebody remembered. On 24 August
+# shipping:smoke was written, run once on three shops, and then nothing ran it
+# again. A gate nobody runs is a gate that does not exist, so this runs them
+# both, on all of them, in one command.
+#
+# Read only. Exits non-zero if any shop fails either task.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+
+[[ -f .estate ]]     || { printf '      %sskipped — no .estate on this machine%s\n' "$C_DIM" "$C_OFF"; exit 0; }
+[[ -f .estate.env ]] || { printf '      %sskipped — no .estate.env, so no host to ask%s\n' "$C_DIM" "$C_OFF"; exit 0; }
+
+# shellcheck disable=SC1091
+source .estate.env
+SSH_KEY="${SSH_KEY:-}"; SSH_HOST="${SSH_HOST:-}"; SSH_PORT="${SSH_PORT:-22}"
+# The env file is written to be sourced, so its values can hold $HOME. Expanded
+# here because the same value passed to ssh literally reports "Identity file
+# $HOME/... not accessible", which reads like a missing key.
+SSH_KEY=$(eval echo "$SSH_KEY")
+[[ -n "$SSH_KEY" && -n "$SSH_HOST" ]] || { printf '      %sskipped — .estate.env names no host%s\n' "$C_DIM" "$C_OFF"; exit 0; }
+
+rsh() { ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" "$@"; }
+
+# A while-read loop, not mapfile. This box runs bash 3.2, where mapfile does not
+# exist, and the failure was two lines of "command not found" followed by
+# "unbound variable" — which reads like a bug in the estate file rather than in
+# the shell.
+ALL=()
+while IFS= read -r s; do [[ -n "$s" ]] && ALL+=("$s"); done < <(awk -F'|' '!/^#/ && NF>6 && $1!=""{print $1}' .estate)
+if [[ $# -gt 0 ]]; then SHOPS=("$@"); else SHOPS=("${ALL[@]}"); fi
+[[ ${#SHOPS[@]} -gt 0 ]] || { printf '      %sskipped — no shop rows in .estate%s\n' "$C_DIM" "$C_OFF"; exit 0; }
+
+failed=0
+checked=0
+for shop in "${SHOPS[@]}"; do
+  # A shop with no container is not a failure: not every row in .estate is up.
+  if ! rsh "docker inspect ${shop}_web >/dev/null 2>&1"; then
+    printf '      %s%-9s%s no container, skipped\n' "$C_YEL" "$shop" "$C_OFF"
+    continue
+  fi
+
+  for task in emails:smoke shipping:smoke store:urls; do
+    checked=$((checked + 1))
+    # The EXIT STATUS, not a word in the output.
+    #
+    # This read the output for /^\s+(FAIL|[0-9]+ problem)/ instead, on the
+    # stated grounds that "rails swallows abort's status through docker exec in
+    # some shells". Measured on 25 August, it does not: the same command that
+    # prints MISMATCH exits 1, and the one that passes exits 0, through docker
+    # exec and through ssh.
+    #
+    # That belief cost the whole check. store:urls prints the word MISMATCH,
+    # which is neither FAIL nor "N problem", so the grep found nothing, the else
+    # branch ran, and the gate printed a green "ok" for SIX shops whose store
+    # record pointed customers at the admin host. The Complete Your Order button
+    # in their emails answered 404. This file's own header describes that exact
+    # fault as the reason it exists.
+    #
+    # So: the status decides, and a summary line is only for the reader. And it
+    # is not enough for a task to merely not fail: it has to SAY it passed, or a
+    # task that dies before printing anything counts as a pass too.
+    raw=$(rsh "docker exec ${shop}_web bin/rails $task 2>&1"); status=$?
+    out=$(printf '%s' "$raw" | grep -vE 'Spree Events|JWT secret|WARNING.*currency')
+    said_ok=$(printf '%s' "$out" | grep -cE 'ok —|built,')
+    if [ "$status" -ne 0 ] || [ "$said_ok" -eq 0 ] || printf '%s' "$out" | grep -qE '^\s+(FAIL|MISMATCH|[0-9]+ problem)'; then
+      failed=$((failed + 1))
+      printf '      %s%-9s %-15s FAILED (exit %s)%s\n' "$C_RED" "$shop" "$task" "$status" "$C_OFF"
+      printf '%s' "$out" | grep -vE '^\s*$' | head -8 | sed 's/^/          /'
+    else
+      summary=$(printf '%s' "$out" | grep -E 'ok —|built,' | tail -1 | sed 's/^ *//')
+      printf '      %s%-9s%s %-15s %s\n' "$C_GRN" "$shop" "$C_OFF" "$task" "${summary:-ok}"
+    fi
+  done
+done
+
+echo
+if (( failed )); then
+  printf '      %s%d of %d runtime check(s) failed%s\n' "$C_RED" "$failed" "$checked" "$C_OFF"
+  printf '      These are the two failures that are invisible from outside: a shop\n'
+  printf '      sending the wrong words, and a shop that cannot quote delivery.\n'
+  exit 1
+fi
+printf '      %sok%s — %d runtime check(s) across %d shop(s)\n' "$C_GRN" "$C_OFF" "$checked" "${#SHOPS[@]}"

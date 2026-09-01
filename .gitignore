@@ -100,6 +100,28 @@ config/locales/*
 !config/locales/en.yml
 !config/locales/signup_notification.en.yml
 !config/locales/welcome_mailer.en.yml
+
+# One file per shop, holding that shop's own email wording, taken from the shop's
+# own live application. Entirely his copy, so the whole directory is ignored and
+# there is no allowlist here to get wrong.
+#
+# It sits OUTSIDE config/locales deliberately, and the reason is worth keeping:
+# Rails globs that directory as `**/*.{rb,yml}`, which is RECURSIVE. A
+# subdirectory under it looked like isolation and was not — measured on the
+# running container, config/locales/shops/au.en.yml was on the load path of every
+# shop, including the ones it does not belong to. Two shops both write under
+# plain "en", so that is not a tidiness problem, it is one shop sending another
+# shop's wording. config/initializers/shop_locale.rb loads exactly one file from
+# here, chosen by SHOP.
+config/shop_locales/
+# The three home page product rows per shop, as category permalinks. Gitignored
+# for the same reason as the wording above it: the shop names in it are the
+# client's brands, and this repository is public. check_no_client_data caught it
+# the moment the sixth shop was added, because the first five are country codes
+# and the sixth is a brand. Carried by CLIENT_ASSETS in script/commercial.
+config/shop_collections
+config/clean_url_shops
+
 app/views/spree/shipment_mailer/
 app/views/spree/reimbursement_mailer/
 
@@ -123,6 +145,11 @@ config/rural_postcodes.txt
 
 # Names the client and quotes his messages. This repo is public.
 docs/VOICE.md
+# The cutover runbook. Names his shops, his domains and the order in which they
+# move, same reason as PLAN.md above. Nearly went in as a tracked file: the check
+# that said it was ignored was actually `git ls-files --error-unmatch`, which
+# answers "is it tracked", not "is it ignored".
+docs/CUTOVER.md
 # Same reason: the migration runbook names shops, a domain, the Spree version each one
 # runs, and quotes the client directly. The general engineering content lives in
 # docs/DISCOVERIES.md 1.24, 1.25 and 2.16 instead, written so it identifies nobody.
@@ -133,3 +160,44 @@ tmp/client/
 
 # The scan pattern list. It names the client, so it stays out of a public repo.
 .clientscan-patterns
+
+# Names the client shops and domains. See .estate.example
+.estate
+.estate.env
+
+# The client's own page copy. See content.example.ts
+storefront/src/lib/blocks/content.ts
+
+# His brand images: logo, favicons, the social card for each shop, the home page
+# photographs. Same reason as the copy above, and the same delivery path — they
+# are carried to the server by name in CLIENT_ASSETS, not by git.
+storefront/public/brand/
+# Rebuilt from his 260px icon, so /favicon.ico answers for the tools that ask for
+# it by name instead of reading the link tag. His artwork, so not committed.
+storefront/public/favicon.ico
+.shopauth
+
+# Every value the client has stated, per shop. His colours, his logo sizes, his
+# words. Read by script/check_client_notes; the schema is in .client_notes.example.
+.client_notes
+
+# Python bytecode from the check scripts. Machine specific, and one got staged
+# on 24 Aug when everything was staged at once to stop git checkout destroying
+# unstaged work.
+__pycache__/
+*.pyc
+
+# Which calculators each shop offers. Keys are shop names, so it cannot be
+# tracked in a public repository; carried by CLIENT_ASSETS in script/commercial.
+config/shop_calculators
+
+# Per-shop template overrides. The path names the client shop, so it cannot be
+# tracked in a public repository; carried by CLIENT_ASSETS in script/commercial.
+app/views/shops/
+
+# Retired page redirects. The paths and destinations are the client's own.
+storefront/src/lib/blocks/retired-urls.json
+
+# Backblaze B2 credentials the client pasted on the tracker. Rotate after use.
+.b2.env
+storefront/.env.business.local

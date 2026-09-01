@@ -1,0 +1,2145 @@
+#!/usr/bin/env bash
+#
+# Put a migrated shop onto the new server, one shop at a time.
+#
+#   script/shop_host up ca            everything, idempotent, safe to re-run
+#   script/shop_host provision ca     directory, compose file, env, secrets
+#   script/shop_host admin_image ca   his own picture on the admin sign-in screen
+#   script/shop_host storefront ca    build and start the customer facing site
+#   script/shop_host ship             send the source over, build it there
+#   script/shop_host refresh          put every shop onto the image just built.
+#                                     ship builds, this is what makes it live
+#   script/shop_host load ca          restore the migrated database
+#   script/shop_host web ca           nginx vhost + certificate
+#   script/shop_host public ca        this shop's own robots.txt, llms files, icons
+#   script/shop_host noindex ca       keep the review copy out of search results
+#   script/shop_host indexable ca     let it in again, on cutover day
+#   script/shop_host live_host ca     answer for the shop's real name too
+#   script/shop_host admin_host ca    answer for the new two-label admin name
+#   script/shop_host restore_payments ca
+#                                     put back the payment methods `load` switched
+#                                     off. Only after cutover: it makes the shop
+#                                     able to charge a real card
+#   script/shop_host status           what is running, per shop
+#
+# ── the shape ────────────────────────────────────────────────────────────────
+#
+# Six shops on one 16 GB box. They share two things and nothing else:
+#
+#   one image      the six shops run identical code, so building six times
+#                  would waste an hour and 6 GB of disk to produce six copies
+#                  of the same layers.
+#   one postgres   six databases inside it. Six postgres containers would cost
+#                  ~600 MB of RAM to isolate databases that are 20 to 50 MB and
+#                  already isolated by being separate databases.
+#
+# Everything else is per shop: its own container, its own env, its own port on
+# loopback, its own nginx vhost, its own storage volume. A shop can be rebuilt
+# or rolled back without the others noticing.
+#
+# ── the guards, and what each one is for ─────────────────────────────────────
+#
+# TEMPORARY DOMAINS ONLY. Every shop here is a copy that the client clicks
+# around in while the live shop keeps serving customers. The script refuses to
+# configure a live hostname, because the failure mode is not a broken copy, it
+# is two servers answering for one shop and orders landing in the one nobody
+# reads.
+#
+#:help-ends-here
+#
+# NO LIVE PAYMENTS. The database carries the client's real Stripe and PayPal
+# credentials in plaintext preferences, so a copy of it is a working payment
+# terminal. A click-around on a temporary shop must not be able to charge a
+# real card. Payment methods are deactivated on restore. KEEP_PAYMENTS=1 turns
+# that off, and prints what it is doing.
+#
+# NO MAIL TO CUSTOMERS. Same reasoning. The bigger shops carry hundreds of
+# completed orders with real addresses on them; anything that triggers a
+# notification would mail real people about an order they placed months ago.
+# All mail goes to a local mailpit instead, which also means the client can
+# read the emails.
+#
+# DO NOT CLOBBER. Someone else built the directory skeleton on this box on
+# 13 August. Provision refuses to write into a shop directory that already has
+# files it did not put there.
+set -euo pipefail
+
+# Host and key come from .estate.env, gitignored for the same reason .estate is.
+SSH_KEY="${SSH_KEY:-}"
+SSH_HOST="${SSH_HOST:-}"
+SSH_PORT="${SSH_PORT:-22}"
+IMAGE="${IMAGE:-spree-estate:latest}"
+SHARED="/srv/_shared"
+
+cd "$(dirname "$0")/.."
+
+# ── the estate ───────────────────────────────────────────────────────────────
+# The client set these subdomains up himself on 13 August, two per shop: newXX
+# for the admin and store.XX for the storefront. The names below are read off
+# DNS, not chosen here, so a shop whose record he has not made yet fails the
+# check in cmd_web rather than getting a certificate for a name nobody uses.
+#
+# A shop with no temporary record yet is listed with - for its domains, and
+# cannot be published until the client makes them.
+#
+# The table itself lives in .estate, which is gitignored, because it is a list of
+# the client's shop names and domains and this repository is public. The commit
+# hook refuses a file that names them, and it is right to. See .estate.example.
+#
+# shop | remote dir | database here | admin port | storefront port | admin domain | storefront domain
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+[[ -f .estate.env ]] && source .estate.env
+if [[ ! -f "$ESTATE_FILE" ]]; then
+  cat >&2 <<'NOPE'
+no .estate in this checkout, so this script does not know which shops exist.
+
+Copy .estate.example to .estate and fill in one line per shop, plus the
+LIVE_DOMAINS line. It is gitignored on purpose: the shop names and domains
+identify the client.
+NOPE
+  exit 1
+fi
+# shellcheck disable=SC1090
+SHOPS=$(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+# The hostnames that serve real customers. Never configured by this script.
+LIVE_DOMAINS=$(grep '^LIVE_DOMAINS=' "$ESTATE_FILE" | head -1 | cut -d= -f2-)
+[[ -n "$LIVE_DOMAINS" ]] || { echo "$ESTATE_FILE has no LIVE_DOMAINS= line. Refusing to run without it: it is the list this script checks against before configuring a hostname." >&2; exit 1; }
+
+if [[ -t 1 ]]; then
+  B=$'\033[1m'; DIM=$'\033[2m'; R=$'\033[0m'
+  CY=$'\033[36m'; GR=$'\033[32m'; YE=$'\033[33m'; RE=$'\033[31m'
+else B=''; DIM=''; R=''; CY=''; GR=''; YE=''; RE=''; fi
+step() { printf '\n%s==>%s %s%s%s\n' "$CY" "$R" "$B" "$*" "$R"; }
+info() { printf '    %s%s%s\n' "$DIM" "$*" "$R"; }
+ok()   { printf '    %s✓%s %s\n' "$GR" "$R" "$*"; }
+warn() { printf '    %s!%s %s\n' "$YE" "$R" "$*"; }
+die()  { printf '\n%sFAILED:%s %s\n\n' "$RE" "$R" "$*" >&2; exit 1; }
+
+rsh()  { ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" "$@"; }
+# Feed a heredoc to a remote file without quoting games.
+rput() { rsh "cat > $1"; }
+
+lookup() {
+  local shop="$1" line
+  line=$(printf '%s\n' "$SHOPS" | grep "^$shop|" || true)
+  [[ -n "$line" ]] || die "unknown shop '$shop'. Known: $(printf '%s\n' "$SHOPS" | grep -c '|') of them, run: script/shop_host status"
+  IFS='|' read -r S_NAME S_DIR S_DB S_PORT S_SPORT S_DOMAIN S_STORE S_LIVE S_PREFIX <<< "$line"
+  # `if`, not `[[ ... ]] && x=""`. Under `set -e` a trailing && whose test is
+  # false makes the whole function return 1, and the script dies without
+  # printing anything at all. A shop that HAS a domain took the false branch,
+  # so every real shop failed and only the placeholder would have worked.
+  if [[ "$S_DOMAIN" == "-" ]]; then S_DOMAIN=""; fi
+  if [[ "$S_STORE" == "-" ]]; then S_STORE=""; fi
+  # Read from the estate table, never guessed. Every prefix in there was taken
+  # from the shop's own existing order numbers, because customers quote these.
+  if [[ "${S_PREFIX:-}" == "-" || -z "${S_PREFIX:-}" ]]; then S_PREFIX="R"; fi
+}
+
+# A temporary domain that is not, by any spelling, a live one.
+assert_temporary() {
+  local d="$1"
+  [[ -n "$d" ]] || die "$S_NAME has no temporary hostname yet. The client makes those records; ask him for one before publishing this shop."
+  for live in $LIVE_DOMAINS; do
+    [[ "$d" == "$live" ]] && die "$d serves real customers. This script only configures temporary hostnames."
+  done
+  # Cheap structural check as well: every temporary name we hand out starts new*
+  # or is under a *.local domain. A typo that lands on a real host is the one
+  # mistake here that reaches customers.
+  [[ "$d" == new* || "$d" == *.local ]] || die "$d does not look like a temporary hostname (expected new*). Refusing."
+}
+
+# ── shared: postgres + mailpit + the network everything joins ────────────────
+cmd_shared() {
+  step "Shared services"
+  rsh "mkdir -p $SHARED"
+  rsh "docker network inspect estate >/dev/null 2>&1 || docker network create estate" >/dev/null
+  info "network 'estate' present"
+
+  rput "$SHARED/docker-compose.yml" <<'YAML'
+# Shared by every shop on this box. One postgres holding one database per shop,
+# and one mailpit so no copy of a live shop can mail a real customer.
+#
+# Hyphens in these container names, never underscores. Docker is happy with
+# either, but the name goes into DATABASE_URL and Ruby's URI library is not:
+# an underscore is not legal in a hostname, so the first spelling of this file
+# produced
+#
+#   URI::InvalidURIError: the scheme postgres does not accept registry part:
+#   postgres@estate_postgres:5432 (or bad hostname?)
+#
+# and it surfaced as `Bundler::GemRequireError: error loading the gem 'spree'`,
+# fifty frames deep, which reads like a broken image rather than a hostname
+# with the wrong punctuation in it.
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: estate-postgres
+    restart: always
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust   # only reachable on the estate network
+      PGDATA: /var/lib/postgresql/18/docker
+    command: >
+      postgres
+        -c shared_buffers=512MB
+        -c effective_cache_size=1536MB
+        -c work_mem=8MB
+        -c maintenance_work_mem=128MB
+        -c max_connections=120
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: pg_isready -U postgres
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [estate]
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # Every shop's SMTP target. Nothing leaves the box.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: estate-mailpit
+    restart: always
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    ports:
+      - "127.0.0.1:8025:8025"    # web UI, proxied by nginx behind a password
+    networks: [estate]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+networks:
+  estate:
+    external: true
+
+volumes:
+  postgres_data:
+YAML
+
+  rsh "cd $SHARED && docker compose up -d" >/dev/null 2>&1 || die "shared services did not start"
+  # Started is not running. Wait for postgres to actually accept connections.
+  local tries=0
+  until rsh "docker exec estate-postgres pg_isready -U postgres" >/dev/null 2>&1; do
+    tries=$((tries + 1)); [[ $tries -gt 30 ]] && die "postgres did not come up"
+    sleep 2
+  done
+  ok "postgres accepting connections"
+  ok "mailpit on 127.0.0.1:8025"
+}
+
+# ── send the source, build on the server ─────────────────────────────────────
+#
+# The other deploy script in this repository builds locally and hands over a
+# finished image, because its target is the client's old box: 1.9 GB of RAM
+# shared with MySQL, PHP-FPM and around 28 other sites, where a build would
+# swap hard and risk OOM-killing the neighbours. That reasoning does not carry
+# to this machine, which has 8 cores, 16 GB and nothing else on it.
+#
+# It also does not WORK here. The Dockerfile runs a node step to build the
+# admin dashboard, and cross-building linux/amd64 on an arm64 laptop puts that
+# node under QEMU, where libuv aborts:
+#
+#   node: deps/uv/src/unix/linux.c:1430: uv__io_poll: Assertion `errno == EEXIST' failed.
+#
+# Exit 134, every time, after two minutes of pnpm work. So the source goes over
+# and the build happens on native amd64, which is both faster and the only one
+# of the two that finishes.
+#
+# The files that git ignores are the whole risk in this step. `git ls-files`
+# alone leaves out the calculators and the inflection rule they need, and Rails
+# eager loads in production, so the shop would not boot at all. They are added
+# by name from the same CLIENT_ASSETS list script/commercial uses, so the two
+# deploy paths cannot drift apart, and the result is checked twice: once on the
+# server before the build, once inside the finished image.
+BUILD_DIR="/srv/_build"
+REQUIRED_IN_IMAGE="config/initializers/inflections.rb
+app/models/spree/calculator/shipping/ubi_ca_shipping_calculator.rb"
+
+# The storefront source on the server, refreshed from this checkout.
+#
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# cmd_storefront builds from $BUILD_DIR, and until today only cmd_ship ever
+# wrote to it. So a storefront build compiled whatever the last backend deploy
+# happened to leave there, which on 19 Aug was source from the day before: the
+# copy file on the server carried 2 of the 7 shop entries this checkout has,
+# because that file is gitignored and reaches the server only through the tar
+# below.
+#
+# The build failed, and it failed for a reason that had nothing to do with the
+# real fault: the wholesale shop's page set came back empty and Next rejects an
+# empty generateStaticParams under cacheComponents. That was luck. Had the stale
+# copy merely been out of date rather than absent, the build would have
+# succeeded and served last week's wording with nothing to show for it.
+#
+# So the storefront build now sends its own source and proves it arrived,
+# comparing the checksum of the one file that is invisible to git.
+push_storefront_source() {
+  # This function sends `git ls-files`, so a source file that has never been
+  # `git add`ed is not sent, and the build fails eight minutes later with
+  # module-not-found naming the file that IMPORTS the missing one rather than
+  # the missing one. That has now cost a build twice: shop-gate.ts on 19 Aug and
+  # a block component on 20 Aug. script/check_untracked_source has existed for
+  # both of them; what failed both times was running it at the right moment,
+  # because a file written after the last check is invisible to it.
+  #
+  # So the build asks, rather than the person remembering to. It knows what it
+  # sends; it is the right thing to know what it is about to leave behind.
+  local untracked
+  untracked=$(git ls-files --others --exclude-standard storefront \
+    | grep -E '\.(ts|tsx|js|jsx|mjs|css)$' || true)
+  if [[ -n "$untracked" ]]; then
+    printf '%s\n' "$untracked" | sed 's/^/      /'
+    die "the lines above are source this build would leave behind: it sends \`git ls-files\`. Run git add on them."
+  fi
+
+  local -a assets
+  while IFS= read -r f; do [[ -n "$f" ]] && assets+=("$f"); done < <(
+    sed -n '/^CLIENT_ASSETS=(/,/^)/p' script/commercial | grep -oE '"[^"]+"' | tr -d '"' | grep '^storefront/'
+  )
+
+  local list; list=$(mktemp)
+  git ls-files storefront > "$list"
+  local a
+  for a in "${assets[@]}"; do
+    [[ -e "$a" ]] || { warn "$a is in CLIENT_ASSETS but not on disk"; continue; }
+    if [[ -d "$a" ]]; then find "$a" -type f >> "$list"; else echo "$a" >> "$list"; fi
+  done
+  sort -u "$list" -o "$list"
+  info "sending $(wc -l < "$list" | tr -d ' ') storefront files"
+
+  rsh "mkdir -p $BUILD_DIR"
+  COPYFILE_DISABLE=1 tar -czf - -T "$list" | rsh "tar -xzf - -C $BUILD_DIR" \
+    || { rm -f "$list"; die "the storefront source did not transfer"; }
+  rm -f "$list"
+
+  # The gitignored ones, by checksum rather than by existence: the failure this
+  # guards against is a file that is present and old, which `test -f` calls fine.
+  #
+  # Directories are expanded first. This loop used to open with
+  # `[[ -f "$f" ]] || continue`, and CLIENT_ASSETS carries
+  # storefront/public/brand as a DIRECTORY, so every one of his logos, favicons,
+  # social cards and home page photographs failed that test and was skipped in
+  # silence. The tar above sends them, so they were arriving and simply never
+  # being checked, which is the shape of guard that reads as green while
+  # covering nothing. Found when a new logo went up and the run reported
+  # "matches this checkout" for exactly 2 files, neither of them the logo.
+  local -a asset_files=()
+  local a2
+  for a2 in "${assets[@]}"; do
+    if [[ -d "$a2" ]]; then
+      while IFS= read -r one; do asset_files+=("$one"); done < <(find "$a2" -type f ! -name '.*')
+    elif [[ -f "$a2" ]]; then
+      asset_files+=("$a2")
+    fi
+  done
+
+  # ONE ssh call for the whole list, not one per file.
+  #
+  # The first version of this loop opened an ssh connection per file. With the
+  # brand directory expanded that is 25 connections in a row, and the server
+  # answered the twenty-somethingth with "Connection timed out during banner
+  # exchange" and took the build down with it. A guard that cannot finish is
+  # worse than the hole it replaced.
+  local remote_list; remote_list=$(mktemp)
+  printf '%s\n' "${asset_files[@]}" \
+    | rsh "cd $BUILD_DIR && tr -d '\r' | xargs -d '\n' sha256sum 2>/dev/null" \
+    | tr -d '\r' > "$remote_list"
+
+  local f local_sum remote_sum missing=0
+  for f in "${asset_files[@]}"; do
+    local_sum=$(shasum -a 256 "$f" | cut -d' ' -f1)
+    remote_sum=$(awk -v p="$f" '$2==p || $2=="./"p {print $1; exit}' "$remote_list")
+    if [[ -z "$remote_sum" ]]; then
+      rm -f "$remote_list"
+      die "$f never reached the server. It is gitignored; check CLIENT_ASSETS in script/commercial."
+    fi
+    [[ "$local_sum" == "$remote_sum" ]] \
+      || { rm -f "$remote_list"; die "$f on the server does not match this checkout. The build would use the wrong copy."; }
+    missing=$((missing + 1))
+  done
+  rm -f "$remote_list"
+  ok "$missing gitignored file(s) on the server match this checkout"
+}
+
+cmd_ship() {
+  step "Sending the source to the server"
+
+  local -a assets
+  while IFS= read -r f; do [[ -n "$f" ]] && assets+=("$f"); done < <(
+    sed -n '/^CLIENT_ASSETS=(/,/^)/p' script/commercial | grep -oE '"[^"]+"' | tr -d '"'
+    ls config/locales/*.yml 2>/dev/null | grep -vE "/(en|ar|bg|ca|cs|da|de|el|es|et|fa|fi|fr|he|hi|hr|hu|id|it|ja|ko|lt|lv|mk|nb|nl|pl|pt|ro|ru|sk|sl|sq|sr|sv|th|tr|uk|vi|zh)\.yml$" || true
+  )
+  [[ ${#assets[@]} -gt 0 ]] || die "CLIENT_ASSETS came back empty — check script/commercial"
+
+  # Tracked files, plus the ignored ones the application actually loads.
+  local list; list=$(mktemp)
+  git ls-files > "$list"
+  local a
+  for a in "${assets[@]}"; do
+    [[ -e "$a" ]] || { warn "$a is in CLIENT_ASSETS but not on disk"; continue; }
+    if [[ -d "$a" ]]; then find "$a" -type f >> "$list"; else echo "$a" >> "$list"; fi
+  done
+  sort -u "$list" -o "$list"
+  info "$(wc -l < "$list" | tr -d ' ') files, $(( $(wc -c < "$list") / 1024 )) KB of paths"
+
+  rsh "rm -rf $BUILD_DIR && mkdir -p $BUILD_DIR"
+  # COPYFILE_DISABLE, because this runs from macOS. Without it bsdtar packs a
+  # second "._name" file beside every file, carrying extended attributes, and
+  # they arrive on the server:
+  #
+  #     ._admin_invoice.en.yml  ._welcome_mailer.en.yml  ._<brand>.en.yml
+  #
+  # Inert today only by luck. They sit in config/locales, Rails globs that
+  # directory as **/*.{rb,yml}, and the only thing keeping them off the i18n load
+  # path is that Dir.glob skips dotfiles unless asked. One of them is a few
+  # hundred bytes of binary that Psych would not parse, and a locale file that
+  # will not parse takes the shop down at boot.
+  COPYFILE_DISABLE=1 tar -czf - -T "$list" | rsh "tar -xzf - -C $BUILD_DIR" || die "transfer failed"
+  rm -f "$list"
+
+  # Before spending eight minutes on a build, prove the files whose absence
+  # caused the last outage are actually there.
+  # A `for` loop, not `while read`. ssh reads its own stdin, so an ssh inside a
+  # `while read ... <<< "$list"` swallows the rest of the list and the loop ends
+  # after one pass. That is how this check silently verified one of two files
+  # and reported success — the failure mode a guard must never have.
+  # Every shop's own email wording. Not in REQUIRED_IN_IMAGE because the list of
+  # shops lives in .estate and naming them here would put them in a public
+  # repository. Checked the same way and for the same reason: a shop whose file
+  # is missing does not degrade, it refuses to boot, and finding that out now
+  # costs a second rather than a deploy.
+  local s
+  for s in $(printf '%s\n' "$SHOPS" | cut -d'|' -f1); do
+    [[ -f "config/shop_locales/$s.en.yml" ]] || continue
+    REQUIRED_IN_IMAGE="$REQUIRED_IN_IMAGE
+config/shop_locales/$s.en.yml"
+  done
+
+  local f
+  for f in $REQUIRED_IN_IMAGE; do
+    rsh "test -f $BUILD_DIR/$f" || die "$f did not reach the server. It is gitignored; add it to CLIENT_ASSETS in script/commercial."
+    info "on the server: $f"
+  done
+
+  step "Building $IMAGE on native amd64"
+  rsh "cd $BUILD_DIR && docker build -t $IMAGE . 2>&1 | tail -5" || die "build failed on the server"
+
+  local arch; arch=$(rsh "docker image inspect $IMAGE --format '{{.Architecture}}'" | tr -d '\r')
+  [[ "$arch" == "amd64" ]] || die "the built image is $arch, expected amd64"
+  local mb; mb=$(( $(rsh "docker image inspect $IMAGE --format '{{.Size}}'" | tr -d '\r') / 1024 / 1024 ))
+  ok "built on the server, $arch, ${mb} MB"
+
+  # .dockerignore can remove a file that reached the server perfectly well, so
+  # the check above is not enough on its own. Ask the image itself.
+  for f in $REQUIRED_IN_IMAGE; do
+    rsh "docker run --rm --entrypoint test $IMAGE -f /rails/$f" \
+      || die "$f is missing from the finished image. Rails eager loads in production, so the shop would not boot. Check .dockerignore."
+    info "in the image: $f"
+  done
+
+}
+
+# ── per shop: directory, env, compose ────────────────────────────────────────
+cmd_provision() {
+  lookup "$1"
+  assert_temporary "$S_DOMAIN"
+  step "Provisioning $S_NAME at /srv/$S_DIR"
+
+  # Someone else made these directories on 13 August. Empty is ours to fill;
+  # occupied by anything we did not write is not.
+  local foreign
+  # Everything this script writes has to be on this list, or provision refuses
+  # its own second run. That has now happened twice: first .secret, then
+  # nginx-public.conf, each time only noticed because a re-run failed. So the
+  # list is derived from what the script creates, and any NEW file this script
+  # starts writing must be added here at the same time.
+  # docker-compose.override.yml is written by cmd_storefront, in this script, and
+  # was missing here for the same reason as the two above: it was added by one
+  # command and the guard belongs to another. Every shop with a storefront had it,
+  # so provision refused on all five at once.
+  # nginx-noindex.conf added 23 Aug, at the same time as cmd_noindex, rather
+  # than after provision refused on all seven. Three for three otherwise.
+  local OURS=(docker-compose.yml .env .provisioned .secret nginx-public.conf nginx-noindex.conf .original-store-url docker-compose.override.yml .env.provision-prev)
+  local excl=""
+  local f
+  for f in "${OURS[@]}"; do excl+=" ! -name '$f'"; done
+  foreign=$(rsh "find /srv/$S_DIR -maxdepth 1 -type f $excl 2>/dev/null | head -5" || true)
+  [[ -z "$foreign" ]] || die "/srv/$S_DIR already contains files this script did not write:
+$foreign
+Look at them before going further."
+
+  rsh "mkdir -p /srv/$S_DIR"
+
+  # Secrets are generated ON THE SERVER and never travel. Regenerating one on a
+  # re-run would invalidate every session and signed URL, so it is written once.
+  rsh "test -f /srv/$S_DIR/.secret || (openssl rand -hex 64 > /srv/$S_DIR/.secret && chmod 600 /srv/$S_DIR/.secret)"
+  local secret; secret=$(rsh "cat /srv/$S_DIR/.secret")
+
+  # Kept only for the length of this function, so the block after the heredoc can
+  # see what the old file had. rput truncates, so it has to be taken first.
+  rsh "test -f /srv/$S_DIR/.env && cp /srv/$S_DIR/.env /srv/$S_DIR/.env.provision-prev || true"
+
+  # SHOP is only written when this shop actually HAS a wording file, and the
+  # difference matters in both directions.
+  #
+  # Written with no file, the initializer raises and the container will not boot.
+  # That is the right failure for a shop whose file went missing, and the wrong
+  # one for a shop whose wording has not been written yet: two shops are in that
+  # position right now, and one of them is already serving.
+  #
+  # Not written, the shop falls back to the shared file, which is another brand.
+  # That is the bug this whole mechanism exists for, so it cannot pass quietly:
+  # it is said out loud here, at the moment a person is watching a provision run.
+  local shop_line
+  if [[ -f "config/shop_locales/$S_NAME.en.yml" ]]; then
+    shop_line="SHOP=$S_NAME"
+  else
+    shop_line="# SHOP is deliberately unset: config/shop_locales/$S_NAME.en.yml does not exist yet.
+# Until it does, this shop's emails use the shared file, which is another brand."
+    warn "$S_NAME has no config/shop_locales/$S_NAME.en.yml"
+    warn "its emails will carry the shared wording, which belongs to a different brand"
+    warn "SHOP left unset so the container still boots. Add the file and re-run provision."
+  fi
+
+  rput "/srv/$S_DIR/.env" <<ENV
+# $S_NAME — temporary copy for review. Generated by script/shop_host.
+RAILS_ENV=production
+SECRET_KEY_BASE=$secret
+DATABASE_URL=postgres://postgres@estate-postgres:5432/${S_NAME}_shop
+SPREE_PORT=$S_PORT
+STORE_URL=$S_DOMAIN
+# The host Rails itself answers on, which is NOT the storefront domain.
+#
+# Anything Rails builds outside a request uses this: Active Storage urls in API
+# payloads and, the one that bit, the logo in every email. Unset, those urls came
+# out on the storefront host, where /rails/active_storage does not exist, so the
+# mark at the top of the welcome email was a broken image. See the comment in
+# config/environments/production.rb, which names RAILS_HOST as the canonical
+# setting for exactly this.
+RAILS_HOST=$S_STORE
+# Spree hard codes "R". app/models/spree/order_decorator.rb reads this instead,
+# so each shop keeps the order number format its customers already know.
+ORDER_NUMBER_PREFIX=$S_PREFIX
+# Which shop this container is, and therefore whose email wording it sends.
+# config/initializers/shop_locale.rb loads config/shop_locales/\$SHOP.en.yml and
+# raises if it is not there. Every shop had its own wording on the old server,
+# one file per application; here one image serves them all, so the file has to be
+# chosen rather than found. Four shops shipped without this and sent a different
+# brand's wording, which nothing detected because nothing failed.
+$shop_line
+RAILS_SERVE_STATIC_FILES=true
+RAILS_LOG_TO_STDOUT=true
+# Mail goes to mailpit on this box and no further. See the header of this script.
+SMTP_HOST=estate-mailpit
+SMTP_PORT=1025
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM_ADDRESS=noreply@$S_DOMAIN
+ENV
+
+  # Other commands in this script APPEND to .env after provision has written it:
+  # cmd_storefront adds SPREE_API_URL and SPREE_PUBLISHABLE_KEY, cmd_admin_image
+  # adds ADMIN_LOGIN_IMAGE. The heredoc above does not know about any of them, so
+  # a second provision would silently hand back a shop with no publishable key
+  # and no sign-in picture, and the only symptom is a storefront that renders
+  # with no products. Carry forward anything that was there and is not here.
+  #
+  # SHOP is excluded by name. It is owned by the block above, which leaves it out
+  # on purpose when a shop has no wording file, and carrying the old value back
+  # would quietly undo that and leave a container that refuses to boot. A key this
+  # function decides is not a key it may inherit.
+  local carried
+  carried=$(rsh "
+    if [ -f /srv/$S_DIR/.env.provision-prev ]; then
+      while IFS= read -r line; do
+        case \"\$line\" in ''|'#'*|'SHOP='*) continue;; esac
+        k=\${line%%=*}
+        grep -q \"^\$k=\" /srv/$S_DIR/.env || printf '%s\n' \"\$line\"
+      done < /srv/$S_DIR/.env.provision-prev
+    fi")
+  if [[ -n "$carried" ]]; then
+    printf '\n# Carried over from the previous .env by provision.\n%s\n' "$carried" | rsh "cat >> /srv/$S_DIR/.env"
+    info "carried forward: $(printf '%s\n' "$carried" | cut -d= -f1 | paste -sd' ' -)"
+  fi
+  rsh "rm -f /srv/$S_DIR/.env.provision-prev"
+
+  rsh "chmod 600 /srv/$S_DIR/.env"
+
+  rput "/srv/$S_DIR/docker-compose.yml" <<YAML
+# $S_NAME. Postgres and mailpit live in $SHARED and are shared with the other
+# shops; this file describes only what belongs to this one.
+services:
+  web:
+    image: $IMAGE
+    container_name: ${S_NAME}_web
+    restart: always
+    env_file: .env
+    ports:
+      # Loopback only. Host nginx terminates TLS and proxies to this. Binding
+      # 0.0.0.0 would put the app on the internet ahead of the host firewall,
+      # because docker writes its NAT rules in front of ufw.
+      - "127.0.0.1:$S_PORT:3000"
+    volumes:
+      - storage_data:/rails/storage
+      # His own sign-in picture, read by the minimal layout.
+      #
+      # Declared here rather than added afterwards by cmd_admin_image, which is
+      # how it used to work and how it was lost. provision writes this file from
+      # scratch every time, so a line another command appends survives exactly
+      # until the next provision. The .env half of that was already noticed and
+      # is carried forward; the compose half was not, and the result was five
+      # shops holding ADMIN_LOGIN_IMAGE=/brand/admin_login.png with nothing
+      # mounted behind it, so every admin sign-in asked for a picture and got a
+      # 404. Nothing said so: the page renders, the box is simply empty.
+      #
+      # Safe to declare unconditionally. Docker creates ./brand if it is absent,
+      # and a shop with no picture yet mounts an empty directory, which is what
+      # it had anyway.
+      - ./brand:/rails/public/brand:ro
+    healthcheck:
+      test: curl -f http://localhost:3000/up || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks: [estate]
+    deploy:
+      resources:
+        limits:
+          # 1.5 GB, and the number came off the running containers rather than a
+          # guess. At 768M every web container on this box was pinned at its
+          # ceiling with a large part of itself pushed out to swap:
+          #
+          #     ca       427 MiB resident + 736 MiB swapped  = ~1.16 GB wanted
+          #     au       762 MiB resident + 686 MiB swapped  = ~1.45 GB wanted
+          #     nz/us/nolocal                                  ~1.2 GB wanted
+          #
+          # memory.events showed the cgroup hitting its limit 3,785 to 11,239
+          # times per container, vmstat showed pages being read back from swap
+          # continuously, and four ruby processes were OOM killed in one morning.
+          # None of it surfaced: docker reports OOMKilled false and RestartCount
+          # 0, because the kernel took child processes and left the main pid.
+          #
+          # The symptom people saw instead was speed. Pages that answer in two
+          # seconds were taking fourteen to sixteen.
+          #
+          # A web container is not one process. Puma runs Solid Queue in the same
+          # container, and any rails runner or rake task run against a shop
+          # starts a whole second Rails inside the same cgroup, which is what
+          # those four kills were. 1.5 GB covers the largest measured working set
+          # with room for that second process.
+          #
+          # Six of these is 9 GB of ceiling on a 16 GB box, against ~8.4 GB of
+          # measured demand. Ceilings are not reservations; the box has never
+          # been the constraint here, the per container cap was.
+          memory: 1536M
+
+networks:
+  estate:
+    external: true
+
+volumes:
+  storage_data:
+YAML
+
+  # Ask compose to parse what was just written, before anything tries to use it.
+  #
+  # That heredoc is unquoted, because it has to interpolate $S_NAME and the rest.
+  # Which means every backtick and $( ) inside it runs ON THE SERVER at write
+  # time. A comment added to this file on 18 Aug contained the words `rails
+  # runner` in backticks, so the server ran `rails`, and the output
+  #
+  #     Rails is not currently installed on this system. To get the latest ...
+  #
+  # was pasted into the middle of the yaml. Nothing said so. It was found only
+  # because docker compose refused the file on the next command, which is luck:
+  # a substitution that produced something yaml can parse would have gone in
+  # silently and changed what the container runs.
+  #
+  # Compose refusing a broken file is the safe failure. This makes it happen at
+  # the moment the file is written, next to the thing that wrote it, rather than
+  # later next to something innocent.
+  rsh "cd /srv/$S_DIR && docker compose config -q" \
+    || die "the compose file this just wrote for $S_NAME is not valid.
+    It is at /srv/$S_DIR/docker-compose.yml and the shop has NOT been changed.
+    The heredoc in cmd_provision is unquoted, so a backtick or a \$( ) in it runs
+    on the server and its output lands in the yaml. Look for one."
+
+  rsh "touch /srv/$S_DIR/.provisioned"
+  ok "compose and env written, checked by compose itself"
+  info "database ${S_NAME}_shop, port $S_PORT, $S_DOMAIN"
+}
+
+# ── restore the migrated database ────────────────────────────────────────────
+cmd_load() {
+  lookup "$1"
+  step "Loading $S_DB into ${S_NAME}_shop"
+
+  local here
+  # </dev/null on each of these three, and on the ssh below.
+  #
+  # `docker compose exec -T` and `ssh` both read stdin whether the remote command
+  # wants it or not. Driven from a pipe or a heredoc, they swallow the line meant
+  # for the `read` further down, `answer` comes back empty, and the load says
+  # "left alone" and returns 0. That reads exactly like a person declining, which
+  # is the worst possible way for a load to not happen.
+  here=$(docker compose exec -T postgres psql -U postgres -At -c \
+    "SELECT count(*) FROM pg_database WHERE datname='$S_DB'" </dev/null 2>/dev/null | tr -d '\r')
+  [[ "$here" == "1" ]] || die "$S_DB is not on this machine. Run script/migrate_shop first."
+
+  # Row counts BEFORE, from the source, so the restore can be proved rather
+  # than assumed. A restore that half works is the failure that looks like
+  # success: the site comes up, and a table nobody clicked on is empty.
+  local src_products src_orders
+  src_products=$(docker compose exec -T postgres psql -U postgres -d "$S_DB" -At -c \
+    "SELECT count(*) FROM spree_products" </dev/null | tr -d '\r')
+  src_orders=$(docker compose exec -T postgres psql -U postgres -d "$S_DB" -At -c \
+    "SELECT count(*) FROM spree_orders" </dev/null | tr -d '\r')
+  info "source: $src_products products, $src_orders orders"
+
+  # </dev/null on the ssh, or it eats the answer.
+  #
+  # ssh reads stdin whether the remote command wants it or not, so when this whole
+  # command is driven from a pipe or a heredoc the ssh above swallows the line
+  # meant for the `read` below, `answer` comes back empty, and the load silently
+  # says "left alone" and returns 0. It looks exactly like a person declining.
+  if rsh "docker exec estate-postgres psql -U postgres -lqt | cut -d'|' -f1 | grep -qw ${S_NAME}_shop" </dev/null; then
+    warn "${S_NAME}_shop already exists on the server"
+    printf '    type the shop name to replace it, anything else to skip: '
+    read -r answer
+    [[ "$answer" == "$S_NAME" ]] || { info "left alone"; return 0; }
+    rsh "docker exec estate-postgres dropdb -U postgres --force ${S_NAME}_shop"
+  fi
+  rsh "docker exec estate-postgres createdb -U postgres ${S_NAME}_shop"
+
+  info "streaming the dump (compressed in flight)"
+  docker compose exec -T postgres pg_dump -U postgres --no-owner --no-acl "$S_DB" \
+    | gzip -1 \
+    | rsh "gunzip | docker exec -i estate-postgres psql -U postgres -q -d ${S_NAME}_shop" \
+    >/dev/null 2>&1 || die "restore failed"
+
+  local dst_products dst_orders
+  dst_products=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c 'SELECT count(*) FROM spree_products'" | tr -d '\r')
+  dst_orders=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c 'SELECT count(*) FROM spree_orders'" | tr -d '\r')
+  [[ "$src_products" == "$dst_products" && "$src_orders" == "$dst_orders" ]] \
+    || die "row counts differ after restore: products $src_products vs $dst_products, orders $src_orders vs $dst_orders"
+  ok "restored and counted: $dst_products products, $dst_orders orders"
+
+  neutralise
+  point_store_at_temp_domain
+}
+
+# Spree generates every absolute URL from spree_stores.url, not from the host the
+# request came in on. On a restored copy that column still holds the LIVE domain,
+# so the review shop hands out image URLs, canonical links and email footers
+# pointing at the shop customers are using.
+#
+# It is not only cosmetic. The Store API returned product image URLs on the LIVE
+# hostname, so the review storefront was loading its pictures from the shop real
+# customers are using, and Next.js rejected them anyway because that host is not
+# in its allowed list — 22 image requests failing with 400 on a page that had
+# just started working.
+#
+# So the copy points at its own hostname. The original goes in a file next to the
+# shop, because at cutover it has to go back exactly as it was.
+point_store_at_temp_domain() {
+  [[ -n "$S_DOMAIN" ]] || return 0
+  local original
+  original=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c \"SELECT url FROM spree_stores ORDER BY id LIMIT 1\"" </dev/null | tr -d '\r')
+  [[ -n "$original" ]] || return 0
+
+  if [[ "$original" == "$S_DOMAIN" ]]; then
+    info "store url already points at $S_DOMAIN"
+    return 0
+  fi
+
+  # Written before the change, never overwritten, so a second run cannot lose it.
+  rsh "test -f /srv/$S_DIR/.original-store-url || echo '$original' > /srv/$S_DIR/.original-store-url"
+  rsh "docker exec estate-postgres psql -U postgres -q -d ${S_NAME}_shop -c \
+    \"UPDATE spree_stores SET url = '$S_DOMAIN'\"" </dev/null >/dev/null
+  ok "store url $original -> $S_DOMAIN"
+  info "the real one is saved in /srv/$S_DIR/.original-store-url for cutover"
+}
+
+# The two things a copy of a live shop must not be able to do: take money, and
+# send mail to the people in its orders table. Mail is handled by pointing SMTP
+# at mailpit. Money is handled here.
+neutralise() {
+  if [[ "${KEEP_PAYMENTS:-0}" == "1" ]]; then
+    warn "KEEP_PAYMENTS=1 — live payment credentials stay active on a temporary shop"
+    return 0
+  fi
+  # RETURNING id, not RETURNING 1.
+  #
+  # The first version counted. A count cannot be undone: on cutover morning the
+  # shop is loaded from a fresh dump, this runs again, and every method the client
+  # had just switched on goes off. Turning them back on then means guessing which
+  # ones were on, on a live shop, from memory.
+  #
+  # So it writes the ids it actually changed, on the box, beside the shop. Undo is
+  # `shop_host restore_payments <shop>` and it touches only those rows.
+  local ids
+  ids=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c \
+    \"UPDATE spree_payment_methods SET active = false WHERE active = true RETURNING id\"" || echo "")
+  ids=$(printf '%s' "$ids" | tr -d '\r' | grep -E '^[0-9]+$' || true)
+  local n; n=$(printf '%s' "$ids" | grep -c . || echo 0)
+
+  if [[ "$n" -gt 0 ]]; then
+    printf '%s\n' "$ids" | rsh "cat > /srv/$S_DIR/.deactivated-payments"
+    ok "deactivated $n payment method(s) so this copy cannot charge a real card"
+    info "ids written to /srv/$S_DIR/.deactivated-payments, so restore_payments can put back exactly these"
+  else
+    ok "no active payment method to deactivate"
+  fi
+  info "the credentials are still in the row, unchanged, ready for the real cutover"
+}
+
+# ── nginx + certificate ──────────────────────────────────────────────────────
+cmd_web() {
+  lookup "$1"
+  assert_temporary "$S_DOMAIN"
+  step "Serving $S_DOMAIN"
+
+  # A vhost pointing at a hostname that does not resolve here produces a
+  # certificate failure that reads like a dozen other things. Check first.
+  local resolved expected
+  expected=$(printf '%s' "$SSH_HOST" | sed 's/.*@//')
+  resolved=$(dig +short "$S_DOMAIN" A | tail -1)
+  [[ "$resolved" == "$expected" ]] \
+    || die "$S_DOMAIN resolves to ${resolved:-nothing}, not $expected. Fix DNS before asking for a certificate."
+  info "DNS points here"
+
+  rput "/etc/nginx/sites-available/$S_DOMAIN" <<NGINX
+# $S_NAME — temporary review copy. Written by script/shop_host.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $S_DOMAIN;
+
+    # Uploads and product imports go through here.
+    client_max_body_size 64m;
+
+    location / {
+        proxy_pass http://127.0.0.1:$S_PORT;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 120s;
+    }
+}
+NGINX
+  rsh "ln -sf /etc/nginx/sites-available/$S_DOMAIN /etc/nginx/sites-enabled/$S_DOMAIN"
+  rsh "nginx -t" >/dev/null 2>&1 || die "nginx rejected the config"
+  rsh "systemctl reload nginx"
+  ok "vhost live on port 80"
+
+  # certbot edits the vhost in place to add TLS and the redirect.
+  if rsh "test -d /etc/letsencrypt/live/$S_DOMAIN"; then
+    ok "certificate already present"
+  else
+    info "asking Let's Encrypt for a certificate"
+    rsh "certbot --nginx -d $S_DOMAIN --non-interactive --agree-tos --register-unsafely-without-email --redirect" \
+      >/dev/null 2>&1 || die "certbot failed. Run it by hand to see why: certbot --nginx -d $S_DOMAIN"
+    ok "certificate issued, http redirects to https"
+  fi
+}
+
+# ── per-shop files that are not code ─────────────────────────────────────────
+#
+# robots.txt, llms.txt, llms-full.txt and the icons are DIFFERENT for every
+# shop: each one names its own country and market, and the client wrote them by
+# hand. One image serves all six shops, so they cannot live in the image.
+#
+# nginx serves them straight off disk instead, ahead of the proxy. That also
+# means changing a robots.txt does not need a deploy.
+#
+# The location block goes in through an `include` inserted after server_name,
+# not by rewriting the vhost, because certbot has already edited that file to
+# add the TLS block and the redirect. Rewriting it would throw that away.
+cmd_public() {
+  lookup "$1"
+  local src="tmp/client/shop_public/$S_NAME"
+  [[ -d "$src" ]] || die "no files staged in $src — pull them from the old server first"
+  step "Publishing $S_NAME's own robots.txt, llms files and icons"
+
+  # This uploads the WHOLE staged directory, robots.txt included, so publishing a
+  # new llms file also replaces the shop's crawler policy. On 26 August that
+  # changed one shop's robots.txt from Disallow to Allow as a side effect of
+  # updating its llms.txt, and nothing said so.
+  #
+  # It is not dangerous while cmd_noindex is in force, because that adds
+  # X-Robots-Tag: noindex, nofollow to every response and a noindex header beats
+  # a permissive robots.txt. It IS dangerous the moment somebody runs
+  # `shop_host indexable` and then publishes. So the noindex include is
+  # re-asserted at the end of this function rather than left to memory.
+  rsh "mkdir -p /srv/$S_DIR/public"
+  tar -czf - -C "$src" . | rsh "tar -xzf - -C /srv/$S_DIR/public" || die "upload failed"
+  info "$(ls -1 "$src" | tr '\n' ' ')"
+
+  rput "/srv/$S_DIR/nginx-public.conf" <<NGINX
+# Served straight off disk by nginx, ahead of the app. Written by script/shop_host.
+location ~ ^/(robots\.txt|llms\.txt|llms-full\.txt|icon\.png|icon\.svg)\$ {
+    root /srv/$S_DIR/public;
+    access_log off;
+    expires 1h;
+}
+
+# Apple Pay will not appear at all until Stripe can read this file at the domain
+# the BROWSER loads Elements on. Measured 27 Aug: the path answered 404 on every
+# shop, so Apple Pay, Google Pay and Link would have been silently absent from
+# the cart and checkout with nothing in any log to say why.
+#
+# Note which domain: Spree's own prompt offers Spree::Store#url, which is the API
+# host and never loads Elements. The one that matters is storefront_url.
+#
+# No expires and no access_log off: Stripe re-reads this to keep a domain
+# verified, and a cached or unlogged answer is one nobody can diagnose.
+location = /.well-known/apple-developer-merchantid-domain-association {
+    root /srv/$S_DIR/public;
+    default_type text/plain;
+}
+NGINX
+
+  # Idempotent: only insert the include if it is not already there.
+  local vhost="/etc/nginx/sites-available/$S_DOMAIN"
+  rsh "grep -q 'nginx-public.conf' $vhost || sed -i 's|^\(\s*server_name $S_DOMAIN;\)|\1\n    include /srv/$S_DIR/nginx-public.conf;|' $vhost"
+
+  # sed exits 0 when its pattern matches nothing, so "the include was added" and
+  # "the server_name line was not in the shape we expected" are the same exit
+  # status. nz spent three days serving 404 for its own llms.txt on the strength
+  # of that silence, with the file sitting on disk the whole time. Ask the file.
+  rsh "grep -q 'nginx-public.conf' $vhost" \
+    || die "could not add the include to $vhost — no line matched 'server_name $S_DOMAIN;'"
+  rsh "nginx -t" >/dev/null 2>&1 || die "nginx rejected the config after adding the include"
+
+  # Publishing has just replaced this shop's robots.txt with whatever is staged,
+  # which for these shops is the LIVE crawler policy. On a temporary review host
+  # that has to be answered by the noindex header, so assert it here rather than
+  # rely on somebody remembering the order. Idempotent, and it verifies the
+  # header on the way out.
+  if [[ "$S_DOMAIN" == new* || "$S_DOMAIN" == *.local ]]; then
+    cmd_noindex "$S_NAME"
+  fi
+  rsh "systemctl reload nginx"
+
+  local f code
+  for f in robots.txt llms.txt llms-full.txt icon.png; do
+    [[ -f "$src/$f" ]] || continue
+    code=$(rsh "curl -s -o /dev/null -w '%{http_code}' https://$S_DOMAIN/$f" </dev/null | tr -d '\r')
+    [[ "$code" == "200" ]] || die "https://$S_DOMAIN/$f returned $code"
+    ok "https://$S_DOMAIN/$f"
+  done
+}
+
+# ── keeping the review copy out of search ────────────────────────────────────
+#
+# Every review host was serving `Allow: /`, no noindex anywhere, and a canonical
+# tag naming ITSELF. Measured on 23 Aug across all seven:
+#
+#   newca / newau / newus / newnz / newnolocal   Allow: /   canonical → the review host
+#   newaqwa                                      Allow: /   (only meta-externalagent blocked)
+#   newb2b                                       Disallow: /  ← the only closed one, and correct
+#
+# So six copies of his shops were fully indexable, each one telling Google it was
+# the original, against the live shops they are replacing. They had been up nine
+# days.
+#
+# ── why this is a header and not robots.txt ──────────────────────────────────
+#
+# The instinct is `Disallow: /`, and on a host that may already be indexed it is
+# the wrong control and can make things worse. Disallow stops CRAWLING, not
+# INDEXING: a URL can be indexed from external links without ever being fetched,
+# and once it is in, a Disallow means the crawler can no longer fetch the page to
+# discover a noindex, so the entry sticks. X-Robots-Tag is the decisive control,
+# and it only works if the crawler is still allowed in to read it.
+#
+# A header rather than a meta tag because it covers what a meta tag cannot: the
+# sitemap, the JSON feeds, the images, and any address the app serves without an
+# HTML head.
+#
+# `always` matters. Without it nginx attaches add_header only to a short list of
+# status codes, so a 301 or a 404 would go out unmarked, and a redirect is
+# exactly what a crawler follows.
+#
+# Inherited by every location: nginx drops a parent's add_header only in a
+# location that declares its own, and neither `location /` nor the block in
+# nginx-public.conf declares any. Verified by asking both addresses below rather
+# than by reading the nginx documentation.
+#
+# ── the safety property ─────────────────────────────────────────────────────
+#
+# assert_temporary refuses anything in LIVE_DOMAINS and anything not named new*,
+# so this command cannot mark a shop that serves real customers. Cutover is then
+# the act of removing the include, and `shop_host indexable` does that.
+cmd_noindex() {
+  lookup "$1"
+  assert_temporary "$S_DOMAIN"
+  step "Keeping $S_DOMAIN out of search results"
+
+  rput "/srv/$S_DIR/nginx-noindex.conf" <<'NGINX'
+# This host is a temporary review copy of a shop that is live elsewhere. Written
+# by script/shop_host. Removed at cutover by `shop_host indexable`.
+add_header X-Robots-Tag "noindex, nofollow" always;
+NGINX
+
+  local vhost="/etc/nginx/sites-available/$S_DOMAIN"
+  rsh "grep -q 'nginx-noindex.conf' $vhost || sed -i 's|^\(\s*server_name $S_DOMAIN;\)|\1\n    include /srv/$S_DIR/nginx-noindex.conf;|' $vhost"
+
+  # sed exits 0 when nothing matched, so ask the file, for the same reason
+  # cmd_public does. Three days of 404s bought that lesson once already.
+  rsh "grep -q 'nginx-noindex.conf' $vhost" \
+    || die "could not add the include to $vhost — no line matched 'server_name $S_DOMAIN;'"
+  rsh "nginx -t" >/dev/null 2>&1 || die "nginx rejected the config after adding the include"
+  rsh "systemctl reload nginx"
+
+  # Ask the header, on a page AND on a static file served by the other include,
+  # because inheritance is the part that would fail silently.
+  local got
+  for path in "" "robots.txt"; do
+    got=$(rsh "curl -sI https://$S_DOMAIN/$path | tr -d '\r' | grep -i '^x-robots-tag:'" </dev/null || true)
+    [[ -n "$got" ]] || die "https://$S_DOMAIN/$path went out with no X-Robots-Tag. The include is in the vhost but the header is not reaching this address."
+    ok "/${path}  ${got}"
+  done
+}
+
+# Make this box answer for the shop's REAL hostname, before the DNS moves.
+#
+#   script/shop_host live_host nz        prepare it
+#   script/shop_host live_host nz --go   and drop the noindex, on the day
+#
+# ── why this is not a certificate job ────────────────────────────────────────
+#
+# The obvious plan is to issue a certificate for the live name first. It cannot
+# be done: Let's Encrypt proves the name by reaching it, and the name points at
+# his old server until the moment it moves. Which is the sequencing knot he asked
+# about on 27 August, "is it best to do SSL on the server first then turn on the
+# Cloudflare Proxy".
+#
+# It dissolves because his Cloudflare encryption mode is FULL. Full encrypts
+# Cloudflare to origin and does NOT check the name on the origin's certificate.
+# So this box only has to answer HTTPS at all, and the certificate it already has
+# for the review name does that. The visitor sees Cloudflare's own certificate,
+# which is valid, because Cloudflare terminates TLS at the edge.
+#
+# If he ever moves to Full (Strict) this stops being true and the name really
+# does need its own certificate. The check at the end reads what is served rather
+# than assuming, so that day shows up as a failure here rather than as a customer
+# seeing a warning.
+#
+# ── noindex, and why it is on by default ─────────────────────────────────────
+#
+# Prepared and not yet live is still a review copy, so the block carries the
+# noindex include like its review twin. --go removes it, and that is the step
+# that makes the shop real. Splitting them means a record pointed here early is
+# harmless rather than a page in Google.
+# ── admin_host ───────────────────────────────────────────────────────────────
+#
+# Make this box answer for the shop's NEW admin hostname, the two-label one.
+#
+# Cloudflare's Universal SSL certificate covers <zone> and *.<zone> and nothing
+# deeper, so store.<shop>.<zone> has three labels and cannot be proxied at all:
+# the visitor would get a certificate that does not cover the name. <shop>-store
+# .<zone> has two and is covered.
+#
+# The client asked for this and the reason is his, not ours: he works from China,
+# where Cloudflare's network is the difference between an admin that is usable and
+# one that is not, and a proxied hostname is one he can put a firewall rule on if
+# the shop is ever attacked.
+#
+# Like live_host, this borrows the existing certificate. Under Full the name on it
+# is never checked, so nothing has to be issued before the record moves.
+#
+# The OLD store.<shop>.<zone> vhost is left in place on purpose. It is what the
+# storefront images already built are calling, and they change one shop at a time.
+cmd_admin_host() {
+  local shop="${1:?usage: script/shop_host admin_host <shop>}"
+  lookup "$shop"
+
+  [[ -n "$S_STORE" ]] || die "$S_NAME has no admin hostname in $ESTATE_FILE"
+
+  local admin="$S_STORE"
+  case "$S_STORE" in
+    store.*.*) admin="$(printf '%s' "$S_STORE" | sed -E 's/^store\.([^.]+)\.(.+)$/\1-store.\2/')" ;;
+  esac
+  [[ "$admin" != "$S_STORE" ]] \
+    || die "$S_STORE is already two labels. Nothing to add."
+
+  step "Preparing this box to answer for $admin"
+  info "the old name $S_STORE keeps working: the built storefronts still call it"
+
+  local cert="/etc/letsencrypt/live/$S_STORE"
+  rsh "test -d $cert" </dev/null || die "no certificate at $cert to borrow for $admin"
+
+  rput "/etc/nginx/sites-available/$admin" <<NGINX
+# $admin — the shop's admin, on two labels so Cloudflare's wildcard covers it.
+# Written by script/shop_host admin_host.
+#
+# The certificate below belongs to $S_STORE, deliberately: Cloudflare is on Full
+# for this account, which encrypts to the origin without checking the name. The
+# visitor sees Cloudflare's certificate, not this one.
+#
+# No noindex include here and none wanted: this is an admin, and Rails already
+# refuses it to anyone without a session.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name $admin;
+
+    client_max_body_size 32m;
+
+    location / {
+        proxy_pass http://127.0.0.1:$S_PORT;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 120s;
+    }
+
+    ssl_certificate $cert/fullchain.pem;
+    ssl_certificate_key $cert/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+NGINX
+
+  rsh "ln -sfn /etc/nginx/sites-available/$admin /etc/nginx/sites-enabled/$admin" </dev/null
+  rsh "nginx -t" </dev/null >/dev/null 2>&1 || die "nginx rejected the configuration for $admin"
+  rsh "systemctl reload nginx" </dev/null || die "nginx did not reload"
+  ok "$admin is in nginx"
+
+  # Proved from the box itself, resolving the name locally so the answer cannot be
+  # Cloudflare's cache or his old server. -L because the admin redirects to a
+  # sign-in, and the sign-in is the thing we want to see.
+  step "Asking this box what it serves for $admin"
+  local body
+  # NOT `head -c 6000`. The admin sign-in page is 42 KB and the password field sits
+  # past the fortieth kilobyte, so a truncated read reported all six shops as not
+  # serving an admin while every one of them was. Count on the server and send back
+  # the counts, rather than moving 42 KB per shop to count it here.
+  body=$(rsh "curl -skL --max-time 40 --resolve $admin:443:127.0.0.1 https://$admin/admin -o /tmp/admcheck.html -w '%{http_code} %{url_effective}';
+              printf ' pw=%s email=%s' \
+                \"\$(grep -c 'type=\\\"password\\\"' /tmp/admcheck.html)\" \
+                \"\$(grep -c 'type=\\\"email\\\"' /tmp/admcheck.html)\";
+              rm -f /tmp/admcheck.html" </dev/null || true)
+  local title
+  title=$(printf '%s' "$body" | grep -oE 'https?://[^ ]+' | head -1 || true)
+  local pw
+  pw=$(printf '%s' "$body" | sed -n 's/.*pw=\([0-9]*\).*/\1/p' || true)
+
+  if [[ "${pw:-0}" -lt 1 ]]; then
+    warn "no password field came back. First bytes:"
+    printf '%s\n' "$body" | head -c 300 | sed 's/^/      /'
+    die "$admin is not serving the admin sign-in"
+  fi
+  ok "$admin serves the admin sign-in${title:+: $title}"
+}
+
+# ── cutover ──────────────────────────────────────────────────────────────────
+#
+# Point one shop at its REAL name, and at its real mail account.
+#
+# Everything else in this file refuses to touch a live hostname, on purpose:
+# assert_temporary is the guard that has kept a review copy from ever answering
+# for a real customer. This is the one command that is allowed past it, so it
+# carries its own guards instead.
+#
+#   dry run by default   prints every value it would change, old and new, and
+#                        exits without writing. --go is the only way to act.
+#   dumps first          before a single byte changes. Never destroy client data.
+#   reads back           every value, from the running container, after restart.
+#                        "5 rows updated" is not a shop that works.
+#
+# What it does NOT do, deliberately:
+#   - it does not touch DNS. That record is in the client's Cloudflare account.
+#   - it does not turn payments on. `restore_payments` does that, separately,
+#     because a shop that can charge a card is a decision and not a side effect.
+#   - it does not drop noindex. `live_host <shop> --go` does that, after this.
+cmd_cutover() {
+  local shop="${1:?usage: shop_host cutover <shop> [--go]}"
+  local go="${2:-}"
+  lookup "$shop"
+
+  [[ -n "${S_LIVE:-}" && "$S_LIVE" != "-" ]] \
+    || die "$S_NAME has no live url in .estate. Nothing to cut over to."
+
+  local live="$S_LIVE"; live="${live#https://}"; live="${live%%/*}"
+
+  # The admin host moves to two labels so Cloudflare's wildcard certificate
+  # covers it: store.<shop>.<zone> becomes <shop>-store.<zone>. Universal SSL
+  # covers <zone> and *.<zone> and nothing deeper, so the old three-label name
+  # cannot be proxied at all. The client asked for this so his admin is behind
+  # Cloudflare: he works from China, where it is the difference between usable
+  # and not.
+  #
+  # Derived rather than read from a column, and PRINTED, because a derivation
+  # nobody sees is a derivation nobody checks.
+  local admin="$S_STORE"
+  case "$S_STORE" in
+    store.*.*) admin="$(printf '%s' "$S_STORE" | sed -E 's/^store\.([^.]+)\.(.+)$/\1-store.\2/')" ;;
+  esac
+
+  step "Cutting $S_NAME over to its real names"
+  info "storefront   $S_DOMAIN  ->  $live"
+  info "admin        $S_STORE  ->  $admin"
+  [[ "$admin" == "$S_STORE" ]] && warn "the admin host is unchanged: it is already two labels"
+
+  # ── the mail account, before anything is written ──
+  local smtp
+  smtp=$("$(dirname "$0")/shop_smtp" "$S_NAME") \
+    || die "no complete SMTP block for $S_NAME. Run script/shop_smtp $S_NAME to see why."
+  local smtp_user
+  smtp_user=$(printf '%s\n' "$smtp" | sed -n 's/^SMTP_USERNAME=//p')
+  info "mail         estate-mailpit  ->  $(printf '%s\n' "$smtp" | sed -n 's/^SMTP_HOST=//p') as $smtp_user"
+
+  # ── what the shop says about itself today ──
+  local before
+  # Rails prints a banner and a JWT warning to stdout on boot, so the value has to
+  # be fenced. Without the marker those lines landed in the middle of the reading
+  # and made a correct value look like noise.
+  before=$(rsh "docker exec ${S_NAME}_web bin/rails runner '
+    s = Spree::Store.default
+    print \"<<V:\" + [s.preferred_storefront_url, s.mail_from_address, s.url].join(\"|\") + \":V>>\"
+  ' 2>/dev/null" </dev/null | tr -d '\r' | sed -n 's/.*<<V:\(.*\):V>>.*/\1/p')
+  info "store row    $before"
+
+  if [[ "$go" != "--go" ]]; then
+    warn "dry run. Nothing was written."
+    info "re-run with --go when the DNS record for $live points here and you are ready."
+    return 0
+  fi
+
+  # ── dump, and prove the dump reads back ──
+  step "Dumping ${S_NAME}_shop before anything changes"
+  local stamp; stamp=$(date -u +%Y%m%d-%H%M%S)
+  local dump="/root/${S_NAME}-precutover-$stamp.sql.gz"
+  rsh "docker exec estate-postgres pg_dump -U postgres --no-owner --no-acl ${S_NAME}_shop | gzip > $dump" </dev/null \
+    || die "the dump did not run"
+  rsh "gzip -t $dump" </dev/null || die "the dump does not read back. Stopping."
+  local size
+  size=$(rsh "stat -c %s $dump" </dev/null | tr -d '\r')
+  [[ "${size:-0}" -gt 1000 ]] || die "the dump is $size bytes. Six empty dumps have shipped on this project. Stopping."
+  ok "$dump  $size bytes, reads back"
+
+  # ── the env ──
+  step "Writing the live values into /srv/$S_DIR/.env"
+  rsh "cp /srv/$S_DIR/.env /srv/$S_DIR/.env.pre-cutover-$stamp" </dev/null
+
+  # sed each key in place rather than rewriting the file: provision owns the file
+  # and rewriting it here would mean two places that must agree about every line.
+  local line key val
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    key="${line%%=*}"; val="${line#*=}"
+    rsh "sed -i 's|^$key=.*|$key=$(printf '%s' "$val" | sed 's/[|&]/\\\\&/g')|' /srv/$S_DIR/.env" </dev/null
+  done <<< "$smtp"
+  rsh "sed -i 's|^STORE_URL=.*|STORE_URL=$live|' /srv/$S_DIR/.env" </dev/null
+  rsh "sed -i 's|^RAILS_HOST=.*|RAILS_HOST=$admin|' /srv/$S_DIR/.env" </dev/null
+
+  # SMTP_FROM_ADDRESS is left alone on purpose. Measured: a Spree email takes its
+  # From from spree_stores.mail_from_address, and that variable only sets
+  # ActionMailer's default, which every Spree mailer overrides. The store row is
+  # what matters and it is checked below.
+  ok "env written, previous copy at /srv/$S_DIR/.env.pre-cutover-$stamp"
+
+  # ── the store row ──
+  step "Pointing the store record at $live"
+  # TWO fields, not one.
+  #
+  # preferred_storefront_url is what a customer link in an email uses. `url` is
+  # what the admin's Setup Storefront screen shows as the Store API URL, and
+  # `load` rewrites it to the REVIEW host so a copy cannot advertise the real one.
+  # The first version of this set only the first, and the client opened his own
+  # admin after the cutover and found the review address still sitting there.
+  # He was right, and it is the sort of thing only the owner ever looks at.
+  rsh "docker exec ${S_NAME}_web bin/rails runner '
+    s = Spree::Store.default
+    s.preferred_storefront_url = \"https://$live\"
+    s.url = \"$admin\"
+    s.save!
+  '" </dev/null || die "the store record did not save"
+
+  # ── restart, then read everything back ──
+  step "Restarting $S_NAME so it picks the new environment up"
+  rsh "cd /srv/$S_DIR && docker compose up -d --force-recreate web" </dev/null >/dev/null 2>&1 \
+    || die "the container did not come back"
+
+  step "Reading it back from the running container"
+  local after
+  after=$(rsh "docker exec ${S_NAME}_web bin/rails runner '
+    s = Spree::Store.default
+    print \"<<V:\" + [s.preferred_storefront_url, s.mail_from_address, ENV[\"STORE_URL\"], ENV[\"RAILS_HOST\"], ENV[\"SMTP_HOST\"], ENV[\"SMTP_USERNAME\"], s.url].join(\"|\") + \":V>>\"
+  ' 2>/dev/null" </dev/null | tr -d '\r' | sed -n 's/.*<<V:\(.*\):V>>.*/\1/p')
+
+  local a_front a_from a_store a_rails a_smtp a_user a_url
+  IFS='|' read -r a_front a_from a_store a_rails a_smtp a_user a_url <<< "$after"
+
+  local bad=0
+  check() {
+    if [[ "$2" == "$3" ]]; then ok "$1  $2"; else warn "$1  expected $3, got $2"; bad=$((bad+1)); fi
+  }
+  check "storefront_url" "$a_front" "https://$live"
+  check "STORE_URL     " "$a_store" "$live"
+  check "RAILS_HOST    " "$a_rails" "$admin"
+  check "SMTP_USERNAME " "$a_user"  "$smtp_user"
+  check "store.url     " "$a_url"   "$admin"
+  [[ "$a_smtp" != "estate-mailpit" ]] && ok "SMTP_HOST      $a_smtp" || { warn "SMTP_HOST is still the catcher"; bad=$((bad+1)); }
+
+  # The From a customer will actually see. It is not the env var, and telling the
+  # two apart is the whole reason this reads the built mail rather than a setting.
+  case "$a_from" in
+    *@send.*) ok "mail_from      $a_from" ;;
+    *) warn "mail_from is $a_from, which is not on a send. subdomain. Under DMARC p=reject that BOUNCES."; bad=$((bad+1)) ;;
+  esac
+
+  [[ "$bad" -eq 0 ]] || die "$bad value(s) did not come back as asked. The dump is at $dump."
+
+  ok "$S_NAME is configured for $live"
+  warn "still to do, each on purpose and separately:"
+  info "  shop_host storefront $S_NAME   rebuild the storefront on the live address"
+  info "  shop_host restore_payments $S_NAME   let it charge a card again"
+  info "  shop_host live_host $S_NAME --go     drop the noindex"
+}
+
+# ── restore_payments ─────────────────────────────────────────────────────────
+#
+# Put back exactly the payment methods `load` switched off, and nothing else.
+#
+# `load` neutralises a copy so it cannot charge a real card, which is right for a
+# review copy and wrong for the minutes after a cutover. On the morning the shop
+# is loaded from a fresh dump and neutralise runs again, so every method the
+# client had switched on goes off. Without a record of WHICH, turning them back
+# on is a guess made on a live shop.
+#
+# So this reads /srv/<dir>/.deactivated-payments, written by neutralise, and
+# reactivates only those ids. It prints the name and state of every method before
+# and after, because "5 rows updated" is not a shop that can take money.
+cmd_restore_payments() {
+  local shop="${1:?usage: shop_host restore_payments <shop>}"
+  lookup "$shop"
+  step "Putting back the payment methods load switched off on $S_NAME"
+
+  local ids
+  ids=$(rsh "cat /srv/$S_DIR/.deactivated-payments 2>/dev/null" </dev/null | tr -d '\r' | grep -E '^[0-9]+$' || true)
+  if [[ -z "$ids" ]]; then
+    warn "no /srv/$S_DIR/.deactivated-payments on the box"
+    info "either load has not run since this was added, or it found nothing active."
+
+    # Two very different situations wear that same missing file, and refusing both
+    # stopped a cutover on a shop that was already able to take money:
+    #
+    #   nothing was ever switched off   the gateways read active right now, so
+    #                                   there is nothing to put back
+    #   the record was lost             the gateways read inactive, and which ones
+    #                                   to turn on would be a guess
+    #
+    # Only the second is dangerous. So ask the database which one this is rather
+    # than treating the absent file as the whole answer. A gateway that is already
+    # on is not made safer by this command refusing to run, and the refusal cost a
+    # live cutover its last step.
+    #
+    # Exact class names, not LIKE. The first version excluded anything matching
+    # '%Check%', and SpreePaypalCheckout::Gateway contains Checkout, so PayPal was
+    # counted as an offline method. It printed 1 where the answer was 2, and on a
+    # shop whose only gateway is PayPal it would have printed 0 and refused a
+    # cutover that was correct.
+    local live_gateways
+    live_gateways=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c \"SELECT count(*) FROM spree_payment_methods WHERE deleted_at IS NULL AND active AND type NOT IN ('Spree::PaymentMethod::StoreCredit', 'Spree::PaymentMethod::Check')\"" </dev/null | tr -d '\r' | tail -1)
+
+    if [[ "${live_gateways:-0}" -gt 0 ]]; then
+      info "current state:"
+      rsh "docker exec estate-postgres psql -U postgres -d ${S_NAME}_shop -c \"SELECT id, active, name FROM spree_payment_methods WHERE deleted_at IS NULL ORDER BY id\"" </dev/null | sed 's/^/      /'
+      ok "$live_gateways card or wallet gateway(s) already active, so nothing was switched off and nothing needs putting back"
+      warn "this shop can charge a real card. That is only correct after cutover."
+      return 0
+    fi
+
+    die "refusing to guess which methods should be on: no record of what was switched off, and no gateway is active"
+  fi
+
+  local list; list=$(printf '%s' "$ids" | paste -sd, -)
+  info "ids recorded by load: $list"
+
+  info "before:"
+  rsh "docker exec estate-postgres psql -U postgres -d ${S_NAME}_shop -c \
+    \"SELECT id, active, name FROM spree_payment_methods ORDER BY id\"" </dev/null | sed 's/^/      /'
+
+  rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c \
+    \"UPDATE spree_payment_methods SET active = true WHERE id IN ($list)\"" </dev/null >/dev/null \
+    || die "the update did not run"
+
+  info "after:"
+  local after
+  after=$(rsh "docker exec estate-postgres psql -U postgres -d ${S_NAME}_shop -c \
+    \"SELECT id, active, name FROM spree_payment_methods ORDER BY id\"" </dev/null)
+  printf '%s\n' "$after" | sed 's/^/      /'
+
+  # Proved, not assumed: every id we asked for must read back as active.
+  local still_off=0 id
+  for id in $(printf '%s' "$ids"); do
+    printf '%s' "$after" | grep -qE "^ *$id *\| *t" || still_off=$((still_off + 1))
+  done
+  [[ "$still_off" -eq 0 ]] || die "$still_off of the recorded method(s) are still off"
+
+  ok "$(printf '%s' "$ids" | grep -c .) payment method(s) back on, each one read back"
+  warn "this shop can now charge a real card. That is only correct after cutover."
+}
+
+cmd_live_host() {
+  local shop="${1:?usage: script/shop_host live_host <shop> [--go]}"
+  local go="${2:-}"
+  lookup "$shop"
+
+  [[ -n "${S_LIVE:-}" && "$S_LIVE" != "-" ]] || die "$S_NAME has no live hostname in $ESTATE_FILE"
+  local live="$S_LIVE"
+  live="${live#https://}"; live="${live%%/*}"
+
+  step "Preparing this box to answer for $live"
+
+  # The review host's certificate. Under Cloudflare Full the name on it is never
+  # checked, and reusing it means no new certificate has to exist before a move.
+  local cert="/etc/letsencrypt/live/$S_DOMAIN"
+  rsh "test -d $cert" || die "no certificate at $cert to borrow for $live"
+
+  local noindex="    include /srv/$S_DIR/nginx-noindex.conf;"
+  [[ "$go" == "--go" ]] && noindex="    # noindex removed by live_host --go"
+
+  rput "/etc/nginx/sites-available/$live" <<NGINX
+# $live — the real customer hostname. Written by script/shop_host live_host.
+#
+# The certificate below belongs to $S_DOMAIN, deliberately. Cloudflare is set to
+# Full for this account, which encrypts to the origin without checking the name,
+# so this only has to answer HTTPS. The visitor sees Cloudflare's certificate.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name $live;
+$noindex
+    include /srv/$S_DIR/nginx-public.conf;
+
+    client_max_body_size 64m;
+
+    location / {
+        proxy_pass http://127.0.0.1:$S_SPORT;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 120s;
+    }
+
+    ssl_certificate $cert/fullchain.pem;
+    ssl_certificate_key $cert/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $live;
+    return 301 https://\$host\$request_uri;
+}
+NGINX
+
+  rsh "ln -sfn /etc/nginx/sites-available/$live /etc/nginx/sites-enabled/$live"
+  rsh "nginx -t" >/dev/null 2>&1 || die "nginx rejected the config for $live"
+  rsh "systemctl reload nginx"
+
+  # Ask THIS box, with the live name in the Host header, rather than asking DNS.
+  # DNS still points at his old server, so a normal fetch would measure that and
+  # report a healthy shop that has nothing to do with us.
+  # -L, because a closed shop answers its home page with a 307 to the sign-in and
+  # a 21 byte body that has no title in it. Without following, this read that as
+  # "not serving the shop" and killed the run.
+  #
+  # And `|| true` on the assignment, because grep exits non-zero when it finds
+  # nothing and this file runs under -e: the first version of this check exited
+  # 1 with NO MESSAGE AT ALL on the gated shop, before die could say why. A
+  # silent failure in the middle of a cutover tool is the worst thing in here.
+  local body
+  body=$(rsh "curl -skL --max-time 40 --resolve $live:443:127.0.0.1 --resolve $live:80:127.0.0.1 https://$live/ | head -c 6000" </dev/null || true)
+  local title
+  title=$(printf '%s' "$body" | grep -o '<title>[^<]*' | head -1 | sed 's/<title>//' || true)
+  if [[ -z "$title" ]]; then
+    warn "$live answered from this box with no title. First bytes:"
+    printf '%s\n' "$body" | head -c 300 | sed 's/^/      /'
+    die "$live is not serving the shop"
+  fi
+  ok "$live serves: $title"
+
+  local robots
+  robots=$(rsh "curl -sk --max-time 20 --resolve $live:443:127.0.0.1 -o /dev/null -D - https://$live/ | tr -d '\r' | grep -i '^x-robots-tag:'" </dev/null || true)
+  if [[ "$go" == "--go" ]]; then
+    [[ -z "$robots" ]] || die "$live still sends $robots after --go"
+    ok "$live is indexable"
+  else
+    [[ -n "$robots" ]] || die "$live went out with no X-Robots-Tag while still a review copy"
+    ok "$live  $robots"
+  fi
+}
+
+
+# The cutover half. Named for what it does to the shop rather than for the file
+# it deletes, because this is the command somebody runs on the day.
+cmd_indexable() {
+  lookup "$1"
+  step "Allowing $S_DOMAIN into search results"
+  local vhost="/etc/nginx/sites-available/$S_DOMAIN"
+  rsh "sed -i '\|nginx-noindex.conf|d' $vhost"
+  rsh "rm -f /srv/$S_DIR/nginx-noindex.conf"
+  rsh "nginx -t" >/dev/null 2>&1 || die "nginx rejected the config after removing the include"
+  rsh "systemctl reload nginx"
+
+  local got
+  got=$(rsh "curl -sI https://$S_DOMAIN/ | tr -d '\r' | grep -i '^x-robots-tag:'" </dev/null || true)
+  [[ -z "$got" ]] || die "X-Robots-Tag is still going out: $got"
+  ok "no X-Robots-Tag on https://$S_DOMAIN/"
+
+  warn "Search engines take a while to re-index. Removing the header allows it; it does not ask for it."
+}
+
+cmd_start() {
+  lookup "$1"
+  step "Starting $S_NAME"
+  rsh "cd /srv/$S_DIR && docker compose up -d" >/dev/null 2>&1 || die "compose up failed"
+  info "waiting for the app to answer (migrations run on boot, first start is slow)"
+  local tries=0
+  until rsh "curl -sf http://127.0.0.1:$S_PORT/up" >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    if [[ $tries -gt 60 ]]; then
+      rsh "cd /srv/$S_DIR && docker compose logs --tail 40 web" || true
+      die "$S_NAME did not come up in two minutes"
+    fi
+    sleep 2
+  done
+  ok "answering on 127.0.0.1:$S_PORT"
+}
+
+# ── put every shop onto the image that was last built ────────────────────────
+#
+# `ship` builds spree-estate:latest and stops. A running container keeps the
+# image ID it started with, so until it is recreated it goes on serving the old
+# code no matter how many times the image is rebuilt.
+#
+# The fix for blank product photographs was shipped, then verified on the two
+# containers that happened to have been recreated by hand while chasing it. Five shops never picked it up, and on 27 Aug the client sent a
+# screenshot of a live shop with grey boxes where its product photographs go.
+#
+# One shop at a time, oldest last so a failure stops before it touches the rest,
+# and each is asked afterwards whether it is actually answering. A recreate that
+# leaves a shop down is worse than the stale code it replaced.
+cmd_refresh() {
+  local only="${1:-}"
+  local failed=0
+
+  # The whole list first, into an array, and only then the ssh calls.
+  #
+  # `while read ... < <(...)` with an ssh in the body reads one line and stops:
+  # ssh consumes the rest of the stream as its own stdin. This file already warns
+  # about it in cmd_ship, and this function was written with the bug anyway. It
+  # recreated one shop, reported the other six stale, and the gate caught it.
+  local -a rows=()
+  local line
+  while IFS= read -r line; do [[ -n "$line" ]] && rows+=("$line"); done < <(printf '%s\n' "$SHOPS")
+
+  local row shop dir
+  for row in "${rows[@]}"; do
+    IFS='|' read -r shop dir _rest <<< "$row"
+    [[ -n "$shop" ]] || continue
+    [[ -z "$only" || "$only" == "$shop" ]] || continue
+
+    step "Recreating ${shop}_web"
+    if ! rsh "cd /srv/$dir && docker compose up -d --force-recreate web" >/dev/null 2>&1; then
+      warn "${shop}_web: compose up failed"
+      failed=$((failed + 1))
+      continue
+    fi
+
+    lookup "$shop"
+    local tries=0
+    until rsh "curl -sf http://127.0.0.1:$S_PORT/up" >/dev/null 2>&1; do
+      tries=$((tries + 1))
+      if [[ $tries -gt 60 ]]; then
+        warn "${shop}_web did not answer within two minutes"
+        failed=$((failed + 1))
+        break
+      fi
+      sleep 2
+    done
+    [[ $tries -le 60 ]] && ok "${shop}_web answering on 127.0.0.1:$S_PORT"
+  done
+
+  [[ $failed -eq 0 ]] || die "$failed shop(s) did not come back. Look at them before shipping anything else."
+
+  step "Confirming"
+  script/check_containers_current
+}
+
+cmd_up() {
+  local shop="${1:?which shop}"
+  lookup "$shop"
+  cmd_shared
+  rsh "docker image inspect $IMAGE >/dev/null 2>&1" || cmd_ship
+  cmd_provision "$shop"
+  cmd_load "$shop"
+  cmd_start "$shop"
+  cmd_web "$shop"
+  cmd_public "$shop"
+  step "$S_NAME is up"
+  info "https://$S_DOMAIN"
+}
+
+cmd_status() {
+  step "The estate"
+  printf '    %-9s %-16s %-6s %-9s %s\n' shop database port state admin
+  # A `for` over lines, not `while read`. rsh reads its own stdin, so inside a
+  # `while read <<< "$list"` it swallows the rest of the list and the loop ends
+  # after one pass: this printed the first shop and stopped, on a table of six.
+  # Third appearance of the same bug in this file, hence the comment.
+  local line n d db p sp dom store state old_ifs="$IFS"
+  IFS=$'\n'
+  for line in $(printf '%s\n' "$SHOPS" | grep '|'); do
+    IFS='|' read -r n d db p sp dom store <<< "$line"
+    IFS=$'\n'
+    # tr, because a container that does not exist yields an empty LINE rather
+    # than nothing, and that newline lands in the middle of the printf row.
+    #
+    # `|| true` because this file sets pipefail: docker inspect exits 1 for a
+    # container that is not there, which is the normal case for a shop not built
+    # yet, and the failing pipeline took the whole script down with set -e after
+    # printing exactly one row.
+    state=$(rsh "docker inspect -f '{{.State.Status}}' ${n}_web 2>/dev/null" </dev/null 2>/dev/null | tr -d '\r\n' || true)
+
+    # Is it RUNNING the image that was last built, or one that has been replaced
+    # under it?
+    #
+    # `ship` builds and tags; it does not restart. So a container carries on
+    # executing the image it started with, and the tag moves on without it. On
+    # 25 August that meant a rake task fixed in the morning was still raising the
+    # old error in the afternoon, twice, before anyone thought to look: the fix
+    # was shipped, the fix was not running, and nothing on this screen could say
+    # so. Six of seven backends were three hours behind their own tag.
+    #
+    # Cheap enough to do on every status: two inspects per shop, no build.
+    stale=$(rsh "tag=\$(docker inspect -f '{{.Config.Image}}' ${n}_web 2>/dev/null); \
+                 run=\$(docker inspect -f '{{.Image}}' ${n}_web 2>/dev/null); \
+                 cur=\$(docker image inspect -f '{{.Id}}' \"\$tag\" 2>/dev/null); \
+                 if [ -n \"\$run\" ] && [ -n \"\$cur\" ] && [ \"\$run\" != \"\$cur\" ]; then echo STALE; fi" \
+           </dev/null 2>/dev/null | tr -d '\r\n' || true)
+    [[ -n "$stale" ]] && state="${state} ${C_YEL}STALE${C_OFF}" && stale_count=$((stale_count + 1))
+
+    # The database the container is CONNECTED to, not the one the estate file
+    # names. Those two disagree on every shop: the file says <shop>_migrate and
+    # every container is on <shop>_shop. Printing the file's value sent a dump
+    # of six databases straight into six empty files, because pg_dump was given
+    # a name that does not exist and its error went to a suppressed stderr.
+    # Marked and cut out of the noise. Rails prints its boot banner on stdout,
+    # so a bare `print` comes back with the event logger, the JWT notice and the
+    # per-shop template list wrapped around it, and the column rendered as a
+    # paragraph. Fence the value and take what is inside the fence.
+    live_db=$(rsh "docker exec ${n}_web bin/rails runner 'print \"<<DB:\" + ActiveRecord::Base.connection_db_config.database + \":DB>>\"' 2>/dev/null" </dev/null 2>/dev/null \
+              | tr -d '\r\n' | sed -n 's/.*<<DB:\([^:]*\):DB>>.*/\1/p' || true)
+    [[ -n "$live_db" ]] && db="$live_db"
+
+    [[ "$dom" == "-" ]] && dom="(no dns yet)"
+    printf '    %-9s %-16s %-6s %-9s %s\n' "$n" "$db" "$p" "${state:--}" "$dom"
+  done
+  IFS="$old_ifs"
+  if [[ "${stale_count:-0}" -gt 0 ]]; then
+    printf '\n    %s%d shop(s) are running an image that has since been rebuilt.%s\n' "$C_YEL" "$stale_count" "$C_OFF"
+    printf '    %sWhatever was shipped is not what is executing. script/shop_host start <shop>%s\n' "$C_DIM" "$C_OFF"
+  fi
+  step "Resources"
+  rsh "free -m | awk '/Mem:/{printf \"    ram %s MB used of %s\n\", \$3, \$2}'; df -h / | awk 'NR==2{printf \"    disk %s free of %s\n\", \$4, \$2}'"
+}
+
+
+# ── the admin sign-in picture ────────────────────────────────────────────────
+#
+# One picture per shop, and all six shops run the SAME image, so this cannot be
+# baked in: the asset pipeline would give all six whichever file was in the build
+# context. The picture is mounted instead, and the layout reads its path out of
+# the environment. See app/views/layouts/spree/minimal.html.erb.
+#
+# Idempotent. Run it again after sending a new picture and it replaces the file
+# and restarts that one container.
+cmd_admin_image() {
+  local shop="${1:?usage: script/shop_host admin_image <shop>}"
+  lookup "$shop"
+
+  local src="tmp/client/admin_login/$shop.png"
+  [[ -f "$src" ]] || die "no picture at $src. They come from each shop's own tracker task."
+
+  step "Sending the sign-in picture for $S_NAME"
+  rsh "mkdir -p /srv/$S_DIR/brand"
+  # A pipe, not scp: the key and port are already settled in rsh, and one path
+  # for reaching the server is one path to get wrong.
+  rsh "cat > /srv/$S_DIR/brand/admin_login.png" < "$src"
+  local size; size=$(rsh "stat -c %s /srv/$S_DIR/brand/admin_login.png" | tr -d '\r')
+  [[ "$size" == "$(wc -c < "$src" | tr -d ' ')" ]] \
+    || die "the picture arrived truncated: $size bytes on the server"
+  ok "picture on the server, $size bytes"
+
+  # Add the mount and the variable if they are not there yet. Written with awk
+  # rather than sed -i so a second run cannot double up the lines.
+  #
+  # The braces matter. This was
+  #
+  #   grep -q X || awk ... > .compose.new && mv .compose.new docker-compose.yml
+  #
+  # and the shell reads that as `(grep || awk) && mv`. On a SECOND run grep
+  # succeeds, so awk is skipped, `(grep || awk)` is still true, and the mv runs
+  # anyway: "mv: cannot stat '.compose.new'". Noisy but harmless that way round,
+  # and not harmless the other: a `.compose.new` left behind by an interrupted
+  # earlier run would be moved over a good docker-compose.yml.
+  #
+  # Grouping the two so the mv only happens when the awk actually produced a
+  # file. Same precedence trap that has bitten `;` versus `&&` in this repo more
+  # than once.
+  rsh "cd /srv/$S_DIR && grep -q 'public/brand' docker-compose.yml || { awk '
+        /^      - storage_data:\/rails\/storage/ {
+          print; print \"      # His own sign-in picture. Read by the minimal layout.\";
+          print \"      - ./brand:/rails/public/brand:ro\"; next }
+        { print }' docker-compose.yml > .compose.new && mv .compose.new docker-compose.yml; }"
+  rsh "cd /srv/$S_DIR && grep -q '^ADMIN_LOGIN_IMAGE=' .env || echo 'ADMIN_LOGIN_IMAGE=/brand/admin_login.png' >> .env"
+
+  step "Restarting $S_NAME"
+  rsh "cd /srv/$S_DIR && docker compose up -d --force-recreate web" >/dev/null 2>&1 \
+    || die "the shop did not come back up"
+
+  # Prove it, rather than trusting the restart. The sign-in page must name the
+  # mounted path AND that path must answer.
+  #
+  # S_STORE, not S_DOMAIN. The two swapped roles when the client corrected the
+  # URL structure: the shop's own name now fronts the storefront and store.<shop>
+  # fronts Rails. Checking the wrong one here would test the Next.js container
+  # for a Rails page and report a failure that is not there.
+  local admin_host="$S_STORE"
+  [[ -n "$admin_host" ]] || die "$S_NAME has no admin hostname in .estate"
+  local url="https://$admin_host/admin/users/sign_in"
+  local i
+  for i in $(seq 1 30); do curl -sf -o /dev/null --max-time 15 "$url" && break; sleep 3; done
+  curl -sS -L --max-time 20 "$url" | grep -q '/brand/admin_login.png' \
+    || die "the sign-in page still points at the gem's picture"
+
+  # And the picture answers. Naming it is not showing it, and for five shops the
+  # difference between the two was the whole fault: every one of them had the
+  # variable set and the page referenced the file, while the mount that put the
+  # file behind that address had been erased by a later provision. The page
+  # rendered, the box was empty, and this check passed.
+  local pic="https://$admin_host/brand/admin_login.png"
+  local code bytes
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$pic")
+  bytes=$(curl -s -o /dev/null -w '%{size_download}' --max-time 20 "$pic")
+  [[ "$code" == "200" ]] \
+    || die "the sign-in page names the picture and $pic answers $code. The mount is missing."
+  [[ "$bytes" == "$(wc -c < "$src" | tr -d ' ')" ]] \
+    || die "$pic answers 200 with $bytes bytes, and the file here is $(wc -c < "$src" | tr -d ' '). A different picture is mounted."
+  ok "the picture loads from the admin host, $bytes bytes"
+  local code; code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "https://$admin_host/brand/admin_login.png")
+  [[ "$code" == "200" ]] || die "the picture itself answers $code"
+  ok "sign-in picture live on $admin_host"
+}
+
+
+
+# One vhost, one upstream.
+#
+# Written only when the file does not exist yet. certbot EDITS this file in place
+# to add the TLS server block, so rewriting it on a later run silently deletes the
+# HTTPS configuration: nginx then falls through to the default server and every
+# request to that name fails certificate verification. That happened here, and the
+# symptom was three empty product rows, several steps away from the cause.
+write_vhost() {
+  local host="$1" port="$2" what="$3"
+  if rsh "test -f /etc/nginx/sites-available/$host"; then
+    info "vhost for $host already exists, leaving it alone"
+    rsh "ln -sf /etc/nginx/sites-available/$host /etc/nginx/sites-enabled/$host"
+    return 0
+  fi
+  rput "/etc/nginx/sites-available/$host" <<NGINX
+# $host — $what. Temporary review copy, written by script/shop_host.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $host;
+
+    # Uploads and product imports go through here.
+    client_max_body_size 64m;
+
+    location / {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 120s;
+    }
+}
+NGINX
+  rsh "ln -sf /etc/nginx/sites-available/$host /etc/nginx/sites-enabled/$host"
+}
+
+# ── the customer facing site ─────────────────────────────────────────────────
+#
+# One command per shop, because doing this by hand five times is five chances to
+# diverge. It writes the override file, the two vhosts, builds the image with that
+# shop's own arguments, and then PROVES the result rather than reporting success.
+#
+# The domain arrangement is the one the client corrected on 17 Aug:
+#
+#   new<shop>.<domain>     the storefront a customer sees
+#   store.<shop>.<domain>  Rails: admin and the Store API
+#
+# NEXT_PUBLIC_ values are baked in at build time and cannot be changed by the
+# container's environment. SPREE_API_URL and SPREE_PUBLISHABLE_KEY are the
+# opposite: the Dockerfile sets them in a stage the final image does not inherit,
+# so a container started without them answers every page with "Spree client is
+# not configured". Both mistakes have been made here.
+cmd_storefront() {
+  local shop="${1:?usage: script/shop_host storefront <shop> [--live]}"
+  local mode="${2:-}"
+  lookup "$shop"
+
+  # ── which name this build bakes in ───────────────────────────────────────────
+  #
+  # NEXT_PUBLIC_SITE_URL is a BUILD arg, so it is frozen into the image: canonical
+  # links, social cards and the sitemap all carry it. That is why a shop cannot be
+  # moved to its real name by changing a record; it has to be rebuilt.
+  #
+  # Default is the review name, and assert_temporary still refuses anything else,
+  # which is the guard that has kept a review copy from answering for a customer.
+  # --live is the deliberate exception, and it carries its own checks instead:
+  # the shop must have a live url in .estate, and that name must already be
+  # answering from this box, which is what live_host sets up.
+  local site_host="$S_DOMAIN"
+  local api_host="$S_STORE"
+  if [[ "$mode" == "--live" ]]; then
+    [[ -n "${S_LIVE:-}" && "$S_LIVE" != "-" ]] \
+      || die "$S_NAME has no live url in .estate. Nothing to build against."
+    site_host="$S_LIVE"; site_host="${site_host#https://}"; site_host="${site_host%%/*}"
+
+    # "Does a vhost exist" is NOT a guard. Every shop got a live vhost on 27 Aug so
+    # the box would answer the moment a record moved, so that test passes for all
+    # seven and refuses nothing. It was written as a guard, it was run expecting a
+    # refusal, and it rebuilt a shop instead: the review copy started advertising
+    # the live domain as its canonical.
+    #
+    # The real interlock is the shop's own state. cutover is what writes the live
+    # host into STORE_URL, so a shop that has not been through cutover cannot be
+    # built on its live name, whatever vhosts exist.
+    local env_store
+    env_store=$(rsh "grep -E '^STORE_URL=' /srv/$S_DIR/.env 2>/dev/null | cut -d= -f2-" </dev/null | tr -d '\r')
+    if [[ "$env_store" != "$site_host" ]]; then
+      warn "$S_NAME still has STORE_URL=$env_store"
+      die "this shop has not been cut over yet. Run: shop_host cutover $S_NAME --go"
+    fi
+    # The API host has to follow RAILS_HOST, not stay on the name in .estate.
+    #
+    # cutover moves RAILS_HOST to the two-label admin name, and Rails builds every
+    # Active Storage url on it from that moment. The storefront bakes its allowed
+    # image hosts from SPREE_API_URL at BUILD time, so a build that still names the
+    # old host allows the old host and rejects the new one. Measured on the live
+    # shop: every product image came back 400 from /_next/image, the page rendered,
+    # nothing errored in any log, and the shop simply had no photographs on it.
+    api_host="$(rsh "grep -E '^RAILS_HOST=' /srv/$S_DIR/.env 2>/dev/null | cut -d= -f2-" </dev/null | tr -d '\r')"
+    [[ -n "$api_host" ]] || die "$S_NAME has no RAILS_HOST in its .env. Run cutover first."
+    warn "building $S_NAME on its REAL name: $site_host  (api $api_host)"
+  else
+    assert_temporary "$S_DOMAIN"
+  fi
+  [[ -n "$S_STORE" ]] || die "$S_NAME has no admin hostname in .estate"
+
+  step "Reading $S_NAME from its own database"
+  local key name
+  key=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c \"SELECT token FROM spree_api_keys WHERE key_type='publishable' AND revoked_at IS NULL ORDER BY id DESC LIMIT 1\"" | tr -d '\r')
+  [[ -n "$key" ]] || die "no publishable API key on ${S_NAME}_shop. Run bin/rails backfill:all first."
+  name=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c \"SELECT name FROM spree_stores ORDER BY id LIMIT 1\"" | tr -d '\r')
+  [[ -n "$name" ]] || die "no store row on ${S_NAME}_shop"
+  info "key ${key:0:8}…, store \"$name\""
+
+  step "Writing the override file"
+  rput "/srv/$S_DIR/docker-compose.override.yml" <<YAML
+# The customer facing site, kept in an override file so the shop's own compose
+# stays exactly as script/shop_host writes it. Compose merges this automatically.
+#
+# SPREE_API_URL and SPREE_PUBLISHABLE_KEY are RUNTIME settings and must be here.
+# Everything NEXT_PUBLIC_ is baked in at build time and cannot be changed below.
+services:
+  storefront:
+    image: storefront-$S_NAME:latest
+    container_name: ${S_NAME}_storefront
+    restart: always
+    environment:
+      SPREE_API_URL: https://$api_host
+      SPREE_PUBLISHABLE_KEY: $key
+    ports:
+      - "127.0.0.1:$S_SPORT:3001"
+    networks: [estate]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+YAML
+
+
+  step "Serving $S_STORE (Rails) and $S_DOMAIN (the storefront)"
+  # Two names, two upstreams, and the mapping is the one the client corrected:
+  # the shop's own name is the customer site, store.<shop> is Rails. cmd_web
+  # predates that decision and points the shop's name at Rails, so it is not
+  # reused here.
+  write_vhost "$S_STORE" "$S_PORT" "Rails: admin and the Store API"
+  write_vhost "$S_DOMAIN" "$S_SPORT" "the customer facing storefront"
+  rsh "nginx -t" >/dev/null 2>&1 || die "nginx rejected the new configuration"
+  rsh "systemctl reload nginx" || die "nginx would not reload"
+
+  local host
+  for host in "$S_STORE" "$S_DOMAIN"; do
+    # Ask the served certificate whether it covers this name. A file under
+    # /etc/letsencrypt proves a certificate was issued once, not that nginx is
+    # serving it for this host today.
+    if rsh "echo | openssl s_client -connect 127.0.0.1:443 -servername $host 2>/dev/null | openssl x509 -noout -checkhost $host 2>/dev/null | grep -q 'does match'"; then
+      info "certificate serving correctly for $host"
+    else
+      rsh "certbot --nginx -d $host --non-interactive --agree-tos --register-unsafely-without-email --redirect" \
+        >/dev/null 2>&1 || die "certbot failed for $host. Run it by hand to see why."
+      ok "certificate issued for $host"
+    fi
+  done
+
+  # The three home page rows, asked of the API by permalink.
+  #
+  # AFTER the vhost and the certificate, not before. The first version asked while
+  # store.<shop> had neither, so curl could not connect, all three ids came back
+  # empty, and the shop built cleanly with three rows that render nothing. An empty
+  # build arg is the quietest failure in this whole pipeline.
+  # Which category fills each row, per shop. The retail shops all carry the same
+  # three; the wholesale shop has a different catalogue and never had two of
+  # them. Asking for a collection a shop does not have returns an empty id, and
+  # the die below then reports that the shop has no collections, which reads as
+  # the shop being broken rather than as this list being wrong about it.
+  local row1='collections/sustainable-standouts'
+  local row2='collections/combo-specials'
+  local row3='collections/new-products'
+  if [[ -f config/shop_collections ]]; then
+    while IFS='|' read -r c_shop c1 c2 c3; do
+      case "$c_shop" in ''|\#*) continue;; esac
+      [[ "$c_shop" == "$S_NAME" ]] || continue
+      row1="$c1"; row2="$c2"; row3="$c3"
+      info "this shop has rows of its own: ${row1:--} ${row2:--} ${row3:--}"
+    done < config/shop_collections
+  fi
+
+  local standouts combos newprod
+  # $api_host, not $S_STORE. They are the same before a cutover and different
+  # after it: cutover moves the API onto the two-label name and the one in .estate
+  # stops resolving. Asking the dead one returns nothing, and the interlock below
+  # then refuses a build that was perfectly correct.
+  #
+  # Worse on the shop where this was found. The build had already been made once
+  # from $S_STORE, so its bundle carried the dead host, and the shop answered
+  # "fetch failed" on its login page while its catalogue rendered: the product
+  # path used one host and the sign-in path the other. He reported it as
+  # "b2bshop login has faild".
+  [[ "$row1" == "-" || -z "$row1" ]] || standouts=$(taxon_public_id "$api_host" "$key" "$row1")
+  [[ "$row2" == "-" || -z "$row2" ]] || combos=$(taxon_public_id "$api_host" "$key" "$row2")
+  [[ "$row3" == "-" || -z "$row3" ]] || newprod=$(taxon_public_id "$api_host" "$key" "$row3")
+  info "rows: 1=${standouts:-none} 2=${combos:-none} 3=${newprod:-none}"
+
+  # Every row this shop asked for has to come back with an id. A shop that asks
+  # for two and gets one is as broken as one that asks for three and gets none,
+  # and the old test only caught the second.
+  local want=0 got=0 r
+  for r in "$row1|$standouts" "$row2|$combos" "$row3|$newprod"; do
+    case "${r%%|*}" in ''|-) continue;; esac
+    want=$((want + 1))
+    [[ -n "${r#*|}" ]] && got=$((got + 1))
+  done
+  [[ "$want" -gt 0 ]] \
+    || die "config/shop_collections gives $S_NAME no rows at all. Its home page would have none."
+  [[ "$got" -eq "$want" ]] \
+    || die "$S_NAME asked for $want collection(s) and https://$api_host returned $got. The missing row would render as nothing."
+
+  # Whether this shop may be browsed without an account, read from
+  # config/gated_shops rather than from a flag someone has to remember. A gate
+  # that depends on the operator typing it is a gate that is off the first time
+  # the shop is rebuilt by anyone else.
+  local gate_required="" gate_paths=""
+  if [[ -f "config/gated_shops" ]]; then
+    while read -r g_shop g_paths; do
+      case "$g_shop" in ''|\#*) continue;; esac
+      [[ "$g_shop" == "$S_NAME" ]] || continue
+      gate_required=1
+      gate_paths="$g_paths"
+    done < "config/gated_shops"
+  fi
+  if [[ -n "$gate_required" ]]; then
+    info "closed shop: every address requires an account, except the sign-in pages and ${gate_paths:-the four policies}"
+  fi
+
+  # Whether this shop is served without the /{country}/{locale} prefix, read
+  # from config/clean_url_shops for the same reason the gate above is read from
+  # a file: a setting typed on the command line is a setting that is missing the
+  # next time somebody else builds this shop.
+  local clean_urls=""
+  if [[ -f "config/clean_url_shops" ]]; then
+    while read -r c_shop _; do
+      case "$c_shop" in ''|\#*) continue;; esac
+      [[ "$c_shop" == "$S_NAME" ]] || continue
+      clean_urls=1
+    done < "config/clean_url_shops"
+  fi
+  if [[ -n "$clean_urls" ]]; then
+    info "clean URLs: every address served without a country or language prefix"
+    if [[ -n "$gate_required" ]]; then
+      warn "this shop is CLOSED and on clean URLs. Run check_shop_gate.mjs against it before believing it."
+    fi
+  fi
+
+  # ── the two keys the payment widgets cannot mount without ───────────────────
+  #
+  # Stripe's card field and PayPal's button are drawn by their own scripts in the
+  # BROWSER, so each needs its public identifier baked into the build. The
+  # Dockerfile has always declared both:
+  #
+  #   ARG NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=""
+  #   ARG NEXT_PUBLIC_PAYPAL_CLIENT_ID=""
+  #
+  # and this function never passed either. An undeclared build arg is dropped in
+  # silence, so `loadStripe(undefined)` returned null, `<Elements stripe={null}>`
+  # rendered an empty div, and PayPal's button never appeared.
+  #
+  # What the customer saw on 31 Aug, on a live shop, is a blank grey box under
+  # Card Payments and another under PayPal. Checkout reached the last step, quoted
+  # shipping correctly, showed Pay Now, and could not take a card. Nothing errored
+  # and nothing logged: an empty box is not an exception.
+  #
+  # The values are the PUBLIC halves and they already live on the shop's own
+  # payment methods, put there by the client. Read from there rather than typed,
+  # for the same reason as everything else here: a value typed on a command line
+  # is a value missing the next time somebody builds this shop.
+  local stripe_pk paypal_cid
+  # Wrapped in a sentinel and cut back out. `bin/rails runner` writes Spree's own
+  # boot banner to stdout before the script runs, so taking the whole output gives
+  # 364 characters of "[Spree Events] Event logging enabled" where a key belongs,
+  # and docker build then bakes that in as the key.
+  stripe_pk=$(rsh "docker exec ${S_NAME}_web bin/rails runner '
+    pm = Spree::PaymentMethod.where(deleted_at: nil, active: true).detect { |m| (m.preferences || {}).key?(:publishable_key) }
+    print %q{<<K:} + (pm ? pm.preferences[:publishable_key].to_s : %q{}) + %q{:K>>}
+  ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<K:\(.*\):K>>.*/\1/p')
+  paypal_cid=$(rsh "docker exec ${S_NAME}_web bin/rails runner '
+    pm = Spree::PaymentMethod.where(deleted_at: nil, active: true).detect { |m| (m.preferences || {}).key?(:client_id) }
+    print %q{<<K:} + (pm ? pm.preferences[:client_id].to_s : %q{}) + %q{:K>>}
+  ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<K:\(.*\):K>>.*/\1/p')
+
+  # Said by shape, never by value: this output is read over somebody's shoulder.
+  if [[ -n "$stripe_pk" ]]; then
+    info "stripe key found on this shop: ${stripe_pk:0:8}… ($(printf '%s' "$stripe_pk" | wc -c | tr -d ' ') chars)"
+  else
+    warn "no Stripe publishable key on this shop, so the card field will not appear"
+  fi
+  if [[ -n "$paypal_cid" ]]; then
+    info "paypal client id found: ${paypal_cid:0:8}…"
+  else
+    warn "no PayPal client id on this shop, so the PayPal button will not appear"
+  fi
+
+  step "Refreshing the storefront source on the server"
+  push_storefront_source
+
+  step "Building storefront-$S_NAME on the server"
+  rsh "cd $BUILD_DIR/storefront && docker build \
+    --build-arg SPREE_API_URL=https://$api_host \
+    --build-arg SPREE_PUBLISHABLE_KEY=$key \
+    --build-arg NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=$stripe_pk \
+    --build-arg NEXT_PUBLIC_PAYPAL_CLIENT_ID=$paypal_cid \
+    --build-arg NEXT_PUBLIC_STORE_NAME='$name' \
+    --build-arg NEXT_PUBLIC_SITE_URL=https://$site_host \
+    --build-arg NEXT_PUBLIC_DEFAULT_COUNTRY=$S_NAME \
+    --build-arg NEXT_PUBLIC_DEFAULT_LOCALE=en \
+    --build-arg NEXT_PUBLIC_CATEGORY_STANDOUTS=$standouts \
+    --build-arg NEXT_PUBLIC_CATEGORY_COMBOS=$combos \
+    --build-arg NEXT_PUBLIC_CATEGORY_NEW=$newprod \
+    --build-arg NEXT_PUBLIC_REQUIRE_ACCOUNT=$gate_required \
+    --build-arg NEXT_PUBLIC_CLEAN_URLS=$clean_urls \
+    --build-arg NEXT_PUBLIC_PUBLIC_PATHS='$gate_paths' \
+    -t storefront-$S_NAME:latest . > /tmp/build-$S_NAME.log 2>&1" \
+    || { rsh "tail -25 /tmp/build-$S_NAME.log"; die "storefront build failed for $S_NAME"; }
+  ok "built storefront-$S_NAME:latest"
+
+  step "Starting it"
+  rsh "cd /srv/$S_DIR && docker compose up -d storefront" >/dev/null 2>&1 \
+    || die "the storefront container did not start"
+
+  local i
+  for i in $(seq 1 45); do
+    rsh "curl -sf -o /dev/null http://127.0.0.1:$S_SPORT/" && break
+    sleep 2
+  done
+  rsh "curl -sf -o /dev/null http://127.0.0.1:$S_SPORT/" \
+    || die "the storefront is not answering on 127.0.0.1:$S_SPORT"
+  ok "answering on 127.0.0.1:$S_SPORT"
+}
+
+# The Store API's public id for a taxon, by permalink.
+#
+# Asked of the API, not of the database. The prefixed form (ctg_…) is derived at
+# serialization time and is nowhere in a table, so reading a column for it returns
+# empty and the build arg goes out blank: the row then renders nothing at all and
+# nothing says why.
+#
+# Empty means the shop has no such collection, OR that the collection is automatic
+# and therefore invisible to this API. The caller prints what came back so an empty
+# one is seen rather than passed through.
+taxon_public_id() {
+  local host="$1" key="$2" permalink="$3"
+  local encoded
+  encoded=$(printf '%s' "$permalink" | sed 's|/|%2F|g')
+  # `|| true` on the whole pipeline, not decoration. grep exits 1 when the shop has
+  # no such collection, and under `set -e` inside a command substitution that ends
+  # the entire script with no message at all. It did exactly that, twice.
+  rsh "curl -sS --max-time 25 -H 'X-Spree-Api-Key: $key' \
+        'https://$host/api/v3/store/categories/$encoded' 2>/dev/null" \
+    | tr ',' '\n' | grep -m1 '\"id\"' | sed 's/.*\"id\":\"//; s/\".*//' || true
+}
+
+cmd_help() {
+  # Stops at the sentinel, not at a line number. It was `2,40p`, and adding two
+  # command lines to the usage block above pushed the cut two lines earlier, so
+  # help ended halfway through a sentence about live payments. A line number in
+  # a file that documents itself is a line number that will be wrong.
+  sed -n '2,/^#:help-ends-here/p' "$0" | grep -v '^#:help-ends-here' | sed 's/^#//; s/^ //'
+}
+
+case "${1:-help}" in
+  shared)     cmd_shared ;;
+  ship)       cmd_ship ;;
+  provision)  shift; cmd_provision "$@" ;;
+  load)       shift; cmd_load "$@" ;;
+  start)      shift; cmd_start "$@" ;;
+  public)     shift; cmd_public "$@" ;;
+  web)        shift; cmd_web "$@" ;;
+  admin_image) shift; cmd_admin_image "$@" ;;
+  storefront) shift; cmd_storefront "$@" ;;
+  noindex)    shift; cmd_noindex "$@" ;;
+  live_host)  shift; cmd_live_host "$@" ;;
+  restore_payments) shift; cmd_restore_payments "$@" ;;
+  cutover)    shift; cmd_cutover "$@" ;;
+  admin_host) shift; cmd_admin_host "$@" ;;
+  indexable)  shift; cmd_indexable "$@" ;;
+  up)         shift; cmd_up "$@" ;;
+  refresh)    shift; cmd_refresh "$@" ;;
+  status)     cmd_status ;;
+  help|-h|--help) cmd_help ;;
+  *) die "unknown command '$1'. Run: script/shop_host help" ;;
+esac

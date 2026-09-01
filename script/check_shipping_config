@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+#
+# Every shop quotes shipping from the client's OWN numbers, not from a default.
+#
+#   script/check_shipping_config
+#   script/check_shipping_config au
+#
+# ── the fault this exists for ────────────────────────────────────────────────
+#
+# His freight tables are Ruby classes he wrote, and each one declares defaults:
+#
+#   preference :parcel_base_fee,     :decimal, default: 1.90
+#   preference :min_weight_kg,       :decimal, default: 0.1
+#   preference :volumetric_divisor,  :decimal, default: 6000.0
+#
+# The numbers that matter are the ones HE set in the admin, stored on the
+# calculator row. On 25 Aug the upgrade created a NEW calculator row for au's
+# Standard Postage instead of converting the existing one, and a new row takes
+# the class defaults. His own values, last edited on 11 Feb, were left behind on
+# a row nothing pointed at any more.
+#
+# Measured on the real order placed on 29 Aug, one 0.08 kg bottle sent domestic:
+#
+#   his numbers      {0.95, 0.05, 7000}   ->  5.71 AUD
+#   the defaults     {1.90, 0.10, 6000}   ->  6.79 AUD   <- what the customer paid
+#
+# Nothing failed. Checkout worked, a rate was offered, the order completed and
+# the money was taken. Every check on this project passed, including the browser
+# walk that puts a real item in a real cart, because a wrong price is still a
+# price. Only comparing the live numbers against his own numbers finds it.
+#
+# ── what it asks ─────────────────────────────────────────────────────────────
+#
+#   which calculator does Spree actually pick    not the newest, not the oldest:
+#                                                the one the association returns
+#   are its numbers his, or the class defaults   every preference equal to its
+#                                                default is the fingerprint
+#   is there an older row with different numbers  that is his configuration,
+#                                                stranded
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+ONLY="${1:-}"
+
+# shellcheck source=/dev/null
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_HOST:?no SSH_HOST, source .estate.env}"
+: "${SSH_PORT:=22}"
+: "${SSH_KEY:?no SSH_KEY}"
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; YE=$'\033[33m'; R=$'\033[0m'
+else GR=''; RE=''; YE=''; R=''; fi
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+[[ -f "$ESTATE_FILE" ]] || { echo "  no .estate on this machine"; exit 0; }
+
+bad=0
+checked=0
+
+while IFS='|' read -r shop _rest; do
+  [[ -n "$shop" ]] || continue
+  case "$shop" in \#*) continue;; esac
+  [[ -z "$ONLY" || "$ONLY" == "$shop" ]] || continue
+
+  out=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+    "docker exec ${shop}_web bin/rails runner '
+       Spree::ShippingMethod.where(deleted_at: nil).order(:name).each do |sm|
+         c = sm.calculator
+         if c.nil?
+           puts \"NONE|#{sm.name}||||\"
+           next
+         end
+         # What the class says a fresh row would hold, asked of the class rather
+         # than read out of a comment, so it cannot drift.
+         defaults = {}
+         if c.class.respond_to?(:defined_preferences)
+           c.class.defined_preferences.each { |p| defaults[p.to_sym] = c.class.preference_default(p) rescue nil }
+         end
+         prefs = c.preferences.to_h.transform_keys(&:to_sym)
+         all_default = prefs.any? && prefs.all? { |k, v| defaults.key?(k) && v.to_s == defaults[k].to_s }
+         siblings = Spree::Calculator.where(calculable_id: sm.id, calculable_type: \"Spree::ShippingMethod\").where.not(id: c.id)
+         stranded = siblings.select { |s| s.preferences.to_h.any? && s.preferences.to_h.transform_keys(&:to_sym) != prefs }
+         puts [
+           all_default ? \"DEFAULTS\" : \"OK\",
+           sm.name,
+           c.class.name.split(\"::\").last,
+           c.id,
+           prefs.map { |k, v| \"#{k}=#{v.to_f}\" }.join(\" \"),
+           stranded.map { |s| \"##{s.id} #{s.preferences.to_h.map { |k, v| \"#{k}=#{v.to_f}\" }.join(\" \")}\" }.join(\" ;; \")
+         ].join(\"|\")
+       end
+     ' 2>/dev/null" 2>/dev/null | tr -d '\r' | grep -E '^(OK|DEFAULTS|NONE)\|')
+
+  if [[ -z "$out" ]]; then
+    printf '  %-10s %s(could not read it)%s\n' "$shop" "$YE" "$R"
+    continue
+  fi
+
+  printf '  %s\n' "$shop"
+  while IFS='|' read -r verdict method klass cid prefs stranded; do
+    checked=$((checked + 1))
+    case "$verdict" in
+      NONE)
+        printf '    %s%-18s no calculator at all%s\n' "$RE" "$method" "$R"
+        bad=$((bad + 1)) ;;
+      DEFAULTS)
+        printf '    %s%-18s %s #%s is every value the class default: %s%s\n' \
+          "$RE" "$method" "$klass" "$cid" "$prefs" "$R"
+        [[ -n "$stranded" ]] && printf '      his own numbers are stranded on: %s\n' "$stranded"
+        bad=$((bad + 1)) ;;
+      *)
+        printf '    %-18s %s #%s  %s\n' "$method" "$klass" "$cid" "${prefs:-(no settings)}"
+        [[ -n "$stranded" ]] && printf '      %sother row(s) with different numbers: %s%s\n' "$YE" "$stranded" "$R" ;;
+    esac
+  done <<< "$out"
+done < <(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+
+echo
+if [[ $bad -gt 0 ]]; then
+  cat >&2 <<EOF
+${RE}FAILED${R}: $bad shipping method(s) quote from a default rather than from his numbers.
+
+A calculator holding every class default was created fresh rather than carried
+across, and the numbers he set are on another row. Copy them onto the row Spree
+actually uses, and check the quote against a real basket before saying it is
+fixed. His numbers are the specification; ours are never a substitute for them.
+EOF
+  exit 1
+fi
+
+echo "  ${GR}ok${R} — $checked shipping method(s), each quoting from his own numbers"

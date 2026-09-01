@@ -1,0 +1,30 @@
+# Copy to config/shop_calculators and fill in. Gitignored, because the real one
+# names the client's shops.
+#
+# Which of his shipping calculators each shop offers in its Calculator dropdown.
+#
+#   <shop>: ClassName ClassName ...
+#
+# Class names are resolved under Spree::Calculator::Shipping, from the files in
+# app/models/spree/calculator/shipping, which is gitignored and shipped as a
+# deploy asset for the same reason this file is.
+#
+# ── why per shop at all ──────────────────────────────────────────────────────
+#
+# One image serves every shop, each with its own database and its own SHOP.
+# Registering every calculator on every shop would offer one country's freight
+# table in another country's admin, and the wrong table picked once is wrong on
+# every order after it. The client's own shop shows four entries, all of them
+# his and all of them for that country.
+#
+# ── what happens without this file ───────────────────────────────────────────
+#
+# The initializer raises. That is deliberate: the calculators are registered
+# with Spree at boot, and a shop that boots without them still works. It shows
+# the six calculators Spree ships with, the client's freight table is missing
+# from the list, and an existing shipping method keeps quoting correctly until
+# somebody edits it. Nothing fails and nothing logs.
+#
+# That is exactly what he photographed on 24 August: his own shop offering his
+# calculator by name, the new one offering only Spree's six.
+example-shop: SomeShippingCalculator FreePostageCalculator

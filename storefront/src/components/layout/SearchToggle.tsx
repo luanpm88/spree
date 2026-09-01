@@ -29,10 +29,22 @@ interface SearchToggleProps {
   rightStart: ReactNode;
   /** Rendered after the search button in the right section */
   rightEnd: ReactNode;
+  /**
+   * Whether this header offers search at all.
+   *
+   * Off for the sign-in and policy pages of a shop that is closed to visitors
+   * without an account. The search box asks the catalogue directly through a
+   * server action that authenticates with the shop's own publishable key, not
+   * with the caller's, so it answers a stranger with product names, slugs,
+   * prices and image URLs. Hiding the category navigation and leaving this was
+   * a gate with a window in it.
+   */
+  searchable?: boolean;
 }
 
 export function SearchToggle({
   basePath,
+  searchable = true,
   left,
   center,
   rightStart,
@@ -48,7 +60,15 @@ export function SearchToggle({
   }, []);
 
   return (
-    <header className="sticky top-0 z-50 bg-white border-b border-gray-200 h-16 relative">
+    // The hairline is back on all 7 shops.
+    //
+    // It had been switched off for the closed shop, on the evidence that his own
+    // nav declares border-bottom-width: 0px twice. That evidence came from the
+    // same photograph of his CURRENT shop as the horizontal menu did, and he has
+    // now said that shot is the old design and the header should look "like all
+    // the others". A conclusion is only as good as its source, so everything
+    // drawn from that source goes back with it, not only the part he named.
+    <header className="sticky top-0 z-50 bg-[var(--header)] h-16 relative border-b border-gray-200">
       {/* Normal header content */}
       <div
         className={`absolute inset-0 transition-all duration-300 ease-in-out ${
@@ -70,17 +90,19 @@ export function SearchToggle({
               {rightStart}
 
               {/* Search toggle */}
-              <Button
-                ref={searchTriggerRef}
-                variant="ghost"
-                size="icon-lg"
-                onClick={() => setSearchOpen(true)}
-                aria-label={t("openSearch")}
-                aria-expanded={searchOpen}
-                aria-controls="search-overlay"
-              >
-                <Search className="size-5" />
-              </Button>
+              {searchable && (
+                <Button
+                  ref={searchTriggerRef}
+                  variant="ghost"
+                  size="icon-lg"
+                  onClick={() => setSearchOpen(true)}
+                  aria-label={t("openSearch")}
+                  aria-expanded={searchOpen}
+                  aria-controls="search-overlay"
+                >
+                  <Search className="size-5" />
+                </Button>
+              )}
 
               {rightEnd}
             </div>
@@ -97,38 +119,42 @@ export function SearchToggle({
         />
       )}
 
-      {/* Search bar overlay */}
-      <div
-        id="search-overlay"
-        inert={!searchOpen}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") closeSearch();
-        }}
-        className={`absolute inset-0 z-50 transition-all duration-300 ease-in-out ${
-          searchOpen
-            ? "translate-y-0 opacity-100"
-            : "-translate-y-4 opacity-0 pointer-events-none"
-        }`}
-      >
-        <div className="container mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center gap-3">
-          <div className="flex-1">
-            <SearchBar
-              key={String(searchOpen)}
-              basePath={basePath}
-              autoFocus={searchOpen}
-              onNavigate={closeSearch}
-            />
+      {/* Search bar overlay. Not rendered at all when the header is not
+          searchable: hiding the button alone would leave the overlay and the
+          server action it calls in the page, one keystroke away. */}
+      {searchable && (
+        <div
+          id="search-overlay"
+          inert={!searchOpen}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") closeSearch();
+          }}
+          className={`absolute inset-0 z-50 transition-all duration-300 ease-in-out ${
+            searchOpen
+              ? "translate-y-0 opacity-100"
+              : "-translate-y-4 opacity-0 pointer-events-none"
+          }`}
+        >
+          <div className="container mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center gap-3">
+            <div className="flex-1">
+              <SearchBar
+                key={String(searchOpen)}
+                basePath={basePath}
+                autoFocus={searchOpen}
+                onNavigate={closeSearch}
+              />
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-lg"
+              onClick={closeSearch}
+              aria-label={t("closeSearch")}
+            >
+              <X className="size-5" />
+            </Button>
           </div>
-          <Button
-            variant="ghost"
-            size="icon-lg"
-            onClick={closeSearch}
-            aria-label={t("closeSearch")}
-          >
-            <X className="size-5" />
-          </Button>
         </div>
-      </div>
+      )}
     </header>
   );
 }

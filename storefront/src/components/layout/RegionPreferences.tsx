@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/native-select";
 import { type CountryWithMarket, useStore } from "@/contexts/StoreContext";
 import { useCountrySwitch } from "@/hooks/useCountrySwitch";
+import { MARKET_BY_SHOP } from "@/lib/blocks/content";
 import { cn } from "@/lib/utils";
 
 interface RegionPreferencesProps {
@@ -38,13 +39,23 @@ interface CountryFlagProps {
 }
 
 function CountryFlag({ country, className, sizes }: CountryFlagProps) {
+  // There are 271 flags here and they are all ISO pairs, so a shop addressed by
+  // its own name asked for /flags/1x1/nolocal.svg and got a 404 and a broken
+  // image in its header on every page. Nothing else went wrong, which is why it
+  // took a browser walk counting decoded images to see it at all: 50 of 51.
+  //
+  // A shop that sells to 34 countries has no flag of its own, so it gets none
+  // rather than a wrong one.
+  const iso = country.toLowerCase();
+  if (!/^[a-z]{2}$/.test(iso)) return null;
+
   return (
     <span
       aria-hidden="true"
       className={cn("relative inline-block overflow-hidden", className)}
     >
       <Image
-        src={`/flags/1x1/${country.toLowerCase()}.svg`}
+        src={`/flags/1x1/${iso}.svg`}
         alt=""
         fill
         sizes={sizes}
@@ -139,17 +150,38 @@ export function RegionPreferences({ variant }: RegionPreferencesProps) {
   }
 
   const isHeaderVariant = variant === "header";
+  // The 2 letter code to show in the header: the address segment when it is one,
+  // otherwise the market this shop sells into.
+  const shopKey = (process.env.NEXT_PUBLIC_DEFAULT_COUNTRY || "").toLowerCase();
+  const headerFlag = /^[a-z]{2}$/.test(country)
+    ? country.toLowerCase()
+    : (MARKET_BY_SHOP[shopKey] ?? "");
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         {isHeaderVariant ? (
-          <Button variant="ghost" size="icon-lg" aria-label={t("title")}>
+          // Flag AND the country code, which is what his header shows, and the
+          // flag resolved through MARKET_BY_SHOP so a shop addressed by a market
+          // name still has one. This rendered an empty button before: the flag
+          // returned null for "b2b" and there was no label to fall back on, so
+          // the header carried a 44x44 hole on every page.
+          <Button
+            variant="ghost"
+            size={headerFlag ? "default" : "icon-lg"}
+            aria-label={t("title")}
+            className={headerFlag ? "gap-1.5 px-2" : undefined}
+          >
             <CountryFlag
-              country={country}
+              country={headerFlag || country}
               className="size-4.5 rounded-full shadow-sm ring-1 ring-black/10"
               sizes="16px"
             />
+            {headerFlag ? (
+              <span className="hidden lg:inline text-xs font-medium uppercase tracking-wide">
+                {headerFlag}
+              </span>
+            ) : null}
           </Button>
         ) : (
           <button

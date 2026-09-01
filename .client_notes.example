@@ -1,0 +1,70 @@
+// Copy to .client_notes and fill in. Gitignored, because the real one holds the
+// client's brand colours, his logo sizes and his wording.
+//
+// ── what this file is for ────────────────────────────────────────────────────
+//
+// Every value he has ever stated, per shop, with the date he stated it. Not a
+// summary of it, the value itself, in a form a script can check against the
+// running page.
+//
+// It exists because of how his review actually works. He screenshots a page,
+// draws an arrow, and writes the number beside it: "#EAEEED", "#3D3D3D",
+// "190.09 x 48", "Line only". Those are exact and they are checkable. What went
+// wrong repeatedly is not that we misread the number, it is that the number was
+// read once, applied to one shop, and then nothing held it in place: a rebuild,
+// a shared component, a theme token copied from the shop next door, and it
+// drifts back. He then has to say it a second time.
+//
+// A note said twice is the failure this file prevents. `script/check_client_notes`
+// reads it and asserts every line against the live page, per shop, so the second
+// time is a red gate here instead of a message from him.
+//
+// ── the rules ───────────────────────────────────────────────────────────────
+//
+// 1. A value goes in the day he says it, before the fix is built. The check
+//    failing is the specification.
+// 2. `said` is the date he said it, and `note` is HIS words, not a paraphrase.
+//    When a check fails a year from now, his words are what settle whether the
+//    page is wrong or the expectation is stale.
+// 3. When he changes his mind, replace the value and update `said`. Do not keep
+//    both: two expectations for one thing is how the wrong one gets applied.
+// 4. A value that applies to every shop goes in "all". A shop entry overrides it.
+//    His notes are usually about ONE shop, and copying a one-shop colour to six
+//    is its own failure, already made twice here.
+//
+// Shop keys are the same keys as .estate.
+{
+  "all": {
+    // Nothing here yet is universal. Sizes and colours are per shop.
+  },
+
+  "example-shop": {
+    // The strip above the header, filled, and the words in it.
+    "bar_bg":     { "value": "#000000", "said": "1970-01-01", "note": "his words about this colour, quoted" },
+    "bar_text":   { "value": "#FFFFFF", "said": "1970-01-01" },
+
+    // The header itself. Filled white, with the bar's colour appearing ONLY as
+    // the 1px line under it. This pair is the shape of a real mistake: one
+    // colour was quoted for the bar and applied to both, which drew a single
+    // tall block and hid the line inside it.
+    "header_bg":   { "value": "#FFFFFF", "said": "1970-01-01", "note": "\"Line only\"" },
+    "header_line": { "value": "#000000", "said": "1970-01-01" },
+
+    // The logo as DRAWN, width x height in CSS pixels, which is what he
+    // measures off the page. Checked to 0.5px.
+    "logo_box": { "value": "190.09x48", "said": "1970-01-01" },
+
+    // How many lines his hero heading occupies. His copy breaks it in two and a
+    // single-string heading wraps wherever the column happens to end.
+    "hero_heading_lines": { "value": 2, "said": "1970-01-01" },
+
+    // The colour a product title turns under the cursor.
+    "card_hover": { "value": "#000000", "said": "1970-01-01", "note": "he wrote \"Hover\" beside it" },
+
+    // His section photographs, by rule rather than by number: never enlarged
+    // past the file, and never cropped. He gave the file size and said "then it
+    // will look clear and correct", and his artwork carries words, so a crop
+    // cuts a sentence rather than a background.
+    "section_image": { "value": "no-enlarge,no-crop", "said": "1970-01-01" }
+  }
+}

@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+#
+# Take a FRESH dump of one shop from the client's live server, and land it on ours.
+#
+#   script/pull_live_dump ca            take it, prove it, leave it on our box
+#   script/pull_live_dump ca --dry-run  say what it would do and stop
+#
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# Every copy on our box is a mid-August dump. His shops have taken orders since,
+# and he told us so himself: "Canada just had a new order last night", the same
+# afternoon we quoted him a date from our copy as though it were his shop. The
+# gap reopens every day, so the fresh dump cannot be taken in advance. It is the
+# first thing on the morning of each move, and until now it was hand-rolled ssh
+# with nothing checking it.
+#
+# ── the failures this guards, each one already recorded here ────────────────
+#
+#   an empty dump             six 0-byte dumps shipped on this project once,
+#                             because a name was read from the wrong column and
+#                             pg_dump's error went to a swallowed stderr. So the
+#                             size is checked and the archive is opened.
+#   a dump that will not read  his own nightly backup verifies nothing it writes.
+#                             gzip -t here, on both machines.
+#   a truncated transfer       the checksum is compared on both ends, not the size.
+#   a credential in a new place his database password stays on HIS machine. It is
+#                             read there, used there, and never crosses the wire
+#                             or lands in a file here.
+#
+# Nothing on his server is modified. pg_dump reads; the file it writes goes to
+# /tmp on his box and is removed when we have it.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_BLD=$'\e[1m'; C_OFF=$'\e[0m'
+step() { printf '\n%s==>%s %s\n' "$C_BLD" "$C_OFF" "$*"; }
+ok()   { printf '  %sok%s   %s\n' "$C_GRN" "$C_OFF" "$*"; }
+warn() { printf '  %s!%s    %s\n' "$C_YEL" "$C_OFF" "$*"; }
+info() { printf '  %s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
+die()  { printf '\n%sFAILED%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+
+SHOP="${1:-}"
+[[ -n "$SHOP" ]] || die "usage: script/pull_live_dump <shop> [--dry-run]"
+DRY="${2:-}"
+
+[[ -f .estate.env ]] || die ".estate.env is not here. It holds the access for both machines."
+set -a; . ./.estate.env; set +a
+: "${OLD_SSH_HOST:?OLD_SSH_HOST is not set}" "${OLD_SSH_KEY:?}" "${OLD_SSH_PORT:=22}"
+: "${SSH_HOST:?}" "${SSH_KEY:?}" "${SSH_PORT:=22}"
+
+# The quoting these two need is copied from script/backup_b2, where the reason is
+# written down: the values arrive quoted and a bare expansion passes the quotes on.
+eval OLDK="$OLD_SSH_KEY"; OLDP=$(printf '%s' "$OLD_SSH_PORT" | tr -d '"')
+eval NEWK="$SSH_KEY";     NEWP=$(printf '%s' "$SSH_PORT"     | tr -d '"')
+
+old() { ssh -i "$OLDK" -p "$OLDP" -o BatchMode=yes -o ConnectTimeout=30 "$OLD_SSH_HOST" "$@"; }
+new() { ssh -i "$NEWK" -p "$NEWP" -o BatchMode=yes -o ConnectTimeout=30 "$SSH_HOST" "$@"; }
+
+# ── which database ───────────────────────────────────────────────────────────
+#
+# Column 2, the remote directory, NOT column 3. Column 3 says <shop>_migrate and
+# every real database is named differently; reading column 3 is exactly how six
+# empty dumps happened. On his server the shop directory, the database and the
+# database user are all the same string, which his own backup script confirms.
+DB=$(awk -F'|' -v s="$SHOP" '$1==s {print $2}' .estate)
+[[ -n "$DB" ]] || die "$SHOP is not in .estate"
+info "shop $SHOP, database $DB"
+
+STAMP=$(date -u +%Y%m%d-%H%M%S)
+REMOTE="/tmp/${DB}_cutover_${STAMP}.sql.gz"
+LANDED="/root/${DB}_cutover_${STAMP}.sql.gz"
+
+if [[ "$DRY" == "--dry-run" ]]; then
+  step "Dry run"
+  info "would dump   $DB on $OLD_SSH_HOST"
+  info "would land   $LANDED on our box"
+  info "nothing on his server would be modified: pg_dump reads"
+  exit 0
+fi
+
+# ── take it ──────────────────────────────────────────────────────────────────
+step "Dumping $DB on the live server"
+
+# The SUPERUSER inside his postgres container, not the per-shop user and not the
+# password out of his backup script.
+#
+# The first version read `local DB_PASS=` from /root/spree-backup.sh and stripped
+# quotes off it. Postgres answered "password authentication failed": the strip had
+# eaten characters that were part of the password. Reaching into somebody else's
+# script for a secret and reshaping it is two chances to be wrong about a value
+# you cannot print to check.
+#
+# The container already carries POSTGRESQL_POSTGRES_PASSWORD. It is read inside
+# the container, used inside the container, and never leaves it. Nothing of his is
+# read or modified except the database rows pg_dump selects.
+#
+# PATH is set explicitly: this is a bitnami image and its psql and pg_dump live in
+# /opt/bitnami/postgresql/bin, which is not on PATH for a non-login `sh -c`.
+old bash -s <<REMOTE_SCRIPT || die "pg_dump did not run on his server"
+set -euo pipefail
+docker exec postgresql16 sh -lc '
+  export PATH=/opt/bitnami/postgresql/bin:\$PATH
+  PGPASSWORD="\$POSTGRESQL_POSTGRES_PASSWORD" pg_dump -U postgres --no-owner --no-acl "$DB" | gzip
+' > "$REMOTE"
+REMOTE_SCRIPT
+
+# Opened, not trusted. A dump that will not decompress is worse than none: it
+# looks like a backup on a listing.
+old "gzip -t '$REMOTE'" </dev/null || { old "rm -f '$REMOTE'" </dev/null; die "the dump does not read back on his server"; }
+
+R_SIZE=$(old "stat -c %s '$REMOTE'" </dev/null | tr -d '\r')
+[[ "${R_SIZE:-0}" -gt 50000 ]] || { old "rm -f '$REMOTE'" </dev/null; die "the dump is $R_SIZE bytes, which is too small to be a shop"; }
+
+# A gzip that decompresses can still be a dump of nothing. Count the COPY
+# statements, which is what a data-carrying dump has and an empty one does not.
+TABLES=$(old "gzip -dc '$REMOTE' | grep -c '^COPY '" </dev/null | tr -d '\r')
+[[ "${TABLES:-0}" -gt 20 ]] || { old "rm -f '$REMOTE'" </dev/null; die "the dump carries $TABLES tables of data, which is not a shop"; }
+ok "$R_SIZE bytes, reads back, $TABLES tables with data"
+
+R_SUM=$(old "sha256sum '$REMOTE' | cut -d' ' -f1" </dev/null | tr -d '\r')
+
+# ── move it ──────────────────────────────────────────────────────────────────
+step "Streaming it to our box"
+
+# Through this machine rather than server to server: the two boxes have no
+# trust between them, and setting one up for a file that crosses once is a key
+# that outlives its purpose.
+# tee'd, so the same bytes land here AND on our box in one pass.
+#
+# It has to be here as well: script/migrate_shop takes a LOCAL dump file, because
+# the 5.2 to 5.6 upgrade runs against the local stack. A dump that only exists on
+# the server is a dump the upgrade cannot reach, which is a step you discover at
+# the wrong moment.
+mkdir -p tmp/dumps
+LOCAL="tmp/dumps/${DB}_cutover_${STAMP}.sql.gz"
+old "cat '$REMOTE'" </dev/null | tee "$LOCAL" | new "cat > '$LANDED'" \
+  || die "the transfer did not complete"
+
+N_SUM=$(new "sha256sum '$LANDED' | cut -d' ' -f1" </dev/null | tr -d '\r')
+if [[ "$R_SUM" != "$N_SUM" ]]; then
+  new "rm -f '$LANDED'" </dev/null
+  die "the copy does not match the original. His: ${R_SUM:0:16} ours: ${N_SUM:0:16}"
+fi
+ok "checksum matches on both machines: ${R_SUM:0:16}…"
+
+new "gzip -t '$LANDED'" </dev/null || die "it does not read back on our box either"
+ok "reads back on our box too"
+
+# The local copy is the one the upgrade reads, so it is checked the same way
+# rather than assumed to be the same bytes.
+L_SUM=$(shasum -a 256 "$LOCAL" | cut -d' ' -f1)
+[[ "$L_SUM" == "$R_SUM" ]] || die "the local copy does not match. His: ${R_SUM:0:16} local: ${L_SUM:0:16}"
+gzip -t "$LOCAL" || die "the local copy does not read back"
+ok "local copy matches and reads back: $LOCAL"
+
+old "rm -f '$REMOTE'" </dev/null
+info "removed the working copy from his server"
+
+step "Done"
+ok "$LANDED"
+info "his shop was only read from. Nothing on it was modified."
+warn "next, and each one deliberate:"
+info "  script/migrate_shop $SHOP $LOCAL"
+info "      takes it from 5.2 to 5.6 in a local ${SHOP}_migrate, never touching a live database"
+info "  shop_host load $SHOP            push that up, which also switches payments OFF"
+info "  shop_host cutover $SHOP --go    point it at its real names"
+info "  shop_host restore_payments $SHOP  let it charge a card again"

@@ -3,6 +3,7 @@ import { connection } from "next/server";
 import { getTranslations } from "next-intl/server";
 import { OrderDetail } from "@/components/account/OrderDetail";
 import { getOrder } from "@/lib/data/orders";
+import { basePathFor } from "@/lib/routing";
 
 interface OrderDetailPageProps {
   params: Promise<{
@@ -21,7 +22,7 @@ export default async function OrderDetailPage({
     locale: locale as Locale,
     namespace: "orders",
   });
-  const basePath = `/${country}/${locale}`;
+  const basePath = basePathFor(country, locale);
   const order = await getOrder(id);
 
   if (!order || order.completed_at === null) {

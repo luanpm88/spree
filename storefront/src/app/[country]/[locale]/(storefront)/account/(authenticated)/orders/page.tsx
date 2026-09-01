@@ -5,6 +5,7 @@ import { getTranslations } from "next-intl/server";
 import { OrderList } from "@/components/account/OrderList";
 import { Button } from "@/components/ui/button";
 import { getOrders } from "@/lib/data/orders";
+import { basePathFor } from "@/lib/routing";
 
 interface OrdersPageProps {
   params: Promise<{ country: string; locale: string }>;
@@ -17,7 +18,7 @@ export default async function OrdersPage({ params }: OrdersPageProps) {
     locale: locale as Locale,
     namespace: "orders",
   });
-  const basePath = `/${country}/${locale}`;
+  const basePath = basePathFor(country, locale);
 
   const response = await getOrders({ limit: 50 });
   const orders = response.data.filter((order) => order.completed_at !== null);

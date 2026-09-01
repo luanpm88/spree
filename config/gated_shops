@@ -1,0 +1,23 @@
+# Shops that may not be browsed without an account.
+#
+# One shop key per line. A shop listed here is built with
+# NEXT_PUBLIC_REQUIRE_ACCOUNT=1, so its middleware bounces every address to the
+# login except the sign-in pages and the policies named beside it.
+#
+# The client's requirement, in his words:
+#
+#   "No URL should be able to be seen without first login in. If a user sends a
+#    URL to a friend, they should not be allowed to see it until they have an
+#    account. The URLs with the bypass exception are: terms-of-service,
+#    privacy-policy, returns-policy, shipping-policy. These pages are needed
+#    when a new business signs up for an account."
+#
+# This lives here rather than in .estate because it is a policy about a shop,
+# not a fact about where the shop is hosted, and because .estate is gitignored:
+# a gate that is only recorded on one laptop is a gate that comes off the next
+# time someone else builds the shop.
+#
+# Format: <shop> [comma-separated public paths]
+# The paths default to the four policies above when the second field is absent.
+
+b2b

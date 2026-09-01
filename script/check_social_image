@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+#
+# Every shop shows its own picture AND its own words when a link is shared.
+#
+#   script/check_social_image
+#
+# ── the fault this exists for ────────────────────────────────────────────────
+#
+# On 29 Aug the client asked for an OG image on one shop. Six of his seven shops
+# emitted a branded 165 KB card he had made himself; the seventh was still serving
+# `/social-image.webp`, the 7 KB placeholder that ships with the Spree starter.
+#
+# Nothing was broken in a way any check could see. The page rendered, the file
+# answered 200, the meta tag was present and well formed. It was simply not his
+# picture, and the only place that shows is a link pasted into WhatsApp, Facebook
+# or a message to a customer, which is exactly where he found it.
+#
+# ── the three questions, in order ────────────────────────────────────────────
+#
+#   is there an og:image at all      a missing tag makes the platform pick a
+#                                    random image off the page, or none
+#   does it load                     a tag pointing at a 404 is worse than no tag
+#   is it HIS                        the starter placeholder passes both of the
+#                                    checks above and is still wrong
+#
+# And the same three questions about the words beside it. He pasted his own link
+# into Telegram on the Saturday night and sent back what it drew: his logo, and
+# under it "A modern e-commerce storefront powered by Spree Commerce and Next.js."
+# That is the Spree starter's own sentence, served because that shop had no entry
+# in the SEO map and fell through to the default. Nothing failed and the tag was
+# well formed. A link preview is the only place those words are ever read, which
+# is why it survived seven cutovers and a full audit.
+#
+# The third is the one that matters and the one nothing else asks. It is decided
+# by two things that need no knowledge of what the picture shows: the placeholder
+# lives at a known path, and it is an order of magnitude smaller than a real
+# photograph. Both are checked, because either alone would be a guess.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+if [[ ! -f "$ESTATE_FILE" ]]; then
+  echo "  no .estate on this machine, cannot map a shop to a host"
+  exit 0
+fi
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; YE=$'\033[33m'; R=$'\033[0m'
+else GR=''; RE=''; YE=''; R=''; fi
+
+# The path the Spree starter ships. A shop still pointing here has never had one
+# of his own put on it.
+PLACEHOLDER_PATH='/social-image'
+# His own cards run 125 KB to 170 KB. The starter placeholder is under 10 KB, so
+# anything that small is the placeholder under another name.
+MIN_BYTES=20000
+
+bad=0
+checked=0
+
+while IFS='|' read -r shop _dir _db _port _sport tmp _store live _rest; do
+  [[ -n "$shop" ]] || continue
+  case "$shop" in \#*) continue;; esac
+
+  host="${live// /}"
+  [[ -n "$host" && "$host" != "-" ]] || host="https://${tmp// /}"
+  [[ "$host" == http* ]] || host="https://$host"
+  [[ "$host" != "https://" && "$host" != "https://-" ]] || continue
+
+  checked=$((checked + 1))
+
+  og=$(curl -s -L --max-time 30 "$host" 2>/dev/null | python3 -c "
+import sys, re
+h = sys.stdin.read()
+m = (re.findall(r'<meta[^>]*property=\"og:image\"[^>]*content=\"([^\"]*)\"', h)
+     or re.findall(r'<meta[^>]*content=\"([^\"]*)\"[^>]*property=\"og:image\"', h))
+print(m[0] if m else '')
+" 2>/dev/null)
+
+  if [[ -z "$og" ]]; then
+    printf '  %s%-10s no og:image tag at all%s\n' "$RE" "$shop" "$R"
+    bad=$((bad + 1))
+    continue
+  fi
+
+  read -r code size <<< "$(curl -s -o /dev/null -w '%{http_code} %{size_download}' -L --max-time 30 "$og" 2>/dev/null || echo '000 0')"
+
+  if [[ "$code" != "200" ]]; then
+    printf '  %s%-10s og:image answers %s  %s%s\n' "$RE" "$shop" "$code" "$og" "$R"
+    bad=$((bad + 1))
+    continue
+  fi
+
+  case "$og" in
+    *"$PLACEHOLDER_PATH"*)
+      printf '  %s%-10s still the starter placeholder  %s%s\n' "$RE" "$shop" "$og" "$R"
+      bad=$((bad + 1))
+      continue ;;
+  esac
+
+  if [[ "${size:-0}" -lt "$MIN_BYTES" ]]; then
+    printf '  %s%-10s og:image is only %s bytes, which is placeholder sized  %s%s\n' "$YE" "$shop" "$size" "$og" "$R"
+    bad=$((bad + 1))
+    continue
+  fi
+
+  # The words under the picture, from the same page.
+  # BOTH description tags, not one falling back to the other.
+  #
+  # The first version read name="description" and only looked at og:description if
+  # that was missing, so a shop with one right and the other wrong passed. A hand
+  # check found the gate was weaker than the check being done by hand, which is the
+  # gate failing at its own job.
+  #
+  # Asked as the bot asks, too: a preview is drawn by a crawler, and a site can
+  # answer a crawler differently from a browser.
+  desc=$(curl -s -L --max-time 30 -A "Mozilla/5.0 (compatible; TelegramBot; +https://telegram.org)" "$host" 2>/dev/null | python3 -c "
+import sys, re
+h = sys.stdin.read()
+def grab(kind, key):
+    return (re.findall(rf'<meta[^>]*{kind}=\"{key}\"[^>]*content=\"([^\"]*)\"', h)
+            or re.findall(rf'<meta[^>]*content=\"([^\"]*)\"[^>]*{kind}=\"{key}\"', h))
+meta = grab('name', 'description')
+og = grab('property', 'og:description')
+# Report the worse of the two, so neither can hide behind the other.
+starter = 'powered by Spree Commerce'
+for got in (meta, og):
+    if not got:
+        print(''); break
+    if starter in got[0]:
+        print(got[0]); break
+else:
+    print(meta[0])
+" 2>/dev/null)
+
+  # A blank answer is asked again before it is believed.
+  #
+  # Two runs a minute apart disagreed: one red, one green, on a shop that had not
+  # changed. A dropped fetch makes the description look absent, and "absent"
+  # and "could not read the page" are different findings that must not share a
+  # verdict. Every false red on this project has cost more than the fault it
+  # claimed.
+  if [[ -z "$desc" ]]; then
+    sleep 2
+    desc=$(curl -s -L --max-time 40 -A "Mozilla/5.0 (compatible; TelegramBot; +https://telegram.org)" "$host" 2>/dev/null \
+      | python3 -c "
+import sys, re
+h = sys.stdin.read()
+m = (re.findall(r'<meta[^>]*name=\"description\"[^>]*content=\"([^\"]*)\"', h)
+     or re.findall(r'<meta[^>]*property=\"og:description\"[^>]*content=\"([^\"]*)\"', h))
+print(m[0] if m else '')
+" 2>/dev/null)
+  fi
+
+  case "$desc" in
+    "")
+      printf '  %s%-10s no description on two reads%s\n' "$RE" "$shop" "$R"
+      bad=$((bad + 1)); continue ;;
+    *"powered by Spree Commerce"*)
+      printf '  %s%-10s the Spree starter sentence, not his: %s%s\n' "$RE" "$shop" "${desc:0:46}" "$R"
+      bad=$((bad + 1)); continue ;;
+  esac
+
+  printf '  %-10s ok  %s bytes  %s  |  %s\n' "$shop" "$size" "${og##*/}" "${desc:0:44}"
+done < <(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+
+echo
+if [[ $bad -gt 0 ]]; then
+  cat >&2 <<EOF
+${RE}FAILED${R}: $bad of $checked shop(s) would show the wrong picture when a link is shared.
+
+A shop on the starter placeholder needs his own card. Put the file at
+storefront/public/brand/og-<shop>.jpg, add the og: entry for that shop in
+content.ts beside the others, and rebuild:
+
+  script/shop_host storefront <shop> --live
+
+The ones he has made are 2400 x 1256.
+EOF
+  exit 1
+fi
+
+echo "  ${GR}ok${R} — $checked shop(s), each showing its own picture"

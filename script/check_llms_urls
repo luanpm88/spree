@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+#
+# Does every URL in each shop's llms files actually resolve?
+#
+#   script/check_llms_urls            every shop staged in tmp/client/shop_public
+#   script/check_llms_urls nz au      just these
+#
+# ── the failure this exists for ──────────────────────────────────────────────
+#
+# llms.txt and llms-full.txt tell AI crawlers what a shop is and where its pages
+# are. The pair deployed on this estate before 26 August came off the client's
+# old server and used a category URL shape the new storefront does not serve. One
+# of its first URLs answered 404 and nobody noticed for weeks, because a wrong
+# link in an llms file fails in complete silence: the file itself answers 200,
+# it is 8 KB of correct-looking prose, and nothing renders it.
+#
+# ── what it does ─────────────────────────────────────────────────────────────
+#
+# Every URL in both files, requested. A URL on the shop's own live host is
+# rewritten to that shop's REVIEW host and tested there, because the review shop
+# is what has been built: the live host still runs the old platform and would
+# answer 200 for pages that do not exist on the new one, which is the worst
+# possible way to pass this check.
+#
+# A URL anywhere else is requested at the host it names and reported separately.
+# Those are the client's to fix, and mixing the two counts is how a report ends
+# up blaming the wrong person.
+#
+# ── the gated shop ───────────────────────────────────────────────────────────
+#
+# One shop is closed without an account, so it answers 200 with a sign-in page
+# for every address including ones that do not exist. A status code proves
+# nothing there. That shop's URLs are reported as NOT CHECKED rather than as
+# passing, because a green tick earned by measuring a login page is worse than
+# no tick at all.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_OFF=$'\e[0m'
+
+STAGED="tmp/client/shop_public"
+[[ -d "$STAGED" ]] || { echo "  no $STAGED on this machine, nothing to check"; exit 0; }
+[[ -f .estate ]] || { echo "  no .estate on this machine, cannot map a shop to a host"; exit 0; }
+
+# shop -> review host, read from the estate file rather than hardcoded. Column 6
+# is the customer-facing hostname; confirmed by fetching, never by the heading.
+#
+# A function and not an associative array: macOS ships bash 3.2, where
+# `declare -A` is a syntax error. The same version caught `mapfile` on this
+# project once already, and both failures look like the script being broken
+# rather than the shell being old.
+review_host() {
+    # Column 8 first, column 6 as the fallback.
+    #
+    # Column 8 is the shop's live hostname and column 6 the temporary review
+    # one. Before a shop moves only column 6 resolves; after it moves the client
+    # deletes that record, and a check still asking for it fails with
+    # ERR_NAME_NOT_RESOLVED, which reads as a broken shop. Four gates reported
+    # healthy shops that way on the afternoon the last shop was cut over.
+  awk -F'|' -v want="$1" '
+    /^#/ { next }
+    NF >= 6 {
+        s = $1; h = $6; l = (NF >= 8 ? $8 : "")
+        gsub(/[ \t]/, "", s); gsub(/[ \t]/, "", h); gsub(/[ \t]/, "", l)
+        sub(/^https?:\/\//, "", l)
+        if (l != "" && l != "-") h = l
+      if (s == want && h != "" && h != "-") { print "https://" h; exit }
+    }' .estate
+}
+
+# Shops that cannot be measured by status code alone.
+GATED=""
+[[ -f config/gated_shops ]] && GATED=$(grep -vE '^\s*#|^\s*$' config/gated_shops | tr '\n' ' ')
+
+shops=("$@")
+if [[ ${#shops[@]} -eq 0 ]]; then
+  for d in "$STAGED"/*/; do shops+=("$(basename "$d")"); done
+fi
+
+total_bad=0
+total_skipped=0
+
+for shop in "${shops[@]}"; do
+  host="$(review_host "$shop")"
+  if [[ -z "$host" ]]; then
+    printf '\n  %-9s %sno review host in .estate, NOT CHECKED%s\n' "$shop" "$C_RED" "$C_OFF"
+    total_bad=$((total_bad + 1)); continue
+  fi
+
+  files=()
+  for f in llms.txt llms-full.txt; do
+    [[ -f "$STAGED/$shop/$f" ]] && files+=("$STAGED/$shop/$f")
+  done
+  if [[ ${#files[@]} -eq 0 ]]; then
+    printf '\n  %-9s %sno llms files staged%s\n' "$shop" "$C_YEL" "$C_OFF"
+    continue
+  fi
+
+  # The shop's own live host, taken from the file itself: whichever hostname it
+  # names most often is the one it is describing. Derived rather than configured,
+  # so a file for the wrong shop shows up as a pile of outside URLs instead of
+  # being quietly rewritten onto the shop being tested.
+  own=$(grep -ohE 'https://[a-z0-9.-]+' "${files[@]}" | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+
+  urls=$(grep -ohE 'https?://[^ )>"'"'"'`]+' "${files[@]}" | sed 's/[.,;:]*$//' | sort -u)
+  n_total=$(printf '%s\n' "$urls" | grep -c . || true)
+
+  gated=0
+  case " $GATED " in *" $shop "*) gated=1 ;; esac
+
+  printf '\n  %-9s %s%s  %s URL(s) in %d file(s)%s\n' \
+    "$shop" "$C_DIM" "${own#https://}" "$n_total" "${#files[@]}" "$C_OFF"
+
+# Ask for the status code, then ask separately whether curl itself succeeded.
+#
+# NOT `curl ... || echo 000`. curl prints the code it already has BEFORE it exits
+# non-zero, so the fallback is appended rather than substituted and one network
+# blink turns 200 into "200000". That matches no branch, counts as a failure, and
+# prints a red line about a page that is fine.
+#
+# This gate did exactly that on 30 Aug:
+#
+#   ours  200000  /c/categories/containers-covers-lid-parts/lids-parts/stainless-steel-lids
+#
+# The address answered 200 on all five shops when asked by hand. It is the fourth
+# time this shape has produced a false red on this project, in a fourth script.
+# See DISCOVERIES 15.
+status_of() {
+  local url="$1" code
+  code=$(curl -sS -o /dev/null -L --max-time 45 -w '%{http_code}' "$url" 2>/dev/null)
+  if [[ -z "$code" ]] || ! [[ "$code" =~ ^[0-9]{3}$ ]]; then
+    sleep 2
+    code=$(curl -sS -o /dev/null -L --max-time 60 -w '%{http_code}' "$url" 2>/dev/null)
+    [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
+  fi
+  printf '%s' "$code"
+}
+
+  bad=0; checked=0; outside_bad=0; outside=0
+  while IFS= read -r u; do
+    [[ -z "$u" ]] && continue
+    if [[ "$u" == "$own"* ]]; then
+      if [[ "$gated" == "1" ]]; then continue; fi
+      target="${host}${u#"$own"}"
+      code=$(status_of "$target")
+      checked=$((checked + 1))
+      if [[ "$code" != "200" ]]; then
+        bad=$((bad + 1))
+        printf '      %sours  %s  %s%s\n' "$C_RED" "$code" "${u#"$own"}" "$C_OFF"
+      fi
+    else
+      outside=$((outside + 1))
+      code=$(status_of "$u")
+      if [[ "$code" != "200" ]]; then
+        outside_bad=$((outside_bad + 1))
+        printf '      %shis   %s  %s%s\n' "$C_YEL" "$code" "$u" "$C_OFF"
+      fi
+    fi
+  done <<< "$urls"
+
+  if [[ "$gated" == "1" ]]; then
+    own_count=$(printf '%s\n' "$urls" | grep -c "^$own" || true)
+    printf '      %s%s URL(s) on this shop NOT CHECKED: it is closed without an account, so\n' "$C_YEL" "$own_count"
+    printf '      every address answers 200 with a sign-in page and a status code proves nothing%s\n' "$C_OFF"
+    total_skipped=$((total_skipped + own_count))
+  fi
+
+  if [[ "$bad" -eq 0 ]]; then
+    printf '      %sok%s  %s of ours resolve' "$C_GRN" "$C_OFF" "$checked"
+  else
+    printf '      %s%s of %s of ours do NOT resolve%s' "$C_RED" "$bad" "$checked" "$C_OFF"
+  fi
+  if [[ "$outside" -gt 0 ]]; then
+    printf ', %s elsewhere' "$outside"
+    [[ "$outside_bad" -gt 0 ]] && printf ' (%s%s of his are dead%s)' "$C_YEL" "$outside_bad" "$C_OFF"
+  fi
+  printf '\n'
+  total_bad=$((total_bad + bad))
+done
+
+printf '\n'
+if [[ "$total_skipped" -gt 0 ]]; then
+  printf '  %s%s URL(s) not checked, on a shop that cannot be measured by status code%s\n' "$C_YEL" "$total_skipped" "$C_OFF"
+fi
+if [[ "$total_bad" -gt 0 ]]; then
+  printf '  %s%s URL(s) in the llms files do not resolve on the shop they describe%s\n' "$C_RED" "$total_bad" "$C_OFF"
+  exit 1
+fi
+printf '  %sok — every llms URL on our side resolves%s\n' "$C_GRN" "$C_OFF"

@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+#
+# Everything Canada taught us on 27 August, as a check you run per shop.
+#
+#   script/cutover_check ca            after the cutover, before saying it is done
+#   script/cutover_check ca --pre      before starting, what must be true first
+#
+# ── why this is a script and not a list in a document ────────────────────────
+#
+# Canada went across with every command reporting success and two faults on the
+# live shop that nobody would have found by reading output: every product image
+# refused, and the On Sale row leading to a dead page. Both were caught by a
+# browser, one by a redirect test, and neither appeared in any log.
+#
+# A checklist in prose gets skimmed on the sixth shop at two in the morning. This
+# exits non-zero.
+#
+# Every check below is here because it FAILED on Canada or would have.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_BLD=$'\e[1m'; C_OFF=$'\e[0m'
+pass=0; fail=0; note=0
+ok()   { printf '  %sok%s    %s\n' "$C_GRN" "$C_OFF" "$*"; pass=$((pass+1)); }
+bad()  { printf '  %sFAIL%s  %s\n' "$C_RED" "$C_OFF" "$*"; fail=$((fail+1)); }
+inf()  { printf '  %s      %s%s\n' "$C_DIM" "$*" "$C_OFF"; }
+nte()  { printf '  %snote%s  %s\n' "$C_YEL" "$C_OFF" "$*"; note=$((note+1)); }
+step() { printf '\n%s──%s %s\n' "$C_BLD" "$C_OFF" "$*"; }
+die()  { printf '\n%sFAILED%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+
+SHOP="${1:-}"; MODE="${2:-post}"
+[[ -n "$SHOP" ]] || die "usage: script/cutover_check <shop> [--pre]"
+
+[[ -f .estate.env ]] || die ".estate.env is not here"
+set -a; . ./.estate.env; set +a
+eval NK="$SSH_KEY"; NP=$(printf '%s' "$SSH_PORT" | tr -d '"')
+rsh() { ssh -i "$NK" -p "$NP" -o BatchMode=yes -o ConnectTimeout=30 "$SSH_HOST" "$@" </dev/null; }
+
+read -r _ DIR _ PORT SPORT DOM STORE LIVE PREFIX < <(awk -F'|' -v s="$SHOP" '$1==s {print $1,$2,$3,$4,$5,$6,$7,$8,$9}' .estate)
+[[ -n "${DIR:-}" ]] || die "$SHOP is not in .estate"
+LIVEH="${LIVE#https://}"; LIVEH="${LIVEH%%/*}"
+
+printf '%s%s%s  %s\n' "$C_BLD" "cutover check: $SHOP" "$C_OFF" "$LIVEH"
+
+# ─────────────────────────────────────────────────────────────────────────────
+if [[ "$MODE" == "--pre" ]]; then
+  step "Before you start"
+
+  # Canada: his own nightly dump exists but verifies nothing it writes.
+  if script/shop_smtp "$SHOP" --check >/dev/null 2>&1; then
+    ok "a complete SMTP block exists for this shop"
+  else
+    bad "no complete SMTP block. Run: script/shop_smtp $SHOP"
+  fi
+
+  # The live name has to answer from this box BEFORE the record moves, or the
+  # first visitor after the flip gets whatever nginx serves by default.
+  if rsh "test -f /etc/nginx/sites-available/$LIVEH"; then
+    ok "this box has a vhost for $LIVEH"
+  else
+    bad "no vhost for $LIVEH. Run: shop_host live_host $SHOP"
+  fi
+
+  # Canada: the admin rename is what moved the image host. Do it before, not after.
+  admin="$STORE"
+  case "$STORE" in store.*.*) admin="$(printf '%s' "$STORE" | sed -E 's/^store\.([^.]+)\.(.+)$/\1-store.\2/')" ;; esac
+  if [[ "$admin" == "$STORE" ]]; then
+    ok "admin host is already two labels: $STORE"
+  elif rsh "test -f /etc/nginx/sites-available/$admin"; then
+    ok "this box has a vhost for the new admin name $admin"
+  else
+    bad "no vhost for $admin. Run: shop_host admin_host $SHOP"
+  fi
+
+  # Nothing can be lost between the dump and the flip except by his rule.
+  nte "his block rule must be ON before the dump is taken, not after"
+  printf '\n  %s%s passed, %s failed, %s to watch%s\n' "$C_BLD" "$pass" "$fail" "$note" "$C_OFF"
+  [[ "$fail" -eq 0 ]] || exit 1
+  exit 0
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+step "1. The two hosts that must agree, or every image is refused"
+# DISCOVERIES 29. Rails builds Active Storage urls from RAILS_HOST at run time;
+# the storefront bakes its allowed image hosts from SPREE_API_URL at BUILD time.
+# When they disagreed on Canada the page rendered perfectly and every product
+# photograph came back 400, with nothing in any log on either side.
+# Fetch a real product image through the optimiser rather than comparing two
+# environment variables.
+#
+# The first version of this compared RAILS_HOST against the storefront's runtime
+# SPREE_API_URL and failed a shop whose images were all working. The value that
+# decides this is neither of those: it is `remotePatterns`, baked from the BUILD
+# arg, and a runtime variable can differ from it perfectly legitimately. Comparing
+# two things that only USUALLY agree produces a check that cries wolf, and a check
+# that cries wolf is one somebody switches off.
+#
+# So ask the shop for a picture. Nothing can fake a 200 with image bytes on it.
+prod=$(rsh "docker exec ${SHOP}_web bin/rails runner 'p = Spree::Product.joins(:images).first; print \"<<S:\" + (p ? p.slug : \"\") + \":S>>\"' 2>/dev/null" | /usr/bin/sed -n 's/.*<<S:\(.*\):S>>.*/\1/p')
+if [[ -z "$prod" ]]; then
+  nte "no product with an image to test"
+else
+  img=$(curl -sL --max-time 30 "https://$LIVEH/products/$prod" 2>/dev/null \
+        | /usr/bin/grep -oE '/_next/image\?url=[^"]+' | /usr/bin/head -1 | /usr/bin/sed 's/&amp;/\&/g')
+  if [[ -z "$img" ]]; then
+    nte "no optimised image url in that product page to test"
+  else
+    r=$(curl -sL -o /dev/null -w '%{http_code} %{size_download} %{content_type}' --max-time 30 "https://$LIVEH$img" 2>/dev/null)
+    st="${r%% *}"
+    if [[ "$st" == "200" ]]; then
+      ok "a real product image loads through the optimiser  ($r)"
+    else
+      bad "a product image answers $st. Every photograph on the shop is blank, and nothing logs it."
+      inf "Usually the image host: Rails builds those urls from RAILS_HOST, and the storefront"
+      inf "bakes the hosts it accepts at BUILD time. Fix: shop_host storefront $SHOP --live"
+    fi
+  fi
+fi
+
+# Reported either way, because it is the thing that goes wrong, but not failed on:
+# a difference here is only a fault when the picture above does not load.
+rails_host=$(rsh "docker exec ${SHOP}_web printenv RAILS_HOST 2>/dev/null" | tr -d '\r')
+api_url=$(rsh "docker exec ${SHOP}_storefront printenv SPREE_API_URL 2>/dev/null" | tr -d '\r')
+inf "RAILS_HOST=$rails_host   storefront SPREE_API_URL=$api_url"
+
+# And the files themselves. A dump carries the rows and leaves every file behind.
+blobs=$(rsh "docker exec ${SHOP}_web bin/rails runner 'w=0;m=0;Spree::Product.find_each{|p| a=p.images.first; next if a.nil?; ((a.attachment.blob.service.exist?(a.attachment.blob.key) rescue false) ? w+=1 : m+=1)}; print \"<<B:#{w}|#{m}:B>>\"' 2>/dev/null" | /usr/bin/sed -n 's/.*<<B:\(.*\):B>>.*/\1/p')
+IFS='|' read -r IMG_OK IMG_BAD <<< "${blobs:-0|0}"
+if [[ "${IMG_BAD:-0}" -eq 0 && "${IMG_OK:-0}" -gt 0 ]]; then
+  ok "$IMG_OK product(s) have their image file on this server"
+elif [[ "${IMG_BAD:-0}" -gt 0 ]]; then
+  bad "$IMG_BAD product(s) have an image row and no file. Run: script/pull_shop_images $SHOP"
+fi
+
+step "1b. A product card actually draws a picture"
+# Canada, 27 Aug. Every count said the images were fine and the client opened his
+# own shop and found grey boxes. The counts were all measuring something true and
+# beside the point:
+#
+#   naturalWidth === 0   counts BROKEN images. A card with no <img> at all has
+#                        none, so a page with no pictures scored zero broken.
+#   naturalWidth > 0     counts the grey PLACEHOLDER as a loaded image.
+#   blob.service.exist?  said 260 of 260 files were present, and they were.
+#
+# What was actually wrong: backfill:usable_thumbnails decided an image had not
+# come across by testing `service_name <> 'local'`, and on this estate no blob is
+# on a service called local, so it blanked primary_media_id on every product. The
+# API then returned thumbnail_url: null and the card rendered no img tag.
+#
+# So the only question worth asking is whether a card has an <img> in it, and the
+# only proof anyone should accept is a screenshot somebody opened.
+# One script, run from the storefront package so it can find playwright. It was
+# an inline heredoc and returned 0 products on a page with 38 photographs, because
+# of how the subshell resolved paths, which is the second time today a probe
+# reported a fault that did not exist.
+img_out=$(cd storefront && node ../script/check_shop_images.mjs "https://$LIVEH" "$(pwd)/../tmp/annotated/${SHOP}-images-proof.png" 2>&1)
+img_rc=$?
+printf '%s\n' "$img_out" | sed 's/^/  /'
+if [ "$img_rc" -eq 0 ]; then
+  pass=$((pass+1))
+else
+  fail=$((fail+1))
+  inf "Order matters: copy the image FILES first, then backfill:thumbnails and"
+  inf "backfill:usable_thumbnails, then rebuild the storefront and FORCE the"
+  inf "container onto the new image. A restart alone keeps the old one."
+  inf "  script/pull_shop_images $SHOP"
+  inf "  <shop>_web bin/rails backfill:thumbnails backfill:usable_thumbnails"
+  inf "  shop_host storefront $SHOP --live"
+  inf "  docker compose up -d --force-recreate storefront"
+fi
+nte "open that screenshot before calling this done. Five measurements said fine on a shop with no photographs."
+
+step "2. The API key the storefront was built with still exists"
+# Canada returned 500 on every page after the load, because loading a fresh dump
+# replaces spree_api_keys and the built storefront was calling the old one.
+keys=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${SHOP}_shop -c \"SELECT count(*) FROM spree_api_keys WHERE key_type='publishable' AND revoked_at IS NULL\"" | tr -d '\r')
+code=$(curl -sL -o /tmp/cc_home.html -w '%{http_code}' --max-time 30 "https://$LIVEH/" 2>/dev/null)
+title=$(/usr/bin/grep -o '<title>[^<]*' /tmp/cc_home.html 2>/dev/null | /usr/bin/head -1 | /usr/bin/sed 's/<title>//')
+if [[ "$code" == "200" && -n "$title" ]]; then
+  ok "the shop answers 200 with a title: $title"
+else
+  bad "the shop answers $code. If it is 500, rebuild the storefront: it is calling a key the reload replaced."
+fi
+inf "$keys publishable key(s) in the database"
+
+step "3. Mail leaves from an address that will not bounce"
+# Every root is on DMARC p=reject. An address off the send. subdomain does not go
+# to junk, it is refused. And the From comes from the store row, NOT the env var.
+from=$(rsh "docker exec ${SHOP}_web bin/rails runner 'print \"<<F:\" + Spree::Store.default.mail_from_address.to_s + \":F>>\"' 2>/dev/null" | /usr/bin/sed -n 's/.*<<F:\(.*\):F>>.*/\1/p')
+smtp=$(rsh "docker exec ${SHOP}_web printenv SMTP_HOST 2>/dev/null" | tr -d '\r')
+case "$from" in
+  *@send.*) ok "mail_from is $from" ;;
+  *)        bad "mail_from is '$from', which is not on a send. subdomain. Under p=reject that BOUNCES." ;;
+esac
+if [[ "$smtp" == "estate-mailpit" || -z "$smtp" ]]; then
+  bad "SMTP_HOST is still the catcher. No customer will receive anything."
+else
+  ok "SMTP_HOST is $smtp"
+fi
+
+step "4. Payments are the ones his live shop had, and no others"
+recorded=$(rsh "cat /srv/$DIR/.deactivated-payments 2>/dev/null" | tr -d '\r' | /usr/bin/grep -cE '^[0-9]+$' || true)
+active=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${SHOP}_shop -c 'SELECT count(*) FROM spree_payment_methods WHERE active'" | tr -d '\r')
+inf "load recorded ${recorded:-0} method(s) as switched off; ${active:-0} are active now"
+if [[ "${active:-0}" -gt 0 ]]; then
+  ok "$active payment method(s) active"
+elif [[ "${recorded:-0}" -gt 0 ]]; then
+  bad "nothing is active. Run: shop_host restore_payments $SHOP"
+else
+  nte "no record of what load switched off, and nothing is active. Check by hand against his live shop."
+fi
+
+step "4b. The on-sale collection holds the products that are on sale"
+# Not folded into check 5 below, which asks whether a dead category redirects
+# somewhere alive. This asks the opposite and more important question: is the
+# destination itself worth arriving at.
+#
+# Two shops passed check 5 with full marks while the on-sale button led to a
+# smaller category, because collections/on-sale was rule-based and held one
+# product, so it had been redirected away rather than filled. Loading a dump
+# undoes on_sale:top_up, and both shops were reloaded after it had been run.
+onsale=$(rsh "docker exec ${SHOP}_web bin/rails runner '
+  t = Spree::Taxon.find_by(permalink: \"collections/on-sale\")
+  d = Spree::Product.active.joins(master: :prices).where(\"spree_prices.compare_at_amount > spree_prices.amount\").distinct.count rescue 0
+  print \"<<S:\" + (t ? \"#{t.automatic}|#{t.products.count}|#{d}\" : \"none|0|#{d}\") + \":S>>\"' 2>/dev/null" | /usr/bin/sed -n 's/.*<<S:\(.*\):S>>.*/\1/p')
+IFS='|' read -r os_auto os_held os_disc <<< "${onsale:-none|0|0}"
+if [[ "$os_auto" == "none" ]]; then
+  nte "this shop has no collections/on-sale. Nothing to fill, and nothing links to it."
+elif [[ "$os_auto" == "true" ]]; then
+  bad "collections/on-sale is still rule-based, so the Store API serves it as empty. Run: ${SHOP}_web bin/rails on_sale:top_up"
+elif [[ "${os_held:-0}" -eq 0 ]]; then
+  bad "collections/on-sale is manual but empty. Run: ${SHOP}_web bin/rails on_sale:top_up"
+elif [[ "${os_disc:-0}" -gt 0 && "${os_held:-0}" -lt "${os_disc:-0}" ]]; then
+  nte "collections/on-sale holds $os_held of the $os_disc discounted products. His own edits count, so this is a look-at rather than a failure: ${SHOP}_web bin/rails on_sale:top_up"
+else
+  ok "collections/on-sale is manual and holds $os_held product(s)"
+fi
+
+step "5. Every category the shop links to actually resolves"
+# Canada: the On Sale row led to a dead page, because the category behind it is
+# rule based and the 5.6 Store API serves none of those. Which ones are dead
+# DIFFERS PER SHOP and per dump, so it is measured here rather than assumed.
+auto=$(rsh "docker exec ${SHOP}_web bin/rails runner 'print \"<<A:\" + Spree::Taxon.where(automatic: true).pluck(:permalink).join(\",\") + \":A>>\"' 2>/dev/null" | /usr/bin/sed -n 's/.*<<A:\(.*\):A>>.*/\1/p')
+if [[ -z "$auto" ]]; then
+  ok "this shop has no rule-based categories"
+else
+  inf "rule-based, invisible to the Store API: $auto"
+  dead=0
+  IFS=',' read -ra perms <<< "$auto"
+  for perm in "${perms[@]}"; do
+    [[ -n "$perm" ]] || continue
+    fin=$(curl -sL -o /dev/null -w '%{http_code} %{url_effective}' --max-time 25 "https://$LIVEH/c/$perm" 2>/dev/null)
+    st="${fin%% *}"; url="${fin#* }"
+    if [[ "$st" == "200" && "$url" != *"$perm" ]]; then
+      ok "/c/$perm redirects to a live page"
+    else
+      bad "/c/$perm answers $st and does not redirect anywhere"
+      inf "add a by_shop entry in storefront/src/lib/blocks/retired-urls.json pointing at a category that EXISTS on this shop"
+      dead=$((dead+1))
+    fi
+  done
+  [[ "$dead" -eq 0 ]] || inf "measure the target first: the obvious one is often rule-based too, which is how Canada sent one 404 to another"
+fi
+
+step "6. Order numbers keep the shape his customers know"
+mint=$(rsh "docker exec ${SHOP}_web printenv ORDER_NUMBER_PREFIX 2>/dev/null" | tr -d '\r')
+if [[ -n "$PREFIX" && "$mint" == "$PREFIX" ]]; then
+  ok "order prefix $mint"
+else
+  bad "order prefix is '$mint', .estate says '$PREFIX'"
+fi
+
+step "7. Search engines"
+rob=$(curl -sI --max-time 20 "https://$LIVEH/" 2>/dev/null | /usr/bin/grep -i 'x-robots-tag' | tr -d '\r')
+if [[ -n "$rob" ]]; then
+  nte "still noindex: $rob"
+  inf "correct until the shop is proven. Last step: shop_host live_host $SHOP --go"
+else
+  ok "no noindex header: search engines are allowed"
+fi
+
+step "8. Can it take an order"
+w=$(curl -s -o /dev/null -w '%{http_code}' -X POST --max-time 20 "https://$LIVEH/cart" 2>/dev/null)
+if [[ "$w" == "403" ]]; then
+  nte "a POST comes back 403: his block rule is still on, so nothing can be ordered"
+  inf "that is correct DURING the move and wrong after it. He turns it off last."
+else
+  ok "writes are allowed (POST answered $w)"
+fi
+inf "the only proof that it can sell is script/check_storefront_e2e.mjs https://$LIVEH $SHOP en"
+inf "reading HTML cannot see it: on 17 Aug a shop answered 200 everywhere and could not take an order"
+
+printf '\n  %s%s passed, %s failed, %s to watch%s\n' "$C_BLD" "$pass" "$fail" "$note" "$C_OFF"
+[[ "$fail" -eq 0 ]] || exit 1

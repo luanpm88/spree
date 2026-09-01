@@ -1,0 +1,119 @@
+#!/usr/bin/env node
+//
+// List and download what the client attaches to the tracker.
+//
+//   script/ac_files                 list every file, newest first
+//   script/ac_files --get 177       download one by id
+//   script/ac_files --get-new       download everything not already on disk
+//   script/ac_files --out DIR       where to put them (default tmp/client/downloads)
+//
+// ── what this can and cannot do ──────────────────────────────────────────────
+//
+// LISTING works and is the point: ids, sizes, dates, newest first, so you always know
+// what arrived and what you have not fetched.
+//
+// DOWNLOADING does not, and it is worth writing down why so nobody spends the afternoon
+// on it twice. download_url comes back with a literal `i=--DOWNLOAD-TOKEN--` in it. The
+// API token cannot fill that in. Neither can a browser session cookie, which was tested:
+// the cookie authenticates a real page load, and the same request still 404s. The token
+// is minted client side and is not in the cookie, not in the API response, not in the
+// page HTML, and not on any window object. Reverse engineering it is not worth the
+// three clicks it replaces.
+//
+// So: list here, download by hand, and check the list afterwards to be sure you got
+// everything.
+//
+// ── why the cookie is here anyway ────────────────────────────────────────────
+//
+// The API token lists files and reads their metadata, and that is all it can do. The
+// download itself goes through proxy.php, which wants a browser SESSION, so a token
+// gets a 404 that looks like the file does not exist. Five dumps had to be fetched by
+// hand before this was worked out.
+//
+// So ACTIVECOLLAB_COOKIE holds a session copied from a logged-in browser. It is short
+// lived by design: when downloads start 404ing again, that is what expired. Everything
+// lives in .env.activecollab, which is gitignored and chmod 600.
+//
+// Files land under tmp/client, which is gitignored: they are the client's dumps, keys
+// and brand material, and this repository is public. A file that looks like a private
+// key is written 600 without being asked.
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, readdirSync } from 'node:fs';
+import path from 'node:path';
+
+const ENV_PATH = '.env.activecollab';
+const die = (m) => { console.error(`error  ${m}`); process.exit(1); };
+
+if (!existsSync(ENV_PATH)) die(`no ${ENV_PATH}`);
+const env = {};
+for (const line of readFileSync(ENV_PATH, 'utf8').split('\n')) {
+  const i = line.indexOf('=');
+  if (i < 1 || line.trim().startsWith('#')) continue;
+  env[line.slice(0, i).trim()] = line.slice(i + 1).trim().replace(/^["']|["']$/g, '');
+}
+const BASE = env.ACTIVECOLLAB_URL || die('no ACTIVECOLLAB_URL');
+const TOKEN = env.ACTIVECOLLAB_TOKEN || die('no ACTIVECOLLAB_TOKEN');
+const COOKIE = env.ACTIVECOLLAB_COOKIE || '';
+const PROJECT = env.ACTIVECOLLAB_PROJECT_ID || '264';
+
+const args = process.argv.slice(2);
+const arg = (name) => { const i = args.indexOf(name); return i === -1 ? null : args[i + 1]; };
+const OUT = arg('--out') || 'tmp/client/downloads';
+
+const api = async (p) => {
+  const r = await fetch(`${BASE}/api/v1${p}`, { headers: { 'X-Angie-AuthApiToken': TOKEN } });
+  if (!r.ok) die(`${p} returned HTTP ${r.status}`);
+  return r.json();
+};
+
+const listFiles = async () => {
+  const j = await api(`/projects/${PROJECT}/files`);
+  const files = j.files || (Array.isArray(j) ? j : []);
+  return [...files].sort((a, b) => (b.created_on || 0) - (a.created_on || 0));
+};
+
+// A key must never sit at 644 in a shared home directory, and ssh refuses it anyway.
+const SECRET = /(^|[^a-z])(id_rsa|id_ed25519|private[_-]?key|\.pem$|\.key$)/i;
+
+const download = async (file) => {
+  if (!COOKIE) die('no ACTIVECOLLAB_COOKIE. Downloads need a browser session, see the header of this file.');
+  const url = String(file.download_url || '').replace('--DOWNLOAD-TOKEN--', '');
+  if (!url) die(`${file.name} has no download_url`);
+
+  const r = await fetch(url, { headers: { Cookie: COOKIE }, redirect: 'follow' });
+  const type = r.headers.get('content-type') || '';
+  if (!r.ok) die(`${file.name}: HTTP ${r.status}. If this is 404, the session has expired.`);
+  // A logged-out request returns the login PAGE with a 200, which would otherwise be
+  // written to disk as a perfectly valid looking file.
+  if (/text\/html/i.test(type)) die(`${file.name}: got an HTML page, not the file. The session has expired.`);
+
+  mkdirSync(OUT, { recursive: true });
+  const dest = path.join(OUT, file.name);
+  const buf = Buffer.from(await r.arrayBuffer());
+  writeFileSync(dest, buf);
+  if (SECRET.test(file.name) || buf.subarray(0, 40).toString().includes('PRIVATE KEY')) chmodSync(dest, 0o600);
+  const mb = (buf.length / 1048576).toFixed(1);
+  console.log(`  got  ${file.name.padEnd(40)} ${mb} MB  -> ${dest}`);
+  return dest;
+};
+
+const files = await listFiles();
+
+if (args.includes('--get')) {
+  const id = Number(arg('--get'));
+  const f = files.find((x) => x.id === id) || die(`no file with id ${id}`);
+  await download(f);
+} else if (args.includes('--get-new')) {
+  const have = existsSync(OUT) ? new Set(readdirSync(OUT)) : new Set();
+  const todo = files.filter((f) => !have.has(f.name));
+  if (!todo.length) { console.log('nothing new'); process.exit(0); }
+  for (const f of todo) await download(f);
+  console.log(`\nok — ${todo.length} file(s) in ${OUT}/`);
+} else {
+  console.log(`  ${files.length} files in project ${PROJECT}, newest first\n`);
+  for (const f of files.slice(0, 25)) {
+    const when = new Date((f.created_on || 0) * 1000).toISOString().slice(0, 16).replace('T', ' ');
+    const mb = ((f.size || 0) / 1048576).toFixed(1);
+    console.log(`  ${String(f.id).padStart(6)}  ${when}  ${String(mb).padStart(6)} MB  ${f.name}`);
+  }
+  console.log(`\n  script/ac_files --get <id>   or   --get-new`);
+}

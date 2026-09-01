@@ -4,6 +4,8 @@ import {
   getMarketLocaleTargets,
   type MarketLocaleTarget,
 } from "@/i18n/markets";
+import { pageSlugs } from "@/lib/blocks/pages";
+import { getPolicies } from "@/lib/data/policies";
 import {
   getSitemapCategoryPage,
   getSitemapMarkets,
@@ -12,7 +14,14 @@ import {
   type SitemapCategory,
   type SitemapProduct,
 } from "@/lib/data/sitemap";
-import { getDefaultCountry, getDefaultLocale, getStoreUrl } from "@/lib/store";
+import { sitemapSafeUrl } from "@/lib/data/sitemapUrl";
+import {
+  cleanUrlsEnabled,
+  getDefaultCountry,
+  getDefaultLocale,
+  getStoreUrl,
+  isAccountRequired,
+} from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +48,33 @@ interface PageCaches {
  * Store API pages and avoids long-running sitemap responses on large catalogs.
  */
 const URLS_PER_SITEMAP = 10_000;
-const STATIC_PAGES_PER_LOCALE = 3;
+/**
+ * The addresses that are not a product and not a category.
+ *
+ * Was a hardcoded 3, listing the home page, /products and /c. Two problems with
+ * that, both found by fetching every address the sitemap advertises:
+ *
+ *   /c answered 404. There is no categories index page in this storefront, so the
+ *   sitemap was telling search engines to go and look at nothing.
+ *
+ *   The content pages and the policies were missing entirely. A shop's About and
+ *   FAQ are the pages a person searches for by name, and they were the only ones
+ *   with no route into them.
+ *
+ * Computed rather than counted by hand, because the page set differs per shop:
+ * one country has a Buy Local page and another does not, so any fixed number is
+ * wrong for at least one of them. The count feeds the chunk arithmetic, so a
+ * wrong number silently drops entries off the end of a chunk.
+ */
+async function staticPaths(): Promise<string[]> {
+  const policies = await getPolicies();
+  return [
+    "",
+    "/products",
+    ...pageSlugs().map((slug) => `/pages/${slug}`),
+    ...policies.map((policy) => `/policies/${policy.slug}`),
+  ];
+}
 const ITEMS_PER_PAGE = 100;
 const MAX_PAGES = 1000;
 const MAX_CONCURRENT_PAGE_REQUESTS = 8;
@@ -101,12 +136,21 @@ function catalogKey(target: { marketId: string; locale: string }): string {
  * Markets using the same locale may expose entirely different catalogs.
  */
 export async function generateSitemaps(): Promise<Array<{ id: number }>> {
+  // A shop that may not be browsed without an account publishes no index of
+  // itself. See the same guard in sitemap() below and in robots.ts: the three
+  // together are what "no URL should be able to be seen without first login in"
+  // means for a crawler, which never signs in and never will.
+  if (isAccountRequired()) return [];
+
   try {
     const countryLocales = await resolveCountryLocales();
     const catalogs = await resolveLocaleCatalogs(countryLocales);
+    // Once per response. The list reaches the API, and calling it inside the
+    // reduce would ask the same question once per market for no new answer.
+    const staticCount = (await staticPaths()).length;
     const totalUrls = countryLocales.reduce((total, target) => {
       const catalog = catalogs.get(catalogKey(target));
-      return total + (catalog ? catalogSize(catalog) : 0);
+      return total + (catalog ? catalogSize(catalog, staticCount) : 0);
     }, 0);
     const sitemapCount = Math.max(1, Math.ceil(totalUrls / URLS_PER_SITEMAP));
 
@@ -123,6 +167,7 @@ export default async function sitemap(props: {
 }): Promise<MetadataRoute.Sitemap> {
   const id = Number(await props.id);
   if (!Number.isSafeInteger(id) || id < 0) return [];
+  if (isAccountRequired()) return [];
 
   const baseUrl = resolveBaseUrl();
   if (!baseUrl) return [];
@@ -138,6 +183,7 @@ export default async function sitemap(props: {
     return [];
   }
 
+  const paths = await staticPaths();
   const chunkStart = id * URLS_PER_SITEMAP;
   const chunkEnd = chunkStart + URLS_PER_SITEMAP;
   const entries: MetadataRoute.Sitemap = [];
@@ -151,17 +197,32 @@ export default async function sitemap(props: {
     const catalog = catalogs.get(catalogKey(target));
     if (!catalog) continue;
 
-    const targetEnd = targetStart + catalogSize(catalog);
+    const targetEnd = targetStart + catalogSize(catalog, paths.length);
     if (targetEnd <= chunkStart) {
       targetStart = targetEnd;
       continue;
     }
     if (targetStart >= chunkEnd) break;
 
-    const basePath = `${baseUrl}/${target.country}/${target.locale}`;
-    appendStaticEntries(entries, basePath, targetStart, chunkStart, chunkEnd);
+    // Clean URLs list one address per page instead of one per market, which is
+    // the whole point: two forms of the same page in a sitemap is two pages
+    // competing with each other. This file is also the one he is waiting on
+    // before he finishes his LLMS work: "I think I will wait until the URL
+    // Structure is final and the shops are live to see the sitmap.mxl to pull
+    // the URLS from there."
+    const basePath = cleanUrlsEnabled()
+      ? baseUrl
+      : `${baseUrl}/${target.country}/${target.locale}`;
+    appendStaticEntries(
+      entries,
+      paths,
+      basePath,
+      targetStart,
+      chunkStart,
+      chunkEnd,
+    );
 
-    const productStart = targetStart + STATIC_PAGES_PER_LOCALE;
+    const productStart = targetStart + paths.length;
     const productEnd = productStart + catalog.productCount;
     const categoryStart = productEnd;
     const categoryEnd = categoryStart + catalog.categoryCount;
@@ -240,8 +301,8 @@ function resolveBaseUrl(): string | undefined {
   }
 }
 
-function catalogSize(catalog: LocaleCatalog): number {
-  return STATIC_PAGES_PER_LOCALE + catalog.productCount + catalog.categoryCount;
+function catalogSize(catalog: LocaleCatalog, staticCount: number): number {
+  return staticCount + catalog.productCount + catalog.categoryCount;
 }
 
 function intersectRange(
@@ -257,20 +318,34 @@ function intersectRange(
 
 function appendStaticEntries(
   entries: MetadataRoute.Sitemap,
+  paths: string[],
   basePath: string,
   targetStart: number,
   chunkStart: number,
   chunkEnd: number,
 ): void {
-  const staticEntries: MetadataRoute.Sitemap = [
-    { url: basePath, changeFrequency: "daily", priority: 1 },
-    {
-      url: `${basePath}/products`,
-      changeFrequency: "daily",
-      priority: 0.8,
-    },
-    { url: `${basePath}/c`, changeFrequency: "weekly", priority: 0.7 },
-  ];
+  const staticEntries: MetadataRoute.Sitemap = paths.map((path) => {
+    if (path === "") {
+      return { url: basePath, changeFrequency: "daily", priority: 1 };
+    }
+    if (path === "/products") {
+      return {
+        url: `${basePath}/products`,
+        changeFrequency: "daily",
+        priority: 0.8,
+      };
+    }
+    // Content and policy pages change rarely and are not the front door, so they
+    // are weighted below the catalogue rather than left out of it.
+    return {
+      // Safe, because `path` carries policy slugs and content page slugs and
+      // both are editable in his admin. Nothing currently holds an "&", and the
+      // three image filenames that did were enough to reject the whole document.
+      url: sitemapSafeUrl(`${basePath}${path}`),
+      changeFrequency: "monthly" as const,
+      priority: path.startsWith("/policies/") ? 0.3 : 0.6,
+    };
+  });
 
   for (const [offset, entry] of staticEntries.entries()) {
     const position = targetStart + offset;
@@ -285,7 +360,7 @@ function appendProductEntries(
 ): void {
   for (const product of products) {
     entries.push({
-      url: `${basePath}/products/${product.slug}`,
+      url: sitemapSafeUrl(`${basePath}/products/${product.slug}`),
       ...(product.updated_at
         ? { lastModified: new Date(product.updated_at) }
         : {}),
@@ -293,9 +368,15 @@ function appendProductEntries(
       priority: 0.6,
       ...(product.media && product.media.length > 0
         ? {
+            // Through sitemapSafeUrl, always. ActiveStorage keeps the
+            // original filename in the URL path, three of his photographs are
+            // named with an "&" in them, and a bare "&" made the whole
+            // document fail to parse on every shop. See that module for why
+            // this percent-encodes rather than XML-escapes.
             images: product.media
               .map((image) => image.original_url || image.large_url)
-              .filter((url: string | null): url is string => url != null),
+              .filter((url: string | null): url is string => url != null)
+              .map(sitemapSafeUrl),
           }
         : {}),
     });
@@ -310,7 +391,7 @@ function appendCategoryEntries(
   for (const category of categories) {
     if (category.is_root) continue;
     entries.push({
-      url: `${basePath}/c/${category.permalink}`,
+      url: sitemapSafeUrl(`${basePath}/c/${category.permalink}`),
       ...(category.updated_at
         ? { lastModified: new Date(category.updated_at) }
         : {}),

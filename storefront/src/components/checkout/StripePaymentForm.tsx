@@ -98,11 +98,19 @@ export function StripePaymentForm({
         appearance: {
           theme: "stripe",
           variables: {
-            fontFamily: 'Geist, "Geist Fallback", system-ui, sans-serif',
+            // Stripe renders the card fields in its own iframe, so it cannot see the
+            // page's font variable and has to be told the family by name. Left
+            // as Geist once and the card form was the one part of checkout in a
+            // different typeface.
+            fontFamily: "Roboto, system-ui, sans-serif",
             fontSizeBase: "14px",
-            colorPrimary: "#171717",
+            // His green, not near black. Stripe cannot read the page's CSS
+            // variables from inside its iframe, so the brand colour is repeated
+            // here as a literal, or the card form is the one part of checkout
+            // that is not his.
+            colorPrimary: "#707757",
             borderRadius: "6px",
-            focusBoxShadow: "0 0 0 1px #171717",
+            focusBoxShadow: "0 0 0 1px #707757",
           },
           rules: {
             ".Input": {

@@ -182,7 +182,9 @@
     "properties": "Eigenschaften",
     "yes": "Ja",
     "no": "Nein",
-    "optionFilterChip": "{filter}: {value}"
+    "optionFilterChip": "{filter}: {value}",
+    "reviewsHeading": "Kundenbewertungen",
+    "reviewsCount": "({count, plural, one {# Bewertung} other {# Bewertungen}})"
   },
   "navigation": {
     "home": "Startseite",
@@ -261,7 +263,13 @@
     "policyConsentRequired": "Sie müssen den Geschäftsrichtlinien zustimmen, bevor Sie Ihre Bestellung aufgeben",
     "iAgreeToThe": "Ich stimme zu",
     "policySeparatorComma": ", ",
-    "policySeparatorAnd": " und "
+    "policySeparatorAnd": " und ",
+    "noteTitle": "Anmerkungen zur Bestellung",
+    "noteHint": "Alles, was wir zu dieser Bestellung oder zur Lieferung wissen sollten.",
+    "notePlaceholder": "Zum Beispiel: vor der Ankunft anrufen, oder beim Nachbarn abgeben",
+    "noteSaving": "Wird gespeichert…",
+    "noteSaved": "Gespeichert",
+    "noteNotSaved": "Ihre Anmerkung konnte nicht gespeichert werden. Ihre Bestellung ist nicht betroffen."
   },
   "address": {
     "firstName": "Vorname",

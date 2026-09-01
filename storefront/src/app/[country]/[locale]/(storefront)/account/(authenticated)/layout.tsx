@@ -8,6 +8,7 @@ import {
   buildAccountLoginHref,
   resolveAccountRedirect,
 } from "@/lib/utils/account-redirect";
+import { basePathFor } from "@/lib/routing";
 
 interface AuthenticatedAccountLayoutProps {
   children: React.ReactNode;
@@ -31,7 +32,7 @@ export async function AuthenticatedAccountLayoutContent({
   const [{ country, locale }, requestHeaders, accessToken, refreshToken] =
     await Promise.all([params, headers(), getAccessToken(), getRefreshToken()]);
 
-  const basePath = `/${country}/${locale}`;
+  const basePath = basePathFor(country, locale);
   const pathname = requestHeaders.get(REQUEST_PATHNAME_HEADER);
   const search = requestHeaders.get(REQUEST_SEARCH_HEADER);
   const requestedPath = `${pathname ?? ""}${search?.startsWith("?") ? search : ""}`;

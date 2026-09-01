@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import type { Locale } from "next-intl";
 import { getTranslations } from "next-intl/server";
 import EmbeddedForm from "@/components/contact/EmbeddedForm";
-import { getStoreName } from "@/lib/store";
+import { shopContact } from "@/lib/blocks/contact";
 
 /**
  * Contact page. The form itself is hosted on the shop's own forms host and embedded,
@@ -26,9 +26,21 @@ import { getStoreName } from "@/lib/store";
  * NEXT_PUBLIC_CONTACT_INTRO is one string; blank lines separate paragraphs, so the shop
  * can send two or five without anyone touching this file.
  */
-const FORM_URL = process.env.NEXT_PUBLIC_CONTACT_FORM_URL ?? "";
-const TITLE_OVERRIDE = process.env.NEXT_PUBLIC_CONTACT_TITLE?.trim();
-const INTRO_OVERRIDE = process.env.NEXT_PUBLIC_CONTACT_INTRO?.trim();
+// The shop's own form and words, from the content module, which is where the
+// rest of its copy already lives and is gitignored for the same reason.
+//
+// The three environment variables still win when they are set, so a deployment
+// that configures them keeps working. Nothing sets them today, which is exactly
+// why the page shipped with no form on it: the build args were declared in the
+// Dockerfile and never passed, and an unset NEXT_PUBLIC_ is indistinguishable
+// from one that was never wanted.
+const CONTACT = shopContact();
+const FORM_URL =
+  process.env.NEXT_PUBLIC_CONTACT_FORM_URL?.trim() || CONTACT?.formUrl || "";
+const TITLE_OVERRIDE =
+  process.env.NEXT_PUBLIC_CONTACT_TITLE?.trim() || CONTACT?.title;
+const INTRO_OVERRIDE =
+  process.env.NEXT_PUBLIC_CONTACT_INTRO?.trim() || CONTACT?.intro;
 
 interface ContactPageProps {
   params: Promise<{ country: string; locale: string }>;
@@ -38,18 +50,27 @@ export async function generateMetadata({
   params,
 }: ContactPageProps): Promise<Metadata> {
   const { locale } = await params;
-  const t = await getTranslations({ locale: locale as Locale, namespace: "contact" });
-  const storeName = getStoreName();
+  const t = await getTranslations({
+    locale: locale as Locale,
+    namespace: "contact",
+  });
 
+  // The layout's template already appends the shop name to every inner page's
+  // title. Appending it here as well titled this page "Contact Us — <shop> |
+  // <shop>". The name is added once, by the template, so this returns the page's
+  // own title alone.
   return {
-    title: `${TITLE_OVERRIDE || t("title")} — ${storeName}`,
+    title: TITLE_OVERRIDE || t("title"),
     description: t("metaDescription"),
   };
 }
 
 export default async function ContactPage({ params }: ContactPageProps) {
   const { locale } = await params;
-  const t = await getTranslations({ locale: locale as Locale, namespace: "contact" });
+  const t = await getTranslations({
+    locale: locale as Locale,
+    namespace: "contact",
+  });
 
   const title = TITLE_OVERRIDE || t("title");
   // Split on a real blank line, and on the two characters backslash-n twice. A value

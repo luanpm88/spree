@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+#
+# Every storefront carries the API key its own database will accept.
+#
+#   script/check_storefront_key
+#
+# ── the outage this exists for ───────────────────────────────────────────────
+#
+# The publishable key is generated, not configured. Restoring a shop's database
+# from the client's dump runs the upgrade, and the upgrade mints a NEW key. The
+# storefront's key is baked in at build time, so the moment the database is
+# reloaded the storefront it was built for is holding a key that no longer
+# exists.
+#
+# Measured on au on 30 Aug, minutes after a reload:
+#
+#   database      pk_xPqjRHrvkuMZW   created 2026-08-30 by the upgrade
+#   storefront    pk_rPxvzdvExQcjX   baked  2026-08-14
+#
+#   au_storefront log:  Error [SpreeError]: Valid API key required
+#                       code: 'invalid_token', status: 401
+#                       StorefrontLayout: failed to load categories
+#
+# Every page rendered its shell and nothing else. The home page answered 200 with
+# no header, no product rows and no images, because this project builds with
+# cacheComponents and a page whose data never arrives still answers 200.
+#
+# Nothing in the estate saw it. script/health was green, the content page check
+# was green, and the shop had been "cut over successfully" twenty minutes
+# earlier. The browser walk found it, and only because it counts elements rather
+# than reading status codes.
+#
+# This is one query and one printenv, so it can run before the browser does.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+# shellcheck source=/dev/null
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_HOST:?no SSH_HOST, source .estate.env}"
+: "${SSH_PORT:=22}"
+: "${SSH_KEY:?no SSH_KEY}"
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; YE=$'\033[33m'; R=$'\033[0m'
+else GR=''; RE=''; YE=''; R=''; fi
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+[[ -f "$ESTATE_FILE" ]] || { echo "  no .estate on this machine"; exit 0; }
+
+bad=0
+checked=0
+
+while IFS='|' read -r shop _rest; do
+  [[ -n "$shop" ]] || continue
+  case "$shop" in \#*) continue;; esac
+
+  db_key=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+    "docker exec estate-postgres psql -U postgres -At -d ${shop}_shop -c \"
+       SELECT token FROM spree_api_keys
+       WHERE key_type='publishable' AND revoked_at IS NULL ORDER BY id LIMIT 1\"" 2>/dev/null | tr -d '\r')
+
+  sf_key=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+    "docker exec ${shop}_storefront printenv SPREE_PUBLISHABLE_KEY" 2>/dev/null | tr -d '\r')
+
+  if [[ -z "$db_key" && -z "$sf_key" ]]; then
+    printf '  %-10s %s(neither container answered)%s\n' "$shop" "$YE" "$R"
+    continue
+  fi
+  checked=$((checked + 1))
+
+  if [[ -z "$db_key" ]]; then
+    printf '  %s%-10s the database has no publishable key at all%s\n' "$RE" "$shop" "$R"
+    bad=$((bad + 1)); continue
+  fi
+  if [[ -z "$sf_key" ]]; then
+    printf '  %s%-10s the storefront was built without a key%s\n' "$RE" "$shop" "$R"
+    bad=$((bad + 1)); continue
+  fi
+
+  if [[ "$db_key" == "$sf_key" ]]; then
+    printf '  %-10s ok  %s\n' "$shop" "${db_key:0:16}..."
+  else
+    printf '  %s%-10s database %s... but storefront %s...%s\n' \
+      "$RE" "$shop" "${db_key:0:16}" "${sf_key:0:16}" "$R"
+    bad=$((bad + 1))
+  fi
+done < <(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+
+echo
+if [[ $bad -gt 0 ]]; then
+  cat >&2 <<EOF
+${RE}FAILED${R}: $bad storefront(s) hold a key their database will refuse.
+
+Every page on those shops renders empty and answers 200. The key is baked at
+build time, so the fix is a rebuild, not a restart:
+
+  script/shop_host storefront <shop> --live
+
+Reloading a shop's database from his dump always mints a new key. The rebuild
+belongs in the same sequence as the reload, never as a separate errand.
+EOF
+  exit 1
+fi
+
+echo "  ${GR}ok${R} — $checked storefront(s), each holding a key its own database accepts"

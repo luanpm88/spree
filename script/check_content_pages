@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+#
+# Every shop's content pages answer 200, asked at its live hostname.
+#
+#   script/check_content_pages
+#
+# ── the failure this exists for ──────────────────────────────────────────────
+#
+# On 28 Aug four live shops answered 500 on /contact, /pages/about, every policy
+# page and every category page, for about an hour, while every other check said
+# they were healthy.
+#
+# The cause was a storefront built before its shop was cut over, so the API
+# hostname baked into it no longer resolved:
+#
+#   TypeError: fetch failed
+#     [cause]: Error: getaddrinfo ENOTFOUND store.<shop>.<zone>
+#   StorefrontLayout: failed to load categories
+#
+# The layout fetches categories while rendering every content page, so all of
+# them failed together. The home page and the product pages kept working, because
+# they were served from prerendered output that had not expired, which is why the
+# browser walk scored 31 of 31 on a shop whose About page was a 500.
+#
+# Two checks were looking straight at this and missed it:
+#
+#   check_storefront_e2e   walks the home page, a category row and a product. It
+#                          never opens /contact or a policy page.
+#   grep for the dead host  found it only in files under .next/server/app, which
+#                          was read as "prerendered, therefore inert". Those are
+#                          exactly the files the running server hands out.
+#
+# So this asks the one question neither of them asked, in the only way that
+# settles it: request the page and read the status code.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+if [[ ! -f "$ESTATE_FILE" ]]; then
+  echo "  no .estate on this machine, cannot map a shop to a host"
+  exit 0
+fi
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; YE=$'\033[33m'; R=$'\033[0m'
+else GR=''; RE=''; YE=''; R=''; fi
+
+# The pages every shop has, and which all render through the same layout. A
+# category page is in the list deliberately: it is the one that fetches most, and
+# it was in the failing set.
+PATHS=(/contact /pages/about /policies/returns /policies/shipping /c/collections/on-sale)
+
+bad=0
+checked=0
+
+while IFS='|' read -r shop _dir _db _port _sport _tmp _store live _rest; do
+  [[ -n "$shop" ]] || continue
+  case "$shop" in \#*) continue;; esac
+
+  # The live hostname if the shop has been cut over, the review one otherwise.
+  host="${live// /}"
+  [[ -n "$host" && "$host" != "-" ]] || host="https://${_tmp// /}"
+  [[ "$host" == http* ]] || host="https://$host"
+  [[ "$host" != "https://" && "$host" != "https://-" ]] || continue
+
+  line=""
+  shop_bad=0
+  for path in "${PATHS[@]}"; do
+    # Not `curl ... || echo 000`.
+    #
+    # curl prints the code it has BEFORE it fails, so the fallback is appended to
+    # it rather than replacing it, and one network blink turns 200 into "200000".
+    # That matches no branch, counts as a failure, and prints a red line about a
+    # healthy shop. It has now done so twice on this project, in two different
+    # checks, so the pattern is written down here rather than fixed again later.
+    #
+    # Ask curl for the code, then ask separately whether curl itself succeeded.
+    code=$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 30 "$host$path" 2>/dev/null)
+    if [[ -z "$code" ]] || ! [[ "$code" =~ ^[0-9]{3}$ ]]; then
+      # One retry before believing it, for the same reason.
+      sleep 2
+      code=$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 40 "$host$path" 2>/dev/null)
+      [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
+    fi
+    checked=$((checked + 1))
+    case "$code" in
+      200|301|302|308) line+=" $path=$code" ;;
+      404) line+=" ${YE}$path=404${R}" ;;   # a page this shop does not have
+      *)   line+=" ${RE}$path=$code${R}"; shop_bad=$((shop_bad + 1)) ;;
+    esac
+  done
+
+  if [[ $shop_bad -gt 0 ]]; then
+    printf '  %s%-10s%s%s\n' "$RE" "$shop" "$R" "$line"
+    bad=$((bad + shop_bad))
+  else
+    printf '  %-10s ok\n' "$shop"
+  fi
+done < <(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+
+echo
+if [[ $bad -gt 0 ]]; then
+  cat >&2 <<EOF
+${RE}FAILED${R}: $bad content page(s) do not answer.
+
+A 500 across every content page of one shop, with its home page fine, is the
+storefront calling an API hostname that no longer resolves. Look at the container
+log for "getaddrinfo ENOTFOUND", and rebuild that shop:
+
+  script/shop_host storefront <shop> --live
+EOF
+  exit 1
+fi
+
+echo "  ${GR}ok${R} — $checked content page(s) answered across every shop"

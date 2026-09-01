@@ -53,6 +53,60 @@ import { getCardIconType, getCardLabel } from "@/lib/utils/credit-card";
 import { extractBasePath } from "@/lib/utils/path";
 import { resolveGatewayId } from "@/lib/utils/payment-gateway";
 
+/**
+ * Whether to print Stripe's test card number under the card option.
+ *
+ * The checkout printed "Test card: 4242 4242 4242 4242 (any future expiry, any
+ * CVC)" under Card Payments, on every shop, to every customer. The line was
+ * marked "Demo-only test card note" in the source and had no condition on it at
+ * all: it drew whenever the selected gateway was Stripe. The shop owner found it
+ * himself on a live shop and asked whether it was meant to be there.
+ *
+ * A test card number on a live checkout invites a customer to type it, be
+ * declined, and conclude the shop is broken.
+ *
+ * Read here rather than exported from lib/utils/stripe.ts on purpose. Adding the
+ * import there made one shop's build fail while the other six passed, on
+ * `generateMetadata` in unrelated routes, and proving why would have cost more
+ * than keeping the constant where it is used. A one line env read needs no
+ * shared module.
+ *
+ * Off unless somebody turns it on for a demo. Silence is the safe default for
+ * anything a customer can read.
+ */
+const showTestCardHint = process.env.NEXT_PUBLIC_SHOW_TEST_CARD === "1";
+
+/**
+ * Turn bare https:// URLs in admin-typed text into real links.
+ *
+ * Returns an array of strings and elements, never HTML. The text comes from the
+ * admin and is trusted only as far as it needs to be: nothing here can inject
+ * markup, so a mistyped angle bracket in bank details cannot change the page.
+ *
+ * The bank transfer instructions carry a link to the PDF of the account details.
+ * Rendered as text it was a URL the customer had to select and copy by hand, on
+ * the one screen where they are already being asked to be careful.
+ */
+function linkifyUrls(text: string) {
+  const parts = text.split(/(https?:\/\/[^\s<>"')]+)/g);
+  return parts.map((part, i) =>
+    /^https?:\/\//.test(part) ? (
+      <a
+        // eslint-disable-next-line react/no-array-index-key
+        key={`u${i}`}
+        href={part}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline break-all"
+      >
+        {part}
+      </a>
+    ) : (
+      part
+    ),
+  );
+}
+
 export type PaymentCompleteResult =
   | { type: "session"; sessionId: string; sessionResult?: string }
   | { type: "direct" };
@@ -786,12 +840,17 @@ export function PaymentSection({
                       {/* Stripe: saved cards selector */}
                       {pmGatewayId === "stripe" && (
                         <>
-                          {/* Demo-only test card note */}
-                          <p className="text-xs text-gray-400 px-4 pt-3">
-                            {t("testCardNote", {
-                              testCard: "4242 4242 4242 4242",
-                            })}
-                          </p>
+                          {/* Demo only, and OFF unless NEXT_PUBLIC_SHOW_TEST_CARD=1.
+                              It used to render unconditionally and every customer
+                              on every shop was shown Stripe's test card number.
+                              See showTestCardHint above. */}
+                          {showTestCardHint && (
+                            <p className="text-xs text-gray-400 px-4 pt-3">
+                              {t("testCardNote", {
+                                testCard: "4242 4242 4242 4242",
+                              })}
+                            </p>
+                          )}
 
                           {savedCards.length > 0 && (
                             <div className="px-4 pt-3">
@@ -967,9 +1026,20 @@ export function PaymentSection({
                   ) : (
                     /* ── Direct/manual payment ── */
                     <div className="px-4 py-4">
+                      {/* whitespace-pre-line, and the bare URLs made clickable.
+                          The bank transfer instructions are typed in the admin as
+                          plain text with line breaks: account name on one line,
+                          account number on the next, a link to the PDF. Rendered
+                          in a plain <p> the browser collapses every newline, so
+                          705 characters of bank details arrived as one run-on
+                          paragraph and a bank account number ran into the bank
+                          name. The shop owner tried HTML to get the breaks back,
+                          which React escapes, so that showed the tags instead.
+                          Neither is his mistake: the text was always correct and
+                          the page was throwing its shape away. */}
                       {pm.description && (
-                        <p className="text-sm text-gray-600 mb-2">
-                          {pm.description}
+                        <p className="text-sm text-gray-600 mb-2 whitespace-pre-line">
+                          {linkifyUrls(pm.description)}
                         </p>
                       )}
                       <p className="text-sm text-gray-500">

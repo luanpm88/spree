@@ -55,7 +55,23 @@ export function ProductCustomFields({
             <dt className="w-32 shrink-0 text-gray-500 text-sm">
               {field.label}
             </dt>
-            <dd className="text-gray-900 text-sm min-w-0">
+            {/* whitespace-pre-line. Each of these metafields is typed in the
+                admin as one bullet per line:
+
+                  • 18/8 304 Stainless Steel Material
+                  • Brush finished Stainless Steel
+                  • 2000ml (2.0L) volume
+
+                A browser collapses every newline inside a plain block, so the
+                product page ran them together into one wrapped paragraph and
+                the bullet characters became punctuation in the middle of a
+                sentence. The shop owner reported it as the product metafields
+                having lost their format, and he was right: the text was always
+                correct and the page was throwing its shape away.
+
+                Same fault, same fix, as the bank transfer block in
+                checkout/PaymentSection.tsx. */}
+            <dd className="text-gray-900 text-sm min-w-0 whitespace-pre-line">
               {renderValue(field, t)}
             </dd>
           </div>

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { resolveLocalPath, safeRedirectPath } from "../path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { extractBasePath, resolveLocalPath, safeRedirectPath } from "../path";
 
 describe("resolveLocalPath", () => {
   it.each([
@@ -46,5 +46,45 @@ describe("safeRedirectPath", () => {
 
   it("returns the fallback when the value points elsewhere", () => {
     expect(safeRedirectPath("https://example.com", fallback)).toBe(fallback);
+  });
+});
+
+describe("extractBasePath under clean URLs", () => {
+  // The whole point: two segments is a CORRECT guess while the address starts
+  // with a country and a locale, and a confidently wrong one the moment it does
+  // not. On /products/some-slug it used to hand back "/products/some-slug" as
+  // the market prefix, so the cart drawer linked to /products/some-slug/cart.
+  const paths = [
+    "/products/800ml-bottle-with-sports-lid",
+    "/c/collections/on-sale",
+    "/pages/about",
+    "/cart",
+    "/",
+  ];
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each(paths)("returns no prefix at all for %s", (pathname) => {
+    vi.stubEnv("NEXT_PUBLIC_CLEAN_URLS", "1");
+    expect(extractBasePath(pathname)).toBe("");
+  });
+
+  it("still strips the prefix when the flag is off", () => {
+    vi.stubEnv("NEXT_PUBLIC_CLEAN_URLS", "");
+    expect(extractBasePath("/nz/en/products/x")).toBe("/nz/en");
+  });
+
+  it("makes the cart drawer's links absolute rather than relative", () => {
+    vi.stubEnv("NEXT_PUBLIC_CLEAN_URLS", "1");
+    const basePath = extractBasePath("/products/800ml-bottle-with-sports-lid");
+
+    // These three are the exact URLs that came back 404 from the browser walk.
+    expect(`${basePath}/cart`).toBe("/cart");
+    expect(`${basePath}/checkout/cart_uh92YK1rnl`).toBe(
+      "/checkout/cart_uh92YK1rnl",
+    );
+    expect(`${basePath}/products/x`).toBe("/products/x");
   });
 });

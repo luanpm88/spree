@@ -39,10 +39,36 @@ module Spree
         return false if action.blank?
 
         dir = mailer_class.name.demodulize.underscore
+
+        # The template that will ACTUALLY be used, which is not always the shared
+        # one. config/initializers/shop_views.rb lets a shop carry its own copy
+        # under app/views/shops/<shop>/, prepended to the view path, and that
+        # copy wins.
+        #
+        # Asking the shared file about a shop that has its own is asking about a
+        # file nobody will render. It happened on 24 August: the shared template
+        # is one of the client's ported documents, so this returned true, the
+        # layout was skipped, and the shop's own fragment went out with no
+        # <html>, no head, no logo and no footer. The mail built, the smoke run
+        # said ok, and the whole shell was simply gone.
+        shop = ENV['SHOP'].to_s.strip
+        if shop.present?
+          own = Rails.root.join('app/views/shops', shop, 'spree', dir, "#{action}.html.erb")
+          return detect_cached(own) if own.exist?
+        end
+
         path = Rails.root.join('app/views/spree', dir, "#{action}.html.erb")
 
         # Cached because this runs on every delivery, but never in development, where
         # the whole point is that editing a template takes effect without a restart.
+        detect_cached(path)
+      end
+
+      private
+
+      # Cached in production, never in development, where the whole point is that
+      # editing a template takes effect without a restart.
+      def detect_cached(path)
         if Rails.application.config.cache_classes
           cache[path.to_s] = detect(path) unless cache.key?(path.to_s)
           cache[path.to_s]
@@ -50,8 +76,6 @@ module Spree
           detect(path)
         end
       end
-
-      private
 
       def cache
         @cache ||= {}

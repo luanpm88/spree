@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+#
+# Every shop hands a page over as Markdown when the caller asks for one.
+#
+#   script/check_markdown_negotiation
+#
+# ── the fault this exists for ────────────────────────────────────────────────
+#
+# The client runs llms.txt and an AI-facing robots.txt, and beside them a rule
+# that serves any page as Markdown to a caller sending `Accept: text/markdown`.
+# That rule was Rack middleware, and it only rewrote responses whose Content-Type
+# was text/html.
+#
+# On 5.6 Rails serves no shop pages, so it had nothing left to act on. It did not
+# error and nothing logged: it simply stopped applying, and stayed that way
+# through seven cutovers. The client found it himself while checking AI readiness,
+# a month after the middleware had quietly become decorative.
+#
+# Measured the day it was moved into the storefront:
+#
+#   Accept: text/markdown -> storefront   text/html          <- what he found
+#   Accept: text/markdown -> Rails host   text/markdown      <- where it still worked
+#
+# ── it asks for both representations ─────────────────────────────────────────
+#
+# A shop that answers text/markdown to everything is as wrong as one that answers
+# text/html to everything, and only checking one of the two would miss it. So the
+# same address is requested twice and both answers have to be right.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+if [[ ! -f "$ESTATE_FILE" ]]; then
+  echo "  no .estate on this machine, cannot map a shop to a host"
+  exit 0
+fi
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; R=$'\033[0m'
+else GR=''; RE=''; R=''; fi
+
+PATHS=(/pages/about /contact)
+
+bad=0
+checked=0
+
+# Status and content type, without following anything. A redirect is an answer.
+answer() {
+  local url="$1" accept="${2:-}"
+  local head
+  head=$(curl -s -o /dev/null -D - --max-time 40 ${accept:+-H "$accept"} "$url" 2>/dev/null)
+  local code ct
+  code=$(printf '%s' "$head" | grep -oE '^HTTP/[0-9.]+ [0-9]+' | tail -1 | awk '{print $2}')
+  ct=$(printf '%s' "$head" | grep -i '^content-type:' | tail -1 | tr -d '\r' | sed 's/^[Cc]ontent-[Tt]ype: //')
+  printf '%s|%s' "${code:-000}" "${ct:-none}"
+}
+
+while IFS='|' read -r shop _dir _db _port _sport tmp _store live _rest; do
+  [[ -n "$shop" ]] || continue
+  case "$shop" in \#*) continue;; esac
+
+  host="${live// /}"
+  [[ -n "$host" && "$host" != "-" ]] || host="https://${tmp// /}"
+  [[ "$host" == http* ]] || host="https://$host"
+  [[ "$host" != "https://" && "$host" != "https://-" ]] || continue
+
+  shop_bad=0
+  detail=""
+  for path in "${PATHS[@]}"; do
+    checked=$((checked + 1))
+    plain=$(answer "$host$path")
+    md=$(answer "$host$path" "Accept: text/markdown")
+
+    plain_code="${plain%%|*}"; plain_ct="${plain#*|}"
+    md_code="${md%%|*}"
+
+    # The two representations must AGREE, which is the only rule that holds for
+    # both kinds of shop.
+    #
+    # An earlier version simply demanded text/markdown and failed the closed shop,
+    # where a stranger is correctly bounced to sign in and there is no page to
+    # convert. That is the same mistake as an image count that reads a login form
+    # and reports zero photographs: a check that does not know the shop is closed
+    # calls its correct behaviour a fault.
+    if [[ "$plain_code" =~ ^3 ]]; then
+      if [[ "$md_code" =~ ^3 ]]; then
+        detail+=" ${path}:gated-both-bounce"
+      else
+        detail+=" ${path}:html-bounced-${plain_code}-but-markdown-gave-${md_code}"
+        shop_bad=$((shop_bad + 1))
+      fi
+      continue
+    fi
+
+    case "$plain_ct" in
+      *text/html*) : ;;
+      *) detail+=" ${path}:plain-gave-${plain_ct}"; shop_bad=$((shop_bad + 1)); continue ;;
+    esac
+    case "${md#*|}" in
+      *text/markdown*) : ;;
+      *) detail+=" ${path}:markdown-request-gave-${md#*|}"; shop_bad=$((shop_bad + 1)) ;;
+    esac
+  done
+
+  if [[ $shop_bad -gt 0 ]]; then
+    printf '  %s%-10s%s%s\n' "$RE" "$shop" "$R" "$detail"
+    bad=$((bad + shop_bad))
+  else
+    printf '  %-10s ok %s\n' "$shop" "${detail:- html when asked for html, markdown when asked for markdown}"
+  fi
+done < <(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+
+echo
+if [[ $bad -gt 0 ]]; then
+  cat >&2 <<EOF
+${RE}FAILED${R}: $bad of $checked answer(s) were the wrong representation.
+
+A shop returning text/html to a Markdown request has a storefront built before
+this was added, or built without it. Rebuild that shop:
+
+  script/shop_host storefront <shop> --live
+EOF
+  exit 1
+fi
+
+echo "  ${GR}ok${R} — $checked answer(s) across every shop, both representations correct"

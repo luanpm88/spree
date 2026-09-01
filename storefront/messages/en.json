@@ -54,16 +54,20 @@
   },
   "footer": {
     "description": "Quality you can feel, made to last and made to be used every day.",
-    "shop": "Shop",
+    "shop": "Products",
     "allProducts": "All Products",
     "categories": "Categories",
     "account": "Account",
     "myAccount": "My Account",
     "orderHistory": "Order History",
     "cart": "Cart",
-    "policies": "Policies",
+    "policies": "Terms and Policies",
     "wholesale": "Trade & Wholesale",
-    "allRightsReserved": "All rights reserved."
+    "allRightsReserved": "All rights reserved.",
+    "followUs": "Follow us",
+    "login": "Login",
+    "subscribe": "Subscribe",
+    "onSale": "On sale"
   },
   "home": {
     "welcome": "{storeName}",
@@ -182,7 +186,9 @@
     "properties": "Properties",
     "yes": "Yes",
     "no": "No",
-    "optionFilterChip": "{filter}: {value}"
+    "optionFilterChip": "{filter}: {value}",
+    "reviewsHeading": "Customer Reviews",
+    "reviewsCount": "({count, plural, one {# review} other {# reviews}})"
   },
   "navigation": {
     "home": "Home",
@@ -261,7 +267,13 @@
     "policyConsentRequired": "You must agree to the store policies before placing your order",
     "iAgreeToThe": "I agree to the",
     "policySeparatorComma": ", ",
-    "policySeparatorAnd": " and "
+    "policySeparatorAnd": " and ",
+    "noteTitle": "Order notes",
+    "noteHint": "Anything we should know about this order or the delivery.",
+    "notePlaceholder": "For example: call before arriving, or leave with a neighbour",
+    "noteSaving": "Saving…",
+    "noteSaved": "Saved",
+    "noteNotSaved": "We could not save your note. Your order is not affected."
   },
   "address": {
     "firstName": "First name",
@@ -326,7 +338,8 @@
     "showPassword": "Show password",
     "hidePassword": "Hide password",
     "forgotPassword": "Forgot password?",
-    "policyConsentRequired": "You must agree to the store policies to create an account"
+    "policyConsentRequired": "You must agree to the store policies to create an account",
+    "emailPlaceholder": "you@example.com"
   },
   "register": {
     "createAccount": "Create Account",
@@ -532,7 +545,7 @@
     "noContent": "No content available for this policy.",
     "shippingPolicy": "Shipping Policy",
     "privacyPolicy": "Privacy Policy",
-    "returnsPolicy": "Returns Policy",
+    "returnsPolicy": "Return Policy",
     "termsOfService": "Terms of Service"
   },
   "expressCheckout": {
@@ -631,5 +644,8 @@
     "intro": "",
     "formTitle": "Contact form",
     "notConfigured": "The contact form is not configured for this store yet."
+  },
+  "announcement": {
+    "text": "Thank you for supporting sustainable living with us — **your choice makes a difference.**"
   }
 }

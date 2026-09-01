@@ -25,6 +25,27 @@ vi.mock("next/headers", () => ({
   headers: () => new Map(),
 }));
 
+// Mock next/cache
+//
+// `cacheLife()` throws unless Next is running with `cacheComponents`, which is
+// set in next.config.ts and which vitest does not load. So any test that
+// reaches a "use cache" data function, however indirectly, fails with a config
+// error that has nothing to do with what it was testing: adding getPolicies()
+// to the footer broke six sitemap tests and a layout test, none of which
+// mention policies.
+//
+// Here rather than in each test for the same reason the four mocks around it
+// are here. A test file cannot be expected to know which of its transitive
+// imports happens to be cached today. Files that assert on these calls mock
+// them again locally, which still takes precedence.
+vi.mock("next/cache", () => ({
+  cacheLife: vi.fn(),
+  cacheTag: vi.fn(),
+  updateTag: vi.fn(),
+  revalidateTag: vi.fn(),
+  revalidatePath: vi.fn(),
+}));
+
 // Mock next/image → plain <img>
 vi.mock("next/image", () => ({
   default: (props: Record<string, unknown>) => {

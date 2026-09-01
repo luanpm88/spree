@@ -1,0 +1,78 @@
+<%#  The logo at the top of a transactional email, for THIS shop.
+
+     ── the bug this exists for ───────────────────────────────────────────────
+
+     Every one of these templates read the logo out of a locale key:
+
+       Spree.t(:shop_logo, scope: [:user_emails, :common])
+
+     One shop has a locale file of its own. The other four fall through to the
+     default `en`, which belongs to a different brand, so their order
+     confirmations, cancellations, shipping notices and payment links all went
+     out carrying another company's logo. Measured on the rendered mail:
+
+       ca       cdn.<this brand>/ca/email/..._logo_tm.png
+       nz       cdn.<other brand>/email/...bizemail.png
+       au       cdn.<other brand>/email/...bizemail.png
+       us       cdn.<other brand>/email/...bizemail.png
+       nolocal  cdn.<other brand>/email/...bizemail.png
+
+     Nothing failed. The emails built, sent and looked finished.
+
+     ── the first fix, which has since been turned around ─────────────────────
+
+     The store's own mailer_logo attachment was made the primary source, because
+     an attachment cannot be another shop's by construction. That held until the
+     attachments went stale: see the second comment below, above the branches,
+     for where the logo comes from today and why the order changed.
+
+     Active Storage needs a host to build that url, which comes from RAILS_HOST.
+     Unset, it raises rather than returning nil, so the rescue is load bearing.
+%>
+<%
+  store = @current_store || Spree::Store.default
+  attached = store.mailer_logo.attached? ? store.mailer_logo : (store.logo.attached? ? store.logo : nil)
+  link = Spree.t(:shop_url_full, scope: [:user_emails, :common], default: "").presence ||
+         "https://#{store.url}"
+  fallback = Spree.t(:shop_logo, scope: [:user_emails, :common], default: "").presence
+%>
+<%#  ── the order these are tried in, and why it was turned around ─────────────
+
+     The attachment used to come first. That was right when it was written: four
+     shops had no locale file, so the key fell through to the shared `en` and
+     their mail carried another brand's logo. An attachment cannot be another
+     shop's, so it was the safer of the two.
+
+     Every shop now has its own locale file, and each one names its own image on
+     the client's CDN. Measured on 31 Aug, all seven answer 200:
+
+       every one of the seven names its own file on his CDN, one per shop
+
+     The attachments had not kept up. THREE shops shared one uploaded file
+     between them, and a fourth carried the generic one. The shop owner found it
+     in a real order confirmation, said the template was calling the old logo,
+     and gave the address it should use, which is exactly what his locale file
+     already said.
+
+     So his own per-shop URL is preferred now, and the attachment is the fallback
+     rather than the winner.
+
+     This is only safe while every shop HAS its own locale file. That is not an
+     assumption, it is a gate: script/check_shop_locales fails the build for a
+     shop with no wording of its own, and it exists because of the very bug this
+     comment opens with. %>
+<a href="<%= link %>" target="_blank">
+  <% if fallback %>
+    <img src="<%= fallback %>" alt="<%= store.name %>" style="display:block;height:54px;max-width:100%;border:0;" width="239">
+  <% elsif attached %>
+    <%#  Spree's own partial, not url_for.
+         url_for(attachment) raised in this context and the rescue turned that
+         into a silent fall back to the other brand's logo, which is the exact
+         bug this file exists to stop. This is the code path Spree already uses
+         for the mailer header, so it builds the url the way the rest of the
+         platform does, cdn host and image variant included. %>
+    <%= render 'spree/shared/mailer_logo', logo: attached, height: 54 %>
+  <% else %>
+    <span style="font-size:18px;font-weight:bold;"><%= store.name %></span>
+  <% end %>
+</a>

@@ -444,3 +444,45 @@ describe("buildHreflangLanguages", () => {
     });
   });
 });
+
+describe("clean URLs: the canonical must be the address served, not a redirect", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.mocked(getMarkets).mockReset();
+  });
+
+  it("points the canonical at the clean URL, not the prefixed one", async () => {
+    vi.stubEnv("NEXT_PUBLIC_CLEAN_URLS", "1");
+    // No getMarkets call should even be needed; fail loudly if it is reached.
+    vi.mocked(getMarkets).mockRejectedValue(new Error("should not be called"));
+
+    const result = await buildLocalizedAlternates({
+      storeUrl: "https://store.example",
+      country: "nz",
+      locale: "en",
+      path: "/products/some-bottle",
+    });
+
+    // The bug this covers: /products/some-bottle answered 200 while its
+    // canonical read /nz/en/products/some-bottle, an address that 308s away.
+    expect(result.canonical).toBe("https://store.example/products/some-bottle");
+    expect(result.canonical).not.toContain("/nz/en");
+    expect(result.languages["x-default"]).toBe(
+      "https://store.example/products/some-bottle",
+    );
+  });
+
+  it("still uses the prefixed canonical when the flag is off", async () => {
+    vi.stubEnv("NEXT_PUBLIC_CLEAN_URLS", "");
+    vi.mocked(getMarkets).mockResolvedValue({ data: [market()] } as never);
+
+    const result = await buildLocalizedAlternates({
+      storeUrl: "https://store.example",
+      country: "us",
+      locale: "en",
+      path: "/products/some-bottle",
+    });
+
+    expect(result.canonical).toContain("/us/en/products/some-bottle");
+  });
+});

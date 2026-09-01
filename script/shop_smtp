@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""
+The SMTP settings for one shop, as env lines, read from the gitignored file.
+
+    script/shop_smtp ca              print the five env lines for that shop
+    script/shop_smtp ca --check      say whether they exist, print nothing else
+
+Why a script and not a lookup inside shop_host: the credentials file is a
+client's live mail passwords. Everything that reads it should go through one
+place that (a) never prints a password unless explicitly asked for the env lines,
+and (b) fails loudly rather than emitting a half-filled block. A shop provisioned
+with SMTP_USERNAME set and SMTP_PASSWORD empty does not error. It authenticates
+as nobody, and every mail it sends is refused with nothing in any log.
+
+The file is written by script/save_smtp_task.py from the client's tracker task.
+Its shape is a hostname on its own line, then that shop's settings under it.
+"""
+
+import glob
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
+REQUIRED = ["SMTP_USERNAME", "SMTP_PASSWORD"]
+
+# He writes the host under two different names. Six shops say SMTP_SERVER with
+# the port on a "Port:" line; two say SMTP_HOST with SMTP_PORT. Both blocks are
+# complete. An earlier version of this only knew SMTP_SERVER and reported the
+# other two as missing a setting, which would have sent him back to check a task
+# that was already right. Accept both, and normalise to one name here.
+HOST_KEYS = ["SMTP_SERVER", "SMTP_HOST"]
+
+
+def credentials_file():
+    """The newest smtp file in tmp/. Newest, because he rotates them."""
+    found = sorted(
+        glob.glob(os.path.join(ROOT, "tmp", "smtp-per-shop*.md")),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+    return found[0] if found else None
+
+
+def live_host_for(shop):
+    """The shop's live hostname, from the gitignored estate file.
+
+    The credentials file is keyed by the client's own hostnames, not by our shop
+    keys, so the two have to be joined on something. .estate column 8 is the live
+    shop url and that is what he writes in the tracker.
+    """
+    path = os.path.join(ROOT, ".estate")
+    try:
+        with open(path, encoding="utf8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                cols = line.split("|")
+                if len(cols) >= 8 and cols[0] == shop and cols[7].startswith("http"):
+                    return cols[7].split("//", 1)[1].rstrip("/")
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def block_for(shop):
+    path = credentials_file()
+    if not path:
+        return None, "no tmp/smtp-per-shop*.md on this machine"
+    host = live_host_for(shop)
+    if not host:
+        return None, f"{shop} has no live url in .estate, so its block cannot be found"
+
+    text = open(path, encoding="utf8").read()
+    lines = text.splitlines()
+
+    # Find the shop's hostname on a line of its own, then read until the next one.
+    start = None
+    for i, raw in enumerate(lines):
+        if raw.strip() == host:
+            start = i
+            break
+    if start is None:
+        return None, f"{host} does not appear in {os.path.basename(path)}"
+
+    settings = {}
+    for raw in lines[start + 1 :]:
+        s = raw.strip()
+        if not s:
+            continue
+        # another bare hostname ends this block
+        if re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.[a-z.]{2,}", s) and "=" not in s:
+            break
+        m = re.match(r"(?i)(SMTP_[A-Z_]+)\s*=\s*(\S+)", s)
+        if m:
+            settings[m.group(1).upper()] = m.group(2)
+            continue
+        m = re.match(r"(?i)port:?\s*(\d{2,5})", s)
+        if m:
+            settings["SMTP_PORT"] = m.group(1)
+
+    for k in HOST_KEYS:
+        if settings.get(k):
+            settings["SMTP_SERVER"] = settings[k]
+            break
+
+    missing = [k for k in REQUIRED if not settings.get(k)]
+    if not settings.get("SMTP_SERVER"):
+        missing.append("SMTP_SERVER or SMTP_HOST")
+    if missing:
+        return None, f"{host} block is missing {', '.join(missing)}"
+    settings.setdefault("SMTP_PORT", "587")
+    return settings, None
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__.strip())
+    shop = sys.argv[1]
+    check_only = "--check" in sys.argv[2:]
+
+    settings, err = block_for(shop)
+    if err:
+        print(f"  {err}", file=sys.stderr)
+        sys.exit(1)
+    if check_only:
+        # Never the values. Only that they are all there.
+        print(f"  ok   {shop} has a complete SMTP block ({settings['SMTP_SERVER']}:{settings['SMTP_PORT']})")
+        return
+
+    # SMTP_FROM_ADDRESS is deliberately NOT emitted.
+    #
+    # Measured on a live shop: an email Spree builds takes its From from
+    # spree_stores.mail_from_address, not from this variable. The variable only
+    # sets ActionMailer's default, which every Spree mailer overrides. Writing it
+    # here would put a second, disagreeing address in the .env for somebody to
+    # read and believe. The store row is the one to change, and shop_host cutover
+    # changes it and reads it back.
+    print(f"SMTP_HOST={settings['SMTP_SERVER']}")
+    print(f"SMTP_PORT={settings['SMTP_PORT']}")
+    print(f"SMTP_USERNAME={settings['SMTP_USERNAME']}")
+    print(f"SMTP_PASSWORD={settings['SMTP_PASSWORD']}")
+    if settings.get("SMTP_DOMAIN"):
+        print(f"SMTP_DOMAIN={settings['SMTP_DOMAIN']}")
+
+
+if __name__ == "__main__":
+    main()

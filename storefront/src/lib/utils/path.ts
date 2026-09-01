@@ -1,8 +1,30 @@
+import { cleanUrlsEnabled } from "@/lib/store";
+
 /**
  * Extract the /country/locale base path prefix from a pathname.
  * e.g. "/us/en/products" -> "/us/en"
+ *
+ * ── the SECOND place that knows the prefix exists ────────────────────────────
+ *
+ * basePathFor() in lib/routing says it is the only one. It was wrong, and this
+ * is the other: 17 call sites derive the prefix from the CURRENT URL instead of
+ * from configuration, because they are client components and a prop would have
+ * to be threaded through every one of them.
+ *
+ * Under clean URLs that guess is not merely wrong, it is confidently wrong. On
+ * /products/some-slug it returns "/products/some-slug" as the market prefix, so
+ * the cart drawer's links became /products/some-slug/cart and
+ * /products/some-slug/checkout/cart_xxx. Measured, not imagined: three 404s in
+ * the browser walk, all of them prefetches of links that render only after
+ * add-to-cart, which is why nothing in the served HTML looked wrong.
+ *
+ * It stayed hidden for as long as the prefix existed, because two segments is a
+ * correct guess when the address really does start with a country and a locale.
  */
 export function extractBasePath(pathname: string): string {
+  // Nothing to strip when the shop has no prefix. Returning "" here is what
+  // makes all 17 callers correct at once.
+  if (cleanUrlsEnabled()) return "";
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length < 2) return "";
   return `/${segments[0]}/${segments[1]}`;

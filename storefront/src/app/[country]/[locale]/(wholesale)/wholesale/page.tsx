@@ -8,6 +8,7 @@ import {
 import { parseListingSearchParams } from "@/lib/utils/listing-search-params";
 import { WHOLESALE_MIN_QUANTITY } from "@/lib/wholesale";
 import { WholesaleGate } from "./_components/WholesaleGate";
+import { basePathFor } from "@/lib/routing";
 
 interface WholesalePlpProps {
   params: Promise<{ country: string; locale: string }>;
@@ -32,7 +33,7 @@ export default async function WholesaleProductsPage({
   });
 
   return (
-    <WholesaleGate basePath={`/${country}/${locale}`} allowGuestBrowse>
+    <WholesaleGate basePath={basePathFor(country, locale)} allowGuestBrowse>
       {() => (
         <div className="container mx-auto px-4 py-8 sm:px-6 lg:px-8">
           <div className="mb-8">

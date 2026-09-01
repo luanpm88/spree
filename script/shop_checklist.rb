@@ -96,6 +96,143 @@ end
   end
 end
 
+# ── 3b. does the shop actually SHOW anything ────────────────────────────────
+#
+# Section 3 asks whether a query raises. That is not the same question as whether
+# the client sees a shop, and on 14 Aug the difference cost most of a day: every
+# check above passed, seventeen of seventeen, on a Canada install whose admin
+# said "No Product found" with 79 products in the database.
+#
+# The 5.6 upgrade adds store_id, media_count and primary_media_id and leaves them
+# empty. Nothing raises, no count changes, and Spree::Product.limit(25) happily
+# returns 25 rows — through a scope the admin does not use. So these checks go
+# through the SAME scopes the admin and the API do, and compare against the raw
+# count. Fixed by bin/rails backfill:all.
+if table.call('spree_products') && Spree::Store.any?
+  store = Spree::Store.first
+
+  safely(rows, 'products are visible to the store') do
+    raw = Spree::Product.where(deleted_at: nil).count
+    visible = Spree::Product.for_store(store).where(deleted_at: nil).count
+    if raw.zero?
+      status('products are visible to the store', :na, 'no products in this shop')
+    elsif visible == raw
+      status('products are visible to the store', :pass, "#{visible}")
+    else
+      status('products are visible to the store', :fail,
+             "#{visible} of #{raw} — run bin/rails backfill:store_id")
+    end
+  end
+
+  safely(rows, 'products with images have a thumbnail') do
+    with_images = Spree::Product.where(deleted_at: nil).where('media_count > 0')
+    have = with_images.where.not(primary_media_id: nil).count
+    total = with_images.count
+    if total.zero?
+      # media_count itself being zero everywhere is the failure, not an absence
+      # of images: it is what makes Spree treat a shop full of photographs as
+      # having none.
+      any_assets = table.call('spree_assets') ? Spree::Asset.count : 0
+      status('products with images have a thumbnail',
+             any_assets.zero? ? :na : :fail,
+             any_assets.zero? ? 'no images in this shop' :
+               "#{any_assets} images but media_count is 0 — run bin/rails backfill:counters")
+    elsif have == total
+      status('products with images have a thumbnail', :pass, "#{have}")
+    else
+      # Two different causes, and only one of them is fixable here. A product
+      # can have no thumbnail because the column was never filled in, or because
+      # none of its image FILES came across and pointing at one would 500. Telling
+      # someone to run a backfill that cannot help is how a check stops being read.
+      unfixable = conn.select_value(<<~SQL).to_i
+        SELECT count(*) FROM spree_products p
+        WHERE p.deleted_at IS NULL AND p.media_count > 0 AND p.primary_media_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM spree_variants v
+            JOIN spree_assets a ON a.viewable_id = v.id AND a.viewable_type = 'Spree::Asset'
+            JOIN active_storage_attachments aa ON aa.record_id = a.id AND aa.record_type = 'Spree::Asset'
+            JOIN active_storage_blobs ab ON ab.id = aa.blob_id
+            WHERE v.product_id = p.id AND ab.service_name = 'local'
+          )
+      SQL
+      missing = total - have
+      if unfixable >= missing
+        status('products with images have a thumbnail', :warn,
+               "#{have} of #{total}; the other #{missing} have no image file on this server")
+      else
+        status('products with images have a thumbnail', :fail,
+               "#{have} of #{total}, #{missing - unfixable} fixable — run bin/rails backfill:thumbnails")
+      end
+    end
+  end
+end
+
+# Every blob must name a storage service this install defines. A blob left
+# pointing at the old shop's `minio` or `mirror` raises KeyError mid-render, so a
+# thumbnail becomes a 500 on a page that is otherwise fine.
+if table.call('active_storage_blobs')
+  safely(rows, 'every image names a storage service that exists') do
+    configured = Rails.configuration.active_storage.service_configurations&.keys&.map(&:to_s) ||
+                 ActiveStorage::Blob.services.send(:configurations).keys.map(&:to_s)
+    used = conn.select_values('SELECT DISTINCT service_name FROM active_storage_blobs').compact
+    unknown = used - configured
+    if unknown.empty?
+      status('every image names a storage service that exists', :pass, used.join(', '))
+    else
+      n = conn.select_value(
+        "SELECT count(*) FROM active_storage_blobs WHERE service_name IN (#{unknown.map { |u| conn.quote(u) }.join(',')})"
+      )
+      status('every image names a storage service that exists', :fail,
+             "#{n} blob(s) on #{unknown.join(', ')} — these 500 when rendered")
+    end
+  end
+end
+
+# ── 3c. the category counters, and the categories the API will not serve ─────
+#
+# Found on 14 Aug while mapping a home page, and it is the sixth thing the 5.6
+# upgrade leaves wrong. spree_taxons.products_count is kept by Spree's own
+# callbacks rather than a Rails counter_cache, so a restored dump never runs
+# them: 72 of 87 categories on one shop said they held no products while holding
+# up to 37. The Store API filters on that number, so most of a shop's navigation
+# reads as empty while the admin looks perfectly normal.
+#
+# Fixed by bin/rails backfill:counters, which calls Spree's own
+# recalculate_products_count. Never a plain COUNT(*): the stored number counts
+# descendants too, so a naive count is wrong on every category with children.
+if table.call('spree_taxons')
+  safely(rows, 'category product counts are right') do
+    wrong = conn.select_value(<<~SQL).to_i
+      SELECT count(*) FROM spree_taxons t
+      WHERE t.products_count = 0
+        AND EXISTS (SELECT 1 FROM spree_products_taxons pt WHERE pt.taxon_id = t.id)
+    SQL
+    total = conn.select_value('SELECT count(*) FROM spree_taxons').to_i
+    if wrong.zero?
+      status('category product counts are right', :pass, "#{total} categories")
+    else
+      status('category product counts are right', :fail,
+             "#{wrong} of #{total} say empty but hold products — run bin/rails backfill:counters")
+    end
+  end
+
+  # Not a fault and not fixable by a backfill: the 5.6 Store API does not return
+  # rule based categories at all. It matters because a shop can be using one on
+  # its home page and only find out when the storefront renders nothing there.
+  # Reported as a note so it is seen before the storefront is built, not after.
+  safely(rows, 'rule based categories the storefront cannot see') do
+    autos = conn.select_all(<<~SQL).to_a
+      SELECT permalink FROM spree_taxons WHERE automatic = true ORDER BY permalink
+    SQL
+    if autos.empty?
+      status('rule based categories the storefront cannot see', :pass, 'none')
+    else
+      status('rule based categories the storefront cannot see', :warn,
+             "#{autos.size}: #{autos.map { |a| a['permalink'] }.first(3).join(', ')}")
+    end
+  end
+end
+
 # ── 4. can this shop quote shipping at all ──────────────────────────────────
 if table.call('spree_shipping_methods')
   live = Spree::ShippingMethod.where(deleted_at: nil)
@@ -183,7 +320,10 @@ rows << status('order number prefix',
                :info, (Spree::Order.number_generator.prefix rescue '?'))
 
 # ── report ──────────────────────────────────────────────────────────────────
-mark = { pass: 'ok  ', fail: 'FAIL', na: '--  ', info: '    ' }
+# warn is a real thing worth reporting but not a reason to block a release:
+# an image whose file is on a server nobody can reach is a fact about the
+# world, not a mistake in this install. It prints, it does not fail.
+mark = { pass: 'ok  ', fail: 'FAIL', warn: 'note', na: '--  ', info: '    ' }
 width = rows.map { |r| r[0].length }.max
 
 puts

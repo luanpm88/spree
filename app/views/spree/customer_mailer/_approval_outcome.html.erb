@@ -9,9 +9,10 @@
       account_approval:  subject heading greeting body body_txt login_details action
                          portal_note what_next_title what_bullets what_bullets_txt
                          thank_you
-      account_approval.account_not_approved:
+      account_not_approved:
                          subject heading greeting body body_txt contact contact_txt
                          thank_you
+                         (nested under account_approval until 19 Aug; he moved it up)
 
     So the two sections overlap but do not match: the approved one has a button and a
     bullet list, the other has a contact paragraph. Everything except the heading is
@@ -24,14 +25,57 @@
     and raises only on one it wants. Passing both means he can move either between
     sections without a code change.
 %>
-<% t = ->(key, **args) { Spree.t(key, scope: @copy_scope, note: @note, contact_url: @contact_url, default: '', **args) } %>
+<%# The shop's own common values, passed to every lookup for the same reason
+    note: and contact_url: are. His Canadian welcome copy uses %{shop_url}, his
+    "what next" bullets use %{shop_url_full} and %{support_url}, and I18n raises
+    on an argument a string wants and was not given.
+
+    That is not hypothetical. The welcome email for Canada raised
+
+      missing interpolation argument :shop_url in
+      "We're excited to have you join us at <strong>%{shop_url}</strong>..."
+
+    for every new customer, and only on Canada, because Canada is the one shop
+    whose locale file overrides that key with his own wording. Nothing rendered
+    it until an email smoke test was written, so it had never once been built.
+
+    Read from his own user_emails.common section, falling back to the store's own
+    url so a shop that has not written those keys still sends. %>
+<% common = ->(key, fallback) { Spree.t(key, scope: 'user_emails.common', default: fallback) } %>
+<% store_host = @current_store&.url.to_s.sub(%r{\Ahttps?://}, '') %>
+<% shop_args = {
+     shop_url: common.call(:shop_url, store_host),
+     shop_url_full: common.call(:shop_url_full, "https://#{store_host}"),
+     support_url: common.call(:support_url, @contact_url.to_s)
+   } %>
+<% t = ->(key, **args) {
+     Spree.t(key, scope: @copy_scope, note: @note, contact_url: @contact_url,
+             default: '', **shop_args, **args)
+   } %>
 
 <%= render layout: 'spree/shared/mailer_hero' do %>
-  <h1><%= t.call(:heading) %></h1>
+  <%# His two files name the same three roles differently, and both are his:
+  #
+  #     role      commercial file   retail files
+  #     heading   heading           welcome_message
+  #     greeting  greeting          welcome_customer
+  #     lead      -                 welcome_family
+  #
+  # Read either, prefer whichever this shop actually wrote. Before this, the
+  # retail shops matched none of the names on the left, so their heading and
+  # greeting came from the commercial file that happened to be loaded beside
+  # them, and five keys they DID write were never rendered by anything. %>
+  <h1><%= t.call(:heading).presence || t.call(:welcome_message) %></h1>
 
-  <% greeting = t.call(:greeting, name: @user.first_name.presence || @user.email) %>
+  <% name = @user.first_name.presence || @user.email %>
+  <% greeting = t.call(:greeting, name: name).presence || t.call(:welcome_customer, name: name) %>
   <% if greeting.present? %>
     <p class="greeting"><%= greeting %></p>
+  <% end %>
+
+  <% lead = t.call(:welcome_family) %>
+  <% if lead.present? %>
+    <p class="lead"><%= raw lead %></p>
   <% end %>
 
   <%# raw, because his copy carries <strong> and <a> around the words that matter. The
@@ -62,15 +106,45 @@
     <%= render 'spree/shared/mailer_button', url: @storefront_url, label: button %>
   <% end %>
 
-  <% bullets = email_lines(:what_bullets, scope: @copy_scope, contact_url: @contact_url, note: @note) %>
+  <%# shop_args here too. The lambda above got them and this call did not, so the
+      bullets kept their placeholders and the welcome email went out with
+      href='%{shop_url_full}' as a literal link. Fixing the paragraph and missing
+      the list beside it is exactly the shape of the first fix. %>
+  <%# His retail files carry a second list the commercial file has no equivalent
+  #  for: why_shop_title ("Why you'll love shopping with us") and why_shop_bullets.
+  #  The template was written against the commercial vocabulary, so this pair was
+  #  read by nothing and never appeared in a single email on any shop. Rendered
+  #  above "What's next?" because that is the order he wrote them in the file.
+  #  Same alignment handling as the list below, for the same reason. %>
+  <% why = email_lines(:why_shop_bullets, scope: @copy_scope, contact_url: @contact_url, note: @note, **shop_args) %>
+  <% if why.any? %>
+    <% why_title = t.call(:why_shop_title) %>
+    <% if why_title.present? %>
+      <h2 style="font-size:16px;margin:24px 0 8px;"><%= why_title %></h2>
+    <% end %>
+    <ul style="margin:0 0 16px;padding-left:20px;text-align:left;">
+      <% why.each do |line| %>
+        <li style="margin-bottom:6px;text-align:left;"><%= raw line %></li>
+      <% end %>
+    </ul>
+  <% end %>
+
+  <% bullets = email_lines(:what_bullets, scope: @copy_scope, contact_url: @contact_url, note: @note, **shop_args) %>
   <% if bullets.any? %>
     <% title = t.call(:what_next_title) %>
     <% if title.present? %>
       <h2 style="font-size:16px;margin:24px 0 8px;"><%= title %></h2>
     <% end %>
-    <ul style="margin:0 0 16px;padding-left:20px;">
+    <%# text-align:left, explicitly.
+        The shared mailer hero centres its contents, so the list inherited that:
+        the bullet markers stayed at the left edge, where list-style-position
+        puts them, and the words centred away from them. On screen it reads as
+        dots stranded on the left of centred text. Inline, because an email has
+        no stylesheet to lean on, and on the li as well since some clients drop
+        inherited alignment on list items. %>
+    <ul style="margin:0 0 16px;padding-left:20px;text-align:left;">
       <% bullets.each do |line| %>
-        <li style="margin-bottom:6px;"><%= raw line %></li>
+        <li style="margin-bottom:6px;text-align:left;"><%= raw line %></li>
       <% end %>
     </ul>
   <% end %>
@@ -108,5 +182,20 @@
                                                  default: @storefront_url)) %>
   <% if portal_note.present? %>
     <p class="sub"><%= portal_note %></p>
+  <% end %>
+
+  <%# The founder sign-off, the same block the order, shipping and refund mails carry. %>
+  <%# It was missing here, so the 13 Aug reply is wrong in a bigger way than the %>
+  <%# slogan being absent: there was no founder line for it to sit under at all. %>
+  <%# The slogan renders only where he has supplied the word, which today is the %>
+  <%# business shop alone. Every other shop file has owner_name and owner_title %>
+  <%# and no slogan, so those mails sign off with the founder and nothing more. %>
+  <p class="text-center" style="margin: 24px 0 10px 0;mso-line-height-rule: exactly;text-align: center;">
+    <strong><%= Spree.t(:owner_name, scope: [:user_emails, :common]) %></strong><br>
+    <em><%= Spree.t(:owner_title, scope: [:user_emails, :common]) %></em>
+  </p>
+  <% slogan = Spree.t(:slogan, scope: [:user_emails, :common], default: '') %>
+  <% if slogan.present? %>
+    <p class="text-center" style="margin: 0 0 10px 0;mso-line-height-rule: exactly;text-align: center;"><%= slogan %></p>
   <% end %>
 <% end %>

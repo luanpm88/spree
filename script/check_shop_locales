@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+"""Every shop must have email wording of its own.
+
+    script/check_shop_locales
+
+── the failure this exists for ──────────────────────────────────────────────
+
+On the old server each shop was a separate Rails application with a
+config/locales/en.yml of its own, so "en" meant that shop and nothing else.
+Here one image serves every shop, and a shop with no file of its own does not
+error and does not send a blank email. It falls through to the shared file,
+which belongs to a different brand of his, and sends that.
+
+Four of five shops did exactly this. Their order confirmations, welcome mails,
+shipping notices and cancellations went out thanking the customer for choosing
+his wholesale brand, signed by that brand's team, and telling them to write to
+another country's support address. Nothing failed, nothing logged, and the
+emails looked finished. It was found by reading one.
+
+This is the same shape as check_shop_content, which exists because a shop with
+no copy of its own renders another shop's pages rather than an empty one. Both
+failures are invisible from the outside, so both need a gate rather than care.
+
+── what it checks ───────────────────────────────────────────────────────────
+
+    1  every shop in .estate that has a storefront has config/shop_locales/<shop>.en.yml
+    2  that file parses, and declares at least one locale root
+    3  its root matches the locale the shop's store actually runs on, taken
+       from .estate, because a file under "en-AU" is never read by a shop whose
+       store is set to "en" and nothing says so
+    4  the keys the templates cannot render without are present
+    5  nothing in config/locales names a brand
+
+Point 3 is the one that cannot be eyeballed. A correct file under the wrong
+root is indistinguishable from no file at all, at runtime and on screen.
+"""
+
+import os
+import re
+import re
+import subprocess
+import sys
+
+ESTATE = ".estate"
+SHOPS_DIR = "config/shop_locales"
+
+# The locale each shop's store runs on. Taken from spree_stores.default_locale on
+# the estate, not guessed:
+#
+#     ca en-CA   au en-AU   nz en-NZ   us en   nolocal en
+#
+# us and nolocal both being plain "en" is the reason the files live outside
+# config/locales and are selected by SHOP rather than all loaded at once.
+# Plain "en" unless the shop's store says otherwise, and the exceptions are
+# named by country code. A shop is NOT allowed to be absent from the check: a
+# shop missing from this table used to raise a problem, which meant the newest
+# shop was the one thing never verified, and its 150-key wording file was being
+# compared against nothing.
+#
+# Names, not codes, do not go in here. This file is tracked and the repository is
+# public, so a shop called after the client's own brand cannot be written down;
+# check_no_client_data refused it, correctly. Defaulting instead of listing it is
+# not a workaround, it is the right shape: every shop whose store runs on plain
+# en needs no entry, and the only shops that need one are the three with a
+# country-coded locale.
+LOCALE_DEFAULT = "en"
+LOCALE_BY_SHOP = {
+    "ca": "en-CA",
+    "au": "en-AU",
+    "nz": "en-NZ",
+    "b2b": "en-NZ",
+}
+
+# Keys with no sensible default. A missing one is not a cosmetic gap: these name
+# the shop in the subject line and the signature, so falling back means the mail
+# says it is from somewhere else.
+REQUIRED_KEYS = [
+    "spree.user_emails.common.shop_url",
+    "spree.user_emails.common.shop_url_full",
+    "spree.user_emails.common.shop_country",
+    "spree.user_emails.common.greeting",
+    "spree.user_emails.welcome.subject",
+    "spree.user_emails.shipping.subject",
+]
+
+
+def leaves(path):
+    """Flatten a locale file to dotted keys. Deliberately not a YAML parse: this
+    has to run with nothing installed, and the shape here is plain nested keys."""
+    out, stack = {}, []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            m = re.match(r"^(\s*)([\w\-'\"]+):\s*(.*)$", line.rstrip("\n"))
+            if not m:
+                continue
+            indent, key, value = len(m.group(1)), m.group(2), m.group(3)
+            stack = [s for s in stack if s[0] < indent]
+            stack.append((indent, key))
+            if value.strip():
+                out[".".join(s[1] for s in stack)] = value.strip()
+    return out
+
+
+def estate_shops():
+    """Shops that have a storefront domain. A shop still marked '-' is not built
+    yet, and requiring wording for it would block the file that unblocks it."""
+    if not os.path.exists(ESTATE):
+        return None
+    shops = []
+    with open(ESTATE, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("LIVE_DOMAINS="):
+                continue
+            cols = line.split("|")
+            if len(cols) < 7:
+                continue
+            if cols[6] and cols[6] != "-":
+                shops.append(cols[0])
+    return shops
+
+
+# Words that belong to one shop and must never sit in a file every shop reads.
+# config/locales is loaded into EVERY container, so a brand name in there is a
+# brand name in every shop's email. One file sat there for weeks and supplied 50
+# keys to five shops that are not it, including another company's bank account
+# and SWIFT code on the payment link mail, confirmed on the rendered message.
+#
+# Deliberately a name check and not a key check: the keys differ per brand and
+# cannot be listed in advance, but a brand cannot hide its own name.
+# Derived from the estate file, never written here: this repository is public and
+# the brand names are the client's. LIVE_DOMAINS already lists every domain he
+# runs, so the second label of each is the brand word to look for.
+#
+#     shop.example.com   ->  example
+#     example.co.nz      ->  example
+#
+# Deriving it also means a shop added to .estate is covered the same day, with no
+# list here to forget to update.
+def brand_words():
+    words = set()
+    if not os.path.exists(ESTATE):
+        return words
+    with open(ESTATE, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.startswith("LIVE_DOMAINS="):
+                continue
+            for domain in line.split("=", 1)[1].split():
+                parts = [p for p in domain.strip().split(".") if p]
+                # Skip the public suffix labels, keep the registrable name.
+                for p in parts:
+                    if len(p) > 3 and p not in ("www", "shop", "store", "com", "net", "org"):
+                        words.add(p.lower())
+    return words
+
+
+def shared_locale_files_are_neutral():
+    """config/locales is read by every shop. Nothing brand specific may live there."""
+    problems = []
+    words = brand_words()
+    d = "config/locales"
+    if not os.path.isdir(d) or not words:
+        return problems
+    for name in sorted(os.listdir(d)):
+        if not name.endswith((".yml", ".yaml")) or name.startswith("."):
+            continue
+        path = os.path.join(d, name)
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            body = fh.read().lower()
+        hits = sorted({w for w in words if w in body})
+        if hits:
+            problems.append(
+                f"{path} names {', '.join(hits)}. Every shop on the box reads this "
+                f"file, so those words go into every shop's email. Brand wording "
+                f"belongs in config/shop_locales/<shop>.en.yml."
+            )
+    return problems
+
+
+# ── the file existing is not the same as the shop reading it ─────────────────
+#
+# Everything above reads this checkout. It says nothing about whether a running
+# shop is actually loading its file, and on 24 August one was not.
+#
+# config/initializers/shop_locale.rb selects the file from ENV['SHOP'], and
+# script/shop_host writes SHOP into a shop's env only when the wording file
+# exists AT PROVISION TIME. One shop was provisioned before the client sent his
+# wording. The provision printed three warning lines and left SHOP unset, which
+# was the right call that day. The file arrived five days later, nobody re-ran
+# provision, and nothing anywhere noticed.
+#
+# Measured on that container: five of the keys its own file defines resolved to
+# (MISSING), so its emails were going out with no logo, no closing line and no
+# support link, while every other shop resolved its own. It also registered all
+# seven shops' shipping calculators instead of its own two, because that
+# initializer keys off the same variable.
+#
+# A checked file and an unread file look identical from here, so this asks the
+# containers.
+def shop_env_matches_the_files(shops):
+    env_file = ".estate.env"
+    if not os.path.exists(env_file):
+        print("\n  (no .estate.env, so the running containers were not asked)")
+        return []
+
+    conf = {}
+    for line in open(env_file):
+        m = re.match(r"\s*([A-Z_]+)\s*=\s*(.*)", line)
+        if m:
+            conf[m.group(1)] = m.group(2).strip().strip("\"'")
+    # The env file is written to be sourced by a shell, so its values can hold
+    # $HOME and ~. Passed straight to ssh they arrive literally and ssh reports
+    # "Identity file $HOME/... not accessible", which reads like a missing key
+    # rather than an unexpanded variable.
+    def expand(v):
+        return os.path.expanduser(os.path.expandvars(v)) if v else v
+
+    key = expand(conf.get("SSH_KEY"))
+    host, port = conf.get("SSH_HOST"), conf.get("SSH_PORT", "22")
+    if not key or not host:
+        print("\n  (.estate.env has no SSH_HOST, so the running containers were not asked)")
+        return []
+
+    # ONE ssh call for every shop. script/shop_host learned this the expensive
+    # way: a connection per file turned a 3 second step into 40.
+    script = "; ".join(
+        f'echo "{s}=$(docker inspect {s}_web '
+        f'--format \'{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}\' 2>/dev/null '
+        f'| grep -E \'^SHOP=\' | cut -d= -f2)"'
+        for s in shops
+    )
+    try:
+        out = subprocess.run(
+            ["ssh", "-i", key, "-p", port, "-o", "BatchMode=yes",
+             "-o", "ConnectTimeout=15", host, script],
+            capture_output=True, text=True, timeout=90,
+        )
+    except Exception as e:
+        print(f"\n  (could not reach the estate host, so SHOP was not checked: {e})")
+        return []
+    # The remote exit code is not a verdict here. Each shop's command ends in a
+    # grep, and grep exits 1 when it matches nothing, so a shop with SHOP unset
+    # makes ssh return non-zero with perfectly good output on stdout. The first
+    # version of this treated that as "the host refused the connection" and
+    # skipped the whole check, on the one shop the check was written for.
+    if not out.stdout.strip():
+        print(f"\n  (no answer from the estate host, so SHOP was not checked)")
+        if out.stderr.strip():
+            print(f"  {out.stderr.strip().splitlines()[0][:100]}")
+        return []
+
+    got = {}
+    for line in out.stdout.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            got[k.strip()] = v.strip()
+
+    problems = []
+    print()
+    for shop in shops:
+        if shop not in got:
+            continue
+        running = got[shop]
+        has_file = os.path.exists(os.path.join(SHOPS_DIR, f"{shop}.en.yml"))
+        if has_file and running != shop:
+            problems.append(
+                f"{shop}: config/shop_locales/{shop}.en.yml exists but its container has "
+                f"SHOP={running or '(unset)'}. That file is not being read, so this shop's "
+                f"own wording is missing from its emails. Run script/shop_host provision "
+                f"{shop} then start {shop}."
+            )
+            print(f"  {shop:10} SHOP={running or '(unset)':10} !! file exists and is not being read")
+        else:
+            print(f"  {shop:10} SHOP={running or '(unset)':10} reading its own file"
+                  if has_file else f"  {shop:10} SHOP={running or '(unset)':10} no file yet")
+    return problems
+
+
+def main():
+    shops = estate_shops()
+    if shops is None:
+        print("  .estate is not on this machine, nothing to check")
+        return 0
+    if not shops:
+        print("  no shop in .estate has a storefront yet")
+        return 0
+
+    problems = []
+    for shop in shops:
+        path = os.path.join(SHOPS_DIR, f"{shop}.en.yml")
+
+        if not os.path.exists(path):
+            problems.append(
+                f"{shop}: no {path}. Every email this shop sends will use the "
+                f"shared file, which is another brand."
+            )
+            continue
+
+        keys = leaves(path)
+        roots = sorted({k.split(".")[0] for k in keys})
+        if not roots:
+            problems.append(f"{shop}: {path} declares no locale root")
+            continue
+
+        want = LOCALE_BY_SHOP.get(shop, LOCALE_DEFAULT)
+        # "en" is always reachable. I18n falls back en-CA -> en, so a file with a
+        # single plain "en:" root serves a shop whose store runs on en-CA, and the
+        # client prefers writing them that way. Measured rather than assumed: the
+        # Canadian welcome mail renders identically, 1226 characters either way,
+        # with the file's root renamed from en-CA to en.
+        #
+        # This gate refused that shape when it was first written, which would have
+        # rejected exactly the files he was asked to send. What is still wrong is a
+        # root that is NEITHER the store's locale NOR en, because nothing reaches
+        # it and it looks like a correct file.
+        if want not in roots and 'en' not in roots:
+            problems.append(
+                f"{shop}: store runs on {want!r} and nothing in {path} is under "
+                f"{want!r} or under 'en'. It defines "
+                f"{', '.join(repr(r) for r in roots)}, which this shop never reads."
+            )
+
+        # Either root the shop can reach satisfies a required key.
+        reachable = [r for r in (want, 'en') if r in roots]
+        if reachable:
+            have = set()
+            for r in reachable:
+                have |= {k.split(".", 1)[1] for k in keys if k.startswith(r + ".")}
+            missing = [k for k in REQUIRED_KEYS if k not in have]
+            if missing:
+                problems.append(
+                    f"{shop}: {path} is missing under {' or '.join(reachable)}: {', '.join(missing)}"
+                )
+
+        print(f"  {shop:10} {path}  {len(keys):4} keys, roots {', '.join(roots)}")
+
+    problems.extend(shared_locale_files_are_neutral())
+    problems.extend(shop_env_matches_the_files(shops))
+
+    if problems:
+        print()
+        for p in problems:
+            print(f"  {p}")
+        print(
+            f"\n  {len(problems)} problem(s). These files are gitignored on purpose:\n"
+            "  they are the client's copy and this repository is public. They travel\n"
+            "  as a deploy asset through CLIENT_ASSETS in script/commercial."
+        )
+        return 1
+
+    print(f"\n  ok — {len(shops)} shop(s), each with wording of its own")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

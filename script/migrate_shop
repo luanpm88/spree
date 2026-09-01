@@ -175,6 +175,46 @@ else
 fi
 eval "$RUN bin/rails rehearsal:carry_payment_instructions 2>&1 | $QUIET | tail -2"
 
+# ── 6b. what the upgrade left empty ──────────────────────────────────────────
+#
+# The 5.6 migrations move several answers out of join tables and into columns,
+# and they do not carry the values across. Nothing errors. The shop simply has
+# every product invisible to its own store, every category reporting empty, and
+# no product carrying a thumbnail.
+#
+# Measured on a fresh dump taken 27 Aug, before this step existed:
+#
+#   FAIL products are visible to the store       0 of 79
+#   FAIL products with images have a thumbnail   260 images but media_count is 0
+#   FAIL category product counts are right       60 of 74 say empty but hold products
+#
+# The checklist has always NAMED the remedy in its own failure text, and this
+# script has never run it, so every shop needed the same three commands typed by
+# hand afterwards by somebody who read the output closely enough. That is exactly
+# the class of step this file exists to stop being manual.
+#
+# backfill:all is store_id, counters, thumbnails and channel, in that order. The
+# order matters: channel publishes what store_id has just made visible.
+step "Filling in what the upgrade left empty"
+eval "$RUN bin/rails backfill:all 2>&1 | $QUIET | tail -12"
+
+# ── 6c. the collection the Store API refuses to serve ────────────────────────
+#
+# collections/on-sale arrives rule-based (automatic = true), and 5.6 serves no
+# automatic taxon at all: the home page's on-sale row and the page its button
+# leads to are both empty. See lib/tasks/on_sale_collection.rake.
+#
+# It belongs here rather than in a note to run afterwards, because it was run by
+# hand on two shops, those shops were later reloaded from a fresh dump on cutover
+# day, and the reload silently put the collection back to rule-based holding one
+# product. The home page went on advertising a sale that led nowhere for hours.
+# Anything that loads a database has to re-run the remediation after it.
+#
+# top_up, not build or refill: it turns the taxon manual and adds only what is
+# missing, so a collection the shop owner has curated keeps his choices.
+step "Filling the on-sale collection"
+eval "$RUN bin/rails on_sale:top_up 2>&1 | $QUIET | tail -6" || true
+
 # ── 7. did anything go missing ───────────────────────────────────────────────
 step "Comparing against the untouched copy"
 AFTER="$(counts "$DB")"

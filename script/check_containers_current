@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+#
+# Every shop container must be running the image that was last built.
+#
+#   script/check_containers_current
+#
+# ── the failure this exists for ──────────────────────────────────────────────
+#
+# On 27 Aug the client sent a screenshot of one of his live shops: a row of four
+# products, names and prices present, grey boxes where the photographs go. The
+# fix for that bug had been written, shipped and verified days earlier, and the
+# shop was still broken, because:
+#
+#   script/shop_host ship   builds spree-estate:latest on the server
+#   nothing in it           restarts a single container onto that image
+#
+# Two containers had been force-recreated by hand while chasing the original bug,
+# so those two picked the fix up. The other five never did. The live one was still
+# running an image from that morning whose backfill task carried the old query, and
+# running the backfill inside it re-broke the shop rather than repairing it.
+# The giveaway was in the output the whole time: the task printed wording that
+# had been deleted from the source days before, and nobody read it as evidence.
+#
+# Shipping an image is not deploying it. This is the check that says so.
+#
+# ── what it compares ─────────────────────────────────────────────────────────
+#
+# The image ID each <shop>_web container was created from, against the ID that
+# spree-estate:latest resolves to now. IDs, not tags: a tag moves when a new
+# image is built, and a running container keeps the ID it started with, which is
+# exactly the drift being looked for.
+#
+# Storefronts are deliberately not checked. Each shop's storefront is its own
+# image, built with that shop's own build args, and they are not expected to
+# share a tag.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+[[ -f .estate.env ]] && source .estate.env
+if [[ ! -f "$ESTATE_FILE" ]]; then
+  echo "check_containers_current: no .estate in this checkout, nothing to check" >&2
+  exit 0
+fi
+
+: "${SSH_KEY:?SSH_KEY is not set — see .estate.env}"
+: "${SSH_PORT:?SSH_PORT is not set}"
+: "${SSH_HOST:?SSH_HOST is not set}"
+
+IMAGE="${IMAGE:-spree-estate:latest}"
+rsh() { ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" "$@"; }
+
+if ! current=$(rsh "docker image inspect $IMAGE --format '{{.Id}}'" 2>/dev/null | tr -d '\r'); then
+  echo "check_containers_current: cannot reach the server, skipping" >&2
+  exit 0
+fi
+[[ -n "$current" ]] || { echo "check_containers_current: $IMAGE does not exist on the server" >&2; exit 1; }
+
+stale=0
+checked=0
+while IFS='|' read -r shop _rest; do
+  [[ -n "$shop" ]] || continue
+  running=$(rsh "docker inspect -f '{{.Image}}' ${shop}_web" 2>/dev/null | tr -d '\r')
+  # A shop that is not running at all is not this check's business. `up` reports
+  # that, and failing here would make a check about staleness fail for absence.
+  [[ -n "$running" ]] || continue
+  checked=$((checked + 1))
+  if [[ "$running" != "$current" ]]; then
+    created=$(rsh "docker inspect -f '{{.Created}}' ${shop}_web" 2>/dev/null | tr -d '\r' | cut -c1-19)
+    echo "  STALE  ${shop}_web started $created from an older image than $IMAGE"
+    stale=$((stale + 1))
+  fi
+done < <(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+
+if [[ $stale -gt 0 ]]; then
+  cat >&2 <<EOF
+
+FAILED: $stale of $checked shop containers are running code older than the last build.
+
+They will keep running it until each is recreated. Whatever was just shipped is
+not live on them:
+
+  ssh <server> 'cd /srv/<dir> && docker compose up -d --force-recreate web'
+
+or, for all of them, script/shop_host refresh
+EOF
+  exit 1
+fi
+
+echo "  ok    $checked shop containers all running the current image"

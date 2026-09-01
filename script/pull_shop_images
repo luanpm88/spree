@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# Copy one shop's image files from the client's MinIO to ours.
+#
+#   script/pull_shop_images ca            copy what is missing, then prove it
+#   script/pull_shop_images ca --dry-run  count what is missing and stop
+#
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# A dump carries the database and nothing else. Every image row comes across and
+# every image FILE stays behind, so the shop has 2,666 blobs and 260 product
+# images and shows none of them. On Canada, 16 of the first 20 blobs checked had
+# no file on this server.
+#
+# It is invisible from the outside. The page renders, the img tag is in the HTML,
+# and Next's image optimiser answers 404 without raising anything. Only a browser
+# sees it, which is how it survived a cutover.
+#
+# ── why not script/fetch_shop_images.mjs ─────────────────────────────────────
+#
+# That one scrapes the images off the shop's own public API, because when it was
+# written this machine had no ssh to the old server. It is also useless the moment
+# a shop is cut over, since the domain it scrapes now points at US.
+#
+# We do have ssh now. His MinIO is a container on that box and its objects are
+# named with the Active Storage blob key, so this reads them at the source instead
+# of through a shop that may no longer be there.
+#
+# ── the layout, which is the part that is easy to get wrong ─────────────────
+#
+# MinIO stores object <key> at the bucket root. Active Storage's Disk service
+# stores it at storage/<key 1-2>/<key 3-4>/<key>. Copying the flat bucket into
+# storage/ produces a directory full of files that Rails will never look at, and
+# nothing will say so.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_BLD=$'\e[1m'; C_OFF=$'\e[0m'
+step() { printf '\n%s==>%s %s\n' "$C_BLD" "$C_OFF" "$*"; }
+ok()   { printf '  %sok%s   %s\n' "$C_GRN" "$C_OFF" "$*"; }
+warn() { printf '  %s!%s    %s\n' "$C_YEL" "$C_OFF" "$*"; }
+info() { printf '  %s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
+die()  { printf '\n%sFAILED%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+
+SHOP="${1:-}"; DRY="${2:-}"
+[[ -n "$SHOP" ]] || die "usage: script/pull_shop_images <shop> [--dry-run]"
+
+[[ -f .estate.env ]] || die ".estate.env is not here"
+set -a; . ./.estate.env; set +a
+eval OLDK="$OLD_SSH_KEY"; OLDP=$(printf '%s' "$OLD_SSH_PORT" | tr -d '"')
+eval NEWK="$SSH_KEY";     NEWP=$(printf '%s' "$SSH_PORT"     | tr -d '"')
+old() { ssh -i "$OLDK" -p "$OLDP" -o BatchMode=yes -o ConnectTimeout=30 "$OLD_SSH_HOST" "$@"; }
+new() { ssh -i "$NEWK" -p "$NEWP" -o BatchMode=yes -o ConnectTimeout=30 "$SSH_HOST" "$@"; }
+
+# The bucket is named after his LIVE hostname, which is column 8.
+LIVE=$(awk -F'|' -v s="$SHOP" '$1==s {print $8}' .estate)
+[[ -n "$LIVE" ]] || die "$SHOP is not in .estate"
+BUCKET="${LIVE#https://}"; BUCKET="${BUCKET%%/*}"
+info "shop $SHOP, bucket $BUCKET"
+
+step "What is missing here"
+# Asked of Rails rather than counted off a directory: Rails is what decides
+# whether a blob resolves, and it is the only thing whose answer matters.
+counts=$(new "docker exec -i ${SHOP}_web bin/rails runner - " </dev/null <<'RUBY' 2>/dev/null | sed -n 's/.*<<C:\(.*\):C>>.*/\1/p'
+have = 0; missing = 0
+ActiveStorage::Blob.find_each do |b|
+  if (b.service.exist?(b.key) rescue false) then have += 1 else missing += 1 end
+end
+print "<<C:#{have}|#{missing}:C>>"
+RUBY
+)
+IFS='|' read -r HAVE MISSING <<< "${counts:-0|0}"
+info "blobs with a file: ${HAVE:-?}   without: ${MISSING:-?}"
+[[ "${MISSING:-0}" -gt 0 ]] || { ok "nothing is missing"; exit 0; }
+
+if [[ "$DRY" == "--dry-run" ]]; then
+  warn "dry run, nothing copied"
+  exit 0
+fi
+
+step "Reading the bucket out of his MinIO"
+# mc lives inside his minio container and the credentials are already in its
+# environment, so nothing has to be copied anywhere or stored here. `mc mirror`
+# into a plain directory converts MinIO's own xl.meta format back into files,
+# which a straight copy of /app/minio/data would not: those are erasure-coded
+# directories, not the images.
+old bash -s <<REMOTE 2>&1 | tail -3 | sed 's/^/      /' || die "the mirror did not run on his server"
+set -e
+docker exec minio sh -lc '
+  rm -rf /tmp/pull_$BUCKET
+  mkdir -p /tmp/pull_$BUCKET
+  mc alias set src http://127.0.0.1:9003 "\$MINIO_ROOT_USER" "\$MINIO_ROOT_PASSWORD" >/dev/null
+  mc mirror --quiet src/$BUCKET /tmp/pull_$BUCKET 2>&1 | tail -2
+  echo "objects: \$(ls -1 /tmp/pull_$BUCKET | wc -l)"
+'
+REMOTE
+
+step "Bringing them out of his container"
+# docker cp first, because the minio image has no tar. The first version piped
+# `tar -cf -` from inside it and got "sh: tar: command not found", followed by the
+# receiving end cheerfully reporting "placed 0 new file(s)" from an empty stream.
+old "rm -rf /tmp/pull_$BUCKET && docker cp minio:/tmp/pull_$BUCKET /tmp/pull_$BUCKET && ls -1 /tmp/pull_$BUCKET | wc -l" </dev/null \
+  | sed 's/^/      objects on his host: /' || die "docker cp did not run"
+
+step "Streaming them across"
+# tar from his HOST, straight into our container, laid out the way Active Storage
+# expects on the way in. Nothing lands on this laptop: the files are the client's
+# and there is no reason for a copy here.
+old "cd /tmp/pull_$BUCKET && tar -cf - ." \
+  | new "docker exec -i ${SHOP}_web sh -lc '
+      cd /rails/storage
+      mkdir -p /tmp/in && tar -xf - -C /tmp/in
+      n=0
+      for f in /tmp/in/*; do
+        [ -f \"\$f\" ] || continue
+        k=\$(basename \"\$f\")
+        # cut, not \${k:0:2}. The shell in this container is dash, which answers
+        # bash substring syntax with \"Bad substitution\" and takes the whole loop
+        # down, while the surrounding pipeline still reported a count of zero.
+        d=\"\$(printf %s \"\$k\" | cut -c1-2)/\$(printf %s \"\$k\" | cut -c3-4)\"
+        mkdir -p \"\$d\"
+        [ -f \"\$d/\$k\" ] || { cp \"\$f\" \"\$d/\$k\"; n=\$((n+1)); }
+      done
+      rm -rf /tmp/in
+      echo \"placed \$n new file(s)\"
+    '" || die "the transfer did not complete"
+
+old "docker exec minio sh -lc 'rm -rf /tmp/pull_$BUCKET'; rm -rf /tmp/pull_$BUCKET" </dev/null
+info "removed the working copies from his server, inside the container and out"
+
+step "Asking Rails again"
+after=$(new "docker exec -i ${SHOP}_web bin/rails runner - " </dev/null <<'RUBY' 2>/dev/null | sed -n 's/.*<<C:\(.*\):C>>.*/\1/p'
+have = 0; missing = 0
+ActiveStorage::Blob.find_each do |b|
+  if (b.service.exist?(b.key) rescue false) then have += 1 else missing += 1 end
+end
+print "<<C:#{have}|#{missing}:C>>"
+RUBY
+)
+IFS='|' read -r HAVE2 MISSING2 <<< "${after:-0|0}"
+info "blobs with a file: ${HAVE2:-?}   without: ${MISSING2:-?}"
+
+if [[ "${MISSING2:-1}" -eq 0 ]]; then
+  ok "every blob on this shop now has its file"
+elif [[ "${MISSING2:-0}" -lt "${MISSING:-0}" ]]; then
+  warn "${MISSING2} still missing, down from ${MISSING}"
+  info "his bucket does not hold those either. They were already gone before any of this."
+else
+  die "nothing changed: ${MISSING2} still missing"
+fi

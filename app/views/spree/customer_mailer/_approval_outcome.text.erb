@@ -4,13 +4,33 @@
     His file carries _txt variants for every sentence that contains markup, so each lookup
     prefers the _txt key and falls back to the marked-up one. That is his convention.
 %>
-<% t = ->(key, **args) { Spree.t(key, scope: @copy_scope, note: @note, contact_url: @contact_url, default: '', **args) } -%>
+<%# Same three shop values as the html partial. His Canadian copy uses
+    %{shop_url} in the welcome body and %{shop_url_full} / %{support_url} in the
+    bullets, and I18n raises on an argument the string wants and did not get. -%>
+<% common = ->(key, fallback) { Spree.t(key, scope: 'user_emails.common', default: fallback) } -%>
+<% store_host = @current_store&.url.to_s.sub(%r{\Ahttps?://}, '') -%>
+<% shop_args = {
+     shop_url: common.call(:shop_url, store_host),
+     shop_url_full: common.call(:shop_url_full, "https://#{store_host}"),
+     support_url: common.call(:support_url, @contact_url.to_s)
+   } -%>
+<% t = ->(key, **args) { Spree.t(key, scope: @copy_scope, note: @note, contact_url: @contact_url, default: '', **shop_args, **args) } -%>
 <% txt = ->(key, **args) { t.call(:"#{key}_txt", **args).presence || t.call(key, **args) } -%>
-<%= t.call(:heading) %>
+<%# Same two vocabularies as the html part. His commercial file writes heading /
+    greeting; his retail files write welcome_message / welcome_customer /
+    welcome_family. Read either. Fixing one part and not the other is the exact
+    shape of a bug already in this file's history. -%>
+<%= t.call(:heading).presence || t.call(:welcome_message) %>
 
-<% greeting = t.call(:greeting, name: @user.first_name.presence || @user.email) -%>
+<% name = @user.first_name.presence || @user.email -%>
+<% greeting = t.call(:greeting, name: name).presence || t.call(:welcome_customer, name: name) -%>
 <% if greeting.present? -%>
 <%= greeting %>
+
+<% end -%>
+<% lead = txt.call(:welcome_family) -%>
+<% if lead.present? -%>
+<%= lead %>
 
 <% end -%>
 <% body = txt.call(:body) -%>
@@ -27,8 +47,20 @@
 <%= login_details %>
 
 <% end -%>
-<% bullets = email_lines(:what_bullets_txt, scope: @copy_scope, contact_url: @contact_url, note: @note) -%>
-<% bullets = email_lines(:what_bullets, scope: @copy_scope, contact_url: @contact_url, note: @note) if bullets.empty? -%>
+<% why = email_lines(:why_shop_bullets_txt, scope: @copy_scope, contact_url: @contact_url, note: @note, **shop_args) -%>
+<% why = email_lines(:why_shop_bullets, scope: @copy_scope, contact_url: @contact_url, note: @note, **shop_args) if why.empty? -%>
+<% if why.any? -%>
+<% why_title = t.call(:why_shop_title) -%>
+<% if why_title.present? -%>
+<%= why_title %>
+<% end -%>
+<% why.each do |line| -%>
+- <%= line %>
+<% end -%>
+
+<% end -%>
+<% bullets = email_lines(:what_bullets_txt, scope: @copy_scope, contact_url: @contact_url, note: @note, **shop_args) -%>
+<% bullets = email_lines(:what_bullets, scope: @copy_scope, contact_url: @contact_url, note: @note, **shop_args) if bullets.empty? -%>
 <% if bullets.any? -%>
 <% title = t.call(:what_next_title) -%>
 <% if title.present? -%>
@@ -57,4 +89,11 @@
 <% portal_note = t.call(:portal_note, shop_url_full: Spree.t(:shop_url_full, scope: [:user_emails, :common], default: @storefront_url)) -%>
 <% if portal_note.present? -%>
 <%= portal_note %>
+<% end -%>
+
+<%= Spree.t(:owner_name, scope: [:user_emails, :common]) %>
+<%= Spree.t(:owner_title, scope: [:user_emails, :common]) %>
+<% slogan = Spree.t(:slogan, scope: [:user_emails, :common], default: '') -%>
+<% if slogan.present? -%>
+<%= slogan %>
 <% end -%>

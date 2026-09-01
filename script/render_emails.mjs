@@ -26,6 +26,32 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 const OUT = 'tmp/emails'
 const COMPOSE = ['compose', '-f', 'docker-compose.dev.yml', 'exec', '-T', 'web']
 
+// ── running against a real shop on the server ────────────────────────────────
+//
+//   SHOP=ca node script/render_emails.mjs
+//
+// The local dev container renders the templates against a synthetic order. That
+// answers "does the template work", which is not the question the client asked:
+// he wants to see what HIS canada shop sends, with his wording, his logo and one
+// of his own orders in it. Those differ per shop, because the copy lives in the
+// locale file and the logo is a store attachment.
+//
+// So SHOP=<name> execs into that shop's container on the estate box instead, and
+// ORDER=<number> picks which order to render. Default is the newest completed
+// one, because an incomplete order has no shipment and half the templates read
+// one.
+const SHOP = process.env.SHOP || ''
+const ORDER = process.env.ORDER || ''
+let EXEC = ['docker', [...COMPOSE]]
+if (SHOP) {
+  const env = existsSync('.estate.env') ? readFileSync('.estate.env', 'utf8') : ''
+  const get = (k) => (env.match(new RegExp(`^${k}="?([^"\n]+)"?`, 'm')) || [])[1] || ''
+  const key = get('SSH_KEY').replace('$HOME', process.env.HOME)
+  const host = get('SSH_HOST'), port = get('SSH_PORT')
+  if (!host) { console.error('error  SHOP is set but .estate.env has no SSH_HOST'); process.exit(1) }
+  EXEC = ['ssh', ['-i', key, '-p', port, '-o', 'BatchMode=yes', host, `docker exec -i ${SHOP}_web`]]
+}
+
 // name -> the mailer call that builds it. Add a row as each design is ported.
 const TEMPLATES = {
   confirm_email: 'Spree::OrderMailer.confirm_email(order)',
@@ -49,9 +75,11 @@ mkdirSync(OUT, { recursive: true })
 // exercised, and one of the two has no ship_address, which crashes any template that
 // reads it without a nil guard.
 const RUBY = `
-order = Spree::Order.find_by(number: 'R-EMAIL-PREVIEW')
+order = ${ORDER ? `Spree::Order.find_by(number: '${ORDER}')` : "Spree::Order.find_by(number: 'R-EMAIL-PREVIEW')"}
+${SHOP ? `order ||= Spree::Order.complete.order(:completed_at).last
+order ||= Spree::Order.order(:id).last` : ''}
 if order.nil?
-  raise "preview order missing — run: docker compose -f docker-compose.dev.yml exec web bin/rails email:preview_order"
+  raise "no order to render against${SHOP ? '' : " — run: docker compose -f docker-compose.dev.yml exec web bin/rails email:preview_order"}"
 end
 $stderr.puts "order=#{order.number} items=#{order.line_items.size} total=#{order.total} ship_address=#{!order.ship_address.nil?}"
 ${wanted.map((n) => `
@@ -68,11 +96,16 @@ rescue => e
 end`).join('\n')}
 `
 
-console.log('rendering in the web container…')
-const raw = execFileSync('docker', [...COMPOSE, 'bin/rails', 'runner', RUBY], {
+console.log(SHOP ? `rendering inside ${SHOP}_web on the server…` : 'rendering in the web container…')
+// The script goes in on STDIN, via `runner -`, not as an argument. Over ssh the
+// whole remote command is one string, so a multi-line argument gets flattened
+// and the ruby breaks apart into nonsense. stdin is immune to that and works the
+// same locally.
+const raw = execFileSync(EXEC[0], [...EXEC[1], 'bin/rails', 'runner', '-'], {
   encoding: 'utf8',
+  input: RUBY,
   maxBuffer: 40 * 1024 * 1024,
-  stdio: ['ignore', 'pipe', 'inherit'],
+  stdio: ['pipe', 'pipe', 'inherit'],
 })
 
 const problems = []

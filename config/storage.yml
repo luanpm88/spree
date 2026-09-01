@@ -6,6 +6,34 @@ local:
   service: Disk
   root: <%= Rails.root.join("storage") %>
 
+# The two service names his blobs already carry, pointing at the same directory
+# as `local`.
+#
+# Active Storage records on every blob WHICH service holds it, and refuses to
+# build a url when that name is not declared here. His old server had a mirror
+# set up and a MinIO bucket, so 26 blobs across the five retail shops carry
+# service_name "mirror" or "minio". Nothing else about them differs: the file for
+# megaCAP_replacement.jpg sits at the ordinary disk path on Australia and reads
+# fine, it simply could not be resolved.
+#
+# The symptom is the one he reported: the admin product page shows the alt text
+# where the picture should be, and there is no error anywhere, because
+#
+#     KeyError: Missing configuration for the mirror Active Storage service
+#
+# is raised while building the url and swallowed by the image tag.
+#
+# Declared rather than renamed in the database. His rows are his; a service that
+# resolves costs one line, and an UPDATE across 26 rows on five shops is a change
+# to his data for no gain.
+mirror:
+  service: Disk
+  root: <%= Rails.root.join("storage") %>
+
+minio:
+  service: Disk
+  root: <%= Rails.root.join("storage") %>
+
 amazon:
   service: S3
   access_key_id: <%= ENV.fetch("AWS_ACCESS_KEY_ID", "") %>

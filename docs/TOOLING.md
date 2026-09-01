@@ -17,6 +17,12 @@ Bài học rút ra khi viết chúng: [DISCOVERIES.md §4](DISCOVERIES.md).
 | `script/capture_prod.mjs` | Chụp 15 màn hình từ **production** (admin + storefront) |
 | `script/build_guide.mjs` | Markdown → PDF (Chromium, không cần pandoc/LaTeX) |
 | `script/audit_roles.mjs` | Đăng nhập từng vai trò, dò 9 màn hình, so với kỳ vọng |
+| `script/check_all` | **Cửa vào duy nhất.** Chạy mọi chốt tĩnh, và nếu đưa host thì chạy cả phần bấm thật. Thoát khác 0 là có chốt hỏng |
+| `script/check_storefront_e2e.mjs` | Mở trình duyệt thật và **bấm**: ảnh có giải mã không, từng hàng link đi đâu, thêm vào giỏ rồi mở giỏ, FAQ mở ra, chữ không in dấu thô, địa chỉ cũ còn tới nơi |
+| `script/shot_shop.mjs` | Chụp toàn trang một shop đã deploy để gửi khách, kèm một ảnh đang rê chuột lên thẻ sản phẩm |
+| `script/read_annotations` | Đọc chú thích khách viết trên ảnh chụp màn hình, kèm toạ độ. `--notes` lọc riêng ghi chú, `--zoom` cắt ô phóng to bắt chữ nhỏ. **Đọc chữ, không đọc mũi tên** — phải nói rõ mình hiểu ghi chú trỏ vào đâu rồi hỏi lại khách |
+| `script/pull_page_copy.py` | Rút chữ một trang đang chạy ra dạng đánh dấu nhẹ (`**đậm**`, `*nghiêng*`, `[chữ](link)`, `- ` gạch đầu dòng), giữ nguyên định dạng khách đã viết |
+| `script/check_invoice.mjs` | Chứng minh hoá đơn in ra render được, mang đúng đơn hàng, và bấm tới được từ trang đơn trong admin |
 | `script/verify_handover.mjs` | Kiểm chứng từng câu trong HANDOVER trên production |
 | `script/smoke_mail.rb` | Gửi thử email, xác nhận SMTP thật sự hoạt động |
 | `lib/tasks/demo.rake` | Tạo tài khoản demo cho từng vai trò |

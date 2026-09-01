@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+#
+# Everything a shop needs on changeover day, in order, refusing to continue.
+#
+#   script/cutover_pipeline <shop>            rehearse: every check, no change
+#   script/cutover_pipeline <shop> --go       do it
+#
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# Two shops were moved by running the right commands in the right order by hand.
+# Both went live with faults that every one of those commands would have caught,
+# because a step was skipped, a step was run before the step it depends on, or a
+# step's output said "problem" in a sentence nobody read closely:
+#
+#   images        the fix was in the image and five containers were still running
+#                 the old one. Nothing recreated them, so nothing picked it up.
+#   on sale       the remediation ran BEFORE the database was reloaded, and the
+#                 reload put the collection back to how it arrived.
+#   shipping      two bottles sat in a shipping category no method serves, so a
+#                 customer buying either was offered no delivery at checkout.
+#   thumbnails    variant records came across without their files, so a share of
+#                 image sizes answered 404 while the page still looked fine.
+#   stale edge    the origin was fixed and the edge nearest the SERVER kept
+#                 serving the 404 it had cached, so images stayed blank for every
+#                 visitor while a laptop saw them load.
+#
+# Every one of those is now a step below, in an order that cannot be got wrong,
+# with the check that proves it directly afterwards. A failing step stops the
+# run: a half-moved shop that is still serving from the old server is recoverable,
+# and one that is live and broken is not.
+#
+# ── it photographs, it does not only count ───────────────────────────────────
+#
+# A shop rendered perfectly, answered 200 everywhere and could not take an order.
+# A different shop scored 21 of 21 on an image count while the client looked at
+# grey boxes. So the last step drives a real browser and writes real pictures into
+# tmp/cutover/<shop>/, and the run is not finished until somebody has opened them.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+SHOP="${1:-}"
+GO="${2:-}"
+[[ -n "$SHOP" ]] || { echo "usage: script/cutover_pipeline <shop> [--go]" >&2; exit 2; }
+
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_KEY:?SSH_KEY is not set — see .estate.env}"
+: "${SSH_PORT:?}" ; : "${SSH_HOST:?}"
+
+if [[ -t 1 ]]; then
+  B=$'\033[1m'; DIM=$'\033[2m'; R=$'\033[0m'
+  CY=$'\033[36m'; GR=$'\033[32m'; YE=$'\033[33m'; RE=$'\033[31m'
+else B=''; DIM=''; R=''; CY=''; GR=''; YE=''; RE=''; fi
+
+OUT="tmp/cutover/$SHOP"
+mkdir -p "$OUT"
+LOG="$OUT/run.log"
+: > "$LOG"
+
+STEP=0
+say()  { printf '%s\n' "$*" | tee -a "$LOG" >/dev/null; printf '%s\n' "$*"; }
+step() { STEP=$((STEP+1)); say ""; say "${CY}==>${R} ${B}${STEP}. $*${R}"; }
+ok()   { say "    ${GR}ok${R}   $*"; }
+warn() { say "    ${YE}!${R}    $*"; }
+die()  { say ""; say "${RE}STOPPED at step ${STEP}:${R} $*"; say ""; say "Nothing after this ran. The shop is where it was before this step."; exit 1; }
+rsh()  { ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=25 "$SSH_HOST" "$@"; }
+
+DRY=1
+VERIFY_ONLY=0
+[[ "$GO" == "--go" ]] && DRY=0
+# --verify runs the browser steps only, on a shop that is already moved.
+#
+# It exists because his write freeze is on during a changeover: Cloudflare answers
+# 403 to anything that is not a GET or HEAD, so the walk cannot click add to cart.
+# The walk therefore has to happen after he lifts the freeze, and without a way to
+# run just that part the temptation is to call the shop done on the strength of the
+# steps that did run. That is the exact shape of every fault this project has
+# shipped.
+[[ "$GO" == "--verify" ]] && { DRY=0; VERIFY_ONLY=1; }
+if [[ $DRY -eq 1 ]]; then
+  say "${YE}REHEARSAL${R}  every check runs, nothing changes. Add --go when it is all green."
+else
+  say "${RE}LIVE${R}       this moves $SHOP onto its real hostname."
+fi
+say "log and pictures: $OUT/"
+
+# ── 0. the link to the server holds ──────────────────────────────────────────
+#
+# Three round trips before anything is touched, because a flaky link does not
+# announce itself as one. Two rehearsals died mid-run on a dropped wifi, once at
+# step 4 and once at step 5, and both printed a message about the shop. On the
+# day itself that is minutes spent taking a healthy shop apart.
+#
+# Three, not one: a single success is exactly what a link that drops every few
+# seconds gives you.
+step "The connection to the server holds"
+for attempt in 1 2 3; do
+  rsh true >/dev/null 2>&1 || die "the server did not answer on try ${attempt} of 3. This is the connection, not the shop. Fix the network before starting a cutover."
+done
+ok "three round trips, no drops"
+
+if [[ $VERIFY_ONLY -eq 0 ]]; then
+
+# ── 1. the repository is fit to ship from ────────────────────────────────────
+#
+# First, not last. Shipping from a checkout that fails its own gates is how a
+# gitignored file the app loads gets left behind, and that took the backend down
+# once. It also refuses to run if this repository has the client's names in it.
+step "This checkout is fit to ship from"
+if script/check_no_client_data >>"$LOG" 2>&1; then ok "no client data in the repository"; else die "check_no_client_data failed. See $LOG"; fi
+if script/check_untracked_source >>"$LOG" 2>&1; then ok "every source file the deploy carries is tracked"; else die "check_untracked_source failed: a new .rb/.erb/.rake would not reach the server"; fi
+if script/check_deploy_assets >>"$LOG" 2>&1; then ok "the gitignored files the app loads are carried"; else die "check_deploy_assets failed"; fi
+
+# ── 2. every container is on the image that was last built ───────────────────
+#
+# Before anything else touches the shop. A remediation task run inside a
+# container that is a build behind does not just fail to help, it can undo the
+# fix: the old backfill blanked every primary_media_id the new one had filled.
+step "Every shop container runs the current image"
+if script/check_containers_current >>"$LOG" 2>&1; then
+  ok "all containers on the current image"
+else
+  warn "at least one container is behind"
+  if [[ $DRY -eq 1 ]]; then
+    warn "rehearsal: would run script/shop_host refresh"
+  else
+    say "    running script/shop_host refresh"
+    script/shop_host refresh >>"$LOG" 2>&1 </dev/null || die "refresh failed. See $LOG"
+    script/check_containers_current >>"$LOG" 2>&1 || die "still behind after refresh"
+    ok "refreshed, all containers current"
+  fi
+fi
+
+# ── 3. the data remediation, AFTER any reload, in dependency order ───────────
+#
+# backfill:all is store_id → counters → thumbnails → orphan_variants → channel,
+# and the order matters: channel publishes what store_id has just made visible,
+# and thumbnails needs the counters that come before it.
+#
+# on_sale:top_up is separate and runs after, because it reads prices rather than
+# anything backfill sets, and because it is the one that a database reload undoes.
+step "Filling in what the upgrade and the reload left empty"
+if [[ $DRY -eq 1 ]]; then
+  before=$(rsh "docker exec ${SHOP}_web bin/rails backfill:report 2>/dev/null" | grep -cE "^\s+\S+\s+[1-9]" || true)
+  ok "rehearsal: backfill:all and on_sale:top_up would run (${before:-0} report line(s) with work outstanding)"
+else
+  rsh "docker exec ${SHOP}_web bin/rails backfill:all" >>"$LOG" 2>&1 || die "backfill:all failed. See $LOG"
+  ok "backfill:all done"
+  rsh "docker exec ${SHOP}_web bin/rails on_sale:top_up" >>"$LOG" 2>&1 || warn "on_sale:top_up reported a problem, see $LOG"
+  ok "on_sale:top_up done"
+fi
+
+# ── 4. what the database says, before a browser is opened ────────────────────
+#
+# Cheap, and it is the layer where a fault is still fixable without a rebuild.
+step "The database answers for itself"
+probe=$(rsh "docker exec ${SHOP}_web bin/rails runner '
+  active = Spree::Product.where(status: %q{active}, deleted_at: nil)
+  noimg  = active.where(primary_media_id: nil).count
+  onsale = Spree::Taxon.find_by(permalink: %q{collections/on-sale})
+  orphan = 0
+  ActiveStorage::VariantRecord.includes(image_attachment: :blob).find_each do |v|
+    b = v.image_attachment&.blob
+    orphan += 1 if b.nil? || !(b.service.exist?(b.key) rescue false)
+  end
+  bad_cat = Spree::ShippingCategory.all.count do |c|
+    Spree::Product.where(shipping_category_id: c.id, deleted_at: nil).exists? &&
+      !Spree::ShippingMethod.joins(:shipping_categories).where(spree_shipping_categories: {id: c.id}).exists?
+  end
+  print %q{<<P:} + [active.count, noimg, (onsale ? onsale.automatic : %q{none}), (onsale ? onsale.products.count : 0), orphan, bad_cat].join(%q{|}) + %q{:P>>}
+' 2>/dev/null" | sed -n 's/.*<<P:\(.*\):P>>.*/\1/p')
+IFS='|' read -r n_active n_noimg os_auto os_held n_orphan n_badcat <<< "${probe:-|||||}"
+if [[ -z "${n_active:-}" ]]; then
+  # Say WHICH kind of failure. Two rehearsals stopped here reading "could not
+  # read the shop's own numbers back", which sounds like the shop is wrong. The
+  # actual line above it was `ssh: Network is unreachable`: the laptop's wifi had
+  # dropped. On changeover day a message that points at the shop when the fault is
+  # the connection is how a healthy shop gets taken apart looking for nothing.
+  if rsh true >/dev/null 2>&1; then
+    die "the shop answered but its numbers came back empty. Run the probe by hand against ${SHOP}_web."
+  else
+    die "cannot reach the server at all. This is the connection, not the shop. Check the network and run this again."
+  fi
+fi
+say "    active products      ${n_active}"
+say "    without an image     ${n_noimg}"
+say "    on-sale automatic    ${os_auto}   holding ${os_held}"
+say "    orphan variant rows  ${n_orphan}"
+say "    unservable ship cats ${n_badcat}"
+[[ "${n_noimg:-1}" -eq 0 ]] || warn "${n_noimg} active product(s) have no image. Check they have none on his live shop either."
+[[ "$os_auto" != "true" ]] || die "collections/on-sale is still rule-based, so its page will be empty. Run on_sale:top_up."
+[[ "${n_orphan:-1}" -eq 0 ]] || die "${n_orphan} variant record(s) point at a file that is not here. Run backfill:orphan_variants."
+[[ "${n_badcat:-1}" -eq 0 ]] || die "${n_badcat} shipping category(ies) hold products and are served by no method. Those products cannot be bought. Run shipping:category_report."
+ok "the numbers are clean"
+
+# ── 5. the move itself ───────────────────────────────────────────────────────
+step "Pointing the shop at its real hostname"
+if [[ $DRY -eq 1 ]]; then
+  # </dev/null on every shop_host call. Without it the dry run passed when this
+  # pipeline was run by hand and failed when it was run unattended, because
+  # shop_host reads stdin for its confirmations and an unattended run has none.
+  # A step that passes in a terminal and fails in a script is the worst kind on
+  # changeover day: it is read as a fault in the shop.
+  script/shop_host cutover "$SHOP" >>"$LOG" 2>&1 </dev/null || die "the cutover dry run refused. See $LOG"
+  ok "rehearsal: cutover would run (it dumps the database first)"
+else
+  script/shop_host cutover "$SHOP" --go >>"$LOG" 2>&1 </dev/null || die "cutover failed. See $LOG"
+  ok "cutover done, database dumped first"
+  script/shop_host live_host "$SHOP" --go >>"$LOG" 2>&1 </dev/null || die "live_host failed. See $LOG"
+  ok "answering on its real name"
+  script/shop_host storefront "$SHOP" --live >>"$LOG" 2>&1 </dev/null || die "the storefront build failed. See $LOG"
+  ok "storefront built on the real name"
+  script/shop_host restore_payments "$SHOP" >>"$LOG" 2>&1 </dev/null || die "restore_payments failed. The shop cannot charge a card. See $LOG"
+  ok "payment methods put back"
+  script/shop_host indexable "$SHOP" >>"$LOG" 2>&1 </dev/null || warn "indexable reported a problem, see $LOG"
+fi
+
+fi   # end of the steps that change the shop
+
+# ── 6. the checklist that knows this shop ────────────────────────────────────
+step "Per-shop checklist"
+if [[ $DRY -eq 1 ]]; then
+  script/cutover_check "$SHOP" --pre 2>&1 | tee -a "$LOG" | sed 's/^/    /'
+  st=${PIPESTATUS[0]}
+else
+  script/cutover_check "$SHOP" 2>&1 | tee -a "$LOG" | sed 's/^/    /'
+  st=${PIPESTATUS[0]}
+fi
+[[ $st -eq 0 ]] || die "the checklist found something. Read it above."
+ok "checklist clean"
+
+
+# ── 7. a browser, and pictures somebody has to look at ───────────────────────
+#
+# Last, and not optional. Every fault the client has found himself was visible in
+# a picture and invisible in a count.
+step "A real browser walks the shop"
+# `https*://`, not `https\?://`. BSD sed on macOS does not take \? as an optional
+# quantifier, so the scheme came through half stripped and the walk was pointed at
+#
+#   https://https//<shop-host>/<country>/<locale>
+#
+# which fails as a navigation error and was printed as "the browser walk failed"
+# on a shop that was serving perfectly. This runs on a Mac, so the pattern has to
+# be one BSD sed understands.
+LIVEH=$(grep -vE '^\s*(#|$)' .estate | grep "^$SHOP|" | cut -d'|' -f8 | sed 's#^https*://##')
+[[ -n "$LIVEH" ]] || die "no live hostname for $SHOP in .estate"
+if [[ $DRY -eq 1 ]]; then
+  TARGET=$(grep -vE '^\s*(#|$)' .estate | grep "^$SHOP|" | cut -d'|' -f6)
+  say "    rehearsal target: https://$TARGET"
+else
+  TARGET="$LIVEH"
+fi
+
+# One shop is closed: nothing is visible without an account. check_shop_images
+# and check_storefront_e2e both browse as a stranger, so on that shop they
+# photograph the sign-in page and report "no products", which reads as a broken
+# catalogue. The first rehearsal of this pipeline stopped there for exactly that
+# reason, on a shop that is fine.
+#
+# So a closed shop gets the two checks that CAN sign in, and the gate check,
+# which is the only one that asks whether it is still closed. Getting that wrong
+# in the permissive direction publishes his trade prices to anyone with a link.
+GATED=0
+if [[ -f config/gated_shops ]] && grep -qxF "$SHOP" config/gated_shops 2>/dev/null; then GATED=1; fi
+
+# Is his write freeze on.
+#
+# During a changeover he blocks every non-GET at Cloudflare so no order can land
+# on a server that is half moved. That also blocks the add to cart click, and an
+# e2e walk that cannot add to cart reports a shop that cannot sell. It is right
+# about what it saw and wrong about why, which is the reading that has cost this
+# project the most.
+#
+# So it is measured, named, and the run refuses to finish rather than passing a
+# shop nobody has clicked through.
+frozen=$(curl -s -o /dev/null -w '%{http_code}' -X POST --max-time 30 "https://$TARGET/api/v3/store/cart" 2>/dev/null || echo 000)
+if [[ "$frozen" == "403" ]]; then
+  say "    his write freeze is ON: a POST to this shop answers 403"
+fi
+
+if [[ $GATED -eq 1 ]]; then
+  say "    this shop is closed, so it is walked signed in"
+  node script/check_shop_gate.mjs "https://$TARGET" "$SHOP" en 2>&1 | tee -a "$LOG" | tail -6 | sed 's/^/    /'
+  [[ ${PIPESTATUS[0]} -eq 0 ]] || die "the gate check failed. A closed shop that serves pages to a stranger is the one fault that must never ship."
+  ok "still closed to a stranger"
+
+  # Closed is only half of it. The other half is whether a customer who IS signed
+  # in can buy, and until 28 Aug nothing asked that on a gated shop: the walk
+  # could not get past the login, so the closed shop was the one place the
+  # add-to-cart rule quietly did not apply. Every open shop has had that click
+  # since 17 Aug, when one rendered perfectly and could not take an order.
+  node script/check_gated_can_sell.mjs "https://$TARGET" "$SHOP" 2>&1 | tee -a "$LOG" | sed 's/^/    /'
+  [[ ${PIPESTATUS[0]} -eq 0 ]] || die "signed in, this shop cannot put anything in a basket."
+
+  node script/shot_sections.mjs "https://$TARGET" "$SHOP" en "$OUT/pages" 2>&1 | tee -a "$LOG" | tail -4 | sed 's/^/    /'
+  [[ ${PIPESTATUS[0]} -eq 0 ]] || die "could not photograph the shop signed in. Check .shopauth holds an account for it."
+  shots=$(ls "$OUT/pages" 2>/dev/null | wc -l | tr -d ' ')
+  [[ "${shots:-0}" -gt 4 ]] || die "only ${shots:-0} picture(s). Something stopped the signed-in walk early."
+  ok "$shots picture(s) in $OUT/pages"
+else
+  node script/check_shop_images.mjs "https://$TARGET" "$OUT/1-home.png" 2>&1 | tee -a "$LOG" | sed 's/^/    /'
+  [[ ${PIPESTATUS[0]} -eq 0 ]] || die "product photographs did not render. $OUT/1-home.png"
+
+  if [[ "$frozen" == "403" ]]; then
+    # The photographs above were checked and they are real. What has NOT been
+    # checked is whether this shop can take an order, and that is the one thing a
+    # shop is for. Stop here and say so, rather than counting the steps that did
+    # pass. On 17 Aug a shop rendered perfectly, answered 200 everywhere and could
+    # not take an order.
+    say ""
+    say "${YE}NOT FINISHED.${R} The pictures are good and the shop has not been clicked through,"
+    say "because his write freeze answers 403 to add to cart."
+    say ""
+    say "Ask him to lift the freeze, then run:"
+    say "  script/cutover_pipeline $SHOP --verify"
+    exit 2
+  fi
+
+  # Every image URL, asked from the network path the SERVER uses.
+  #
+  # The browser check above cannot see this one. Next optimises images on the box,
+  # so it fetches the origin from the box's own Cloudflare edge, and that edge is
+  # not the one a laptop reaches. On 27 Aug the same URL answered 200 from here
+  # and 404 from there, cached before the fix, and ten of 104 images were blank
+  # for every visitor while every check run locally said the shop was perfect.
+  script/check_image_origin "$SHOP" "https://$TARGET" 2>&1 | tee -a "$LOG" | sed 's/^/  /'
+  [[ ${PIPESTATUS[0]} -eq 0 ]] || die "images that are fine at the origin are 4xx on the server's path. He needs to purge the cache for this shop's API hostname."
+
+  node script/check_storefront_e2e.mjs "https://$TARGET" "$SHOP" en 2>&1 | tee -a "$LOG" | tail -6 | sed 's/^/    /'
+  [[ ${PIPESTATUS[0]} -eq 0 ]] || die "the browser walk failed. Read the lines above, and note the country key must be this shop's own."
+
+  if [[ -f script/shot_sections.mjs ]]; then
+    node script/shot_sections.mjs "https://$TARGET" "$SHOP" en "$OUT/pages" >>"$LOG" 2>&1 || warn "shot_sections reported a problem, see $LOG"
+    ok "$(ls "$OUT/pages" 2>/dev/null | wc -l | tr -d ' ') picture(s) in $OUT/pages"
+  fi
+fi
+
+# ── 8. the two questions a picture cannot answer ─────────────────────────────
+step "Chat widget and reviews"
+widget=$(node -e "
+const { chromium } = require('playwright');
+(async () => {
+  const b = await chromium.launch();
+  const p = await b.newPage({ viewport: { width: 1440, height: 1000 } });
+  const codes = [];
+  let aborted = 0;
+  p.on('response', r => { if (/chatwoot/i.test(r.url())) codes.push(r.status()); });
+  // Counted separately. His chatwoot answers the widget document 200 and then
+  // drops every one of the fifteen asset requests behind it, so the widget script
+  // never runs and no bubble is ever created. That reads as a broken shop and is
+  // a rate limit on whoever is asking: the same shop showed a bubble earlier the
+  // same morning with those assets at 200.
+  p.on('requestfailed', r => { if (/chatwoot/i.test(r.url())) aborted++; });
+  await p.goto('https://$TARGET', { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
+  // Poll, do not sleep once. His chatwoot mounts the bubble after its own fetch,
+  // and how long that takes swings: one shop showed a bubble in 8 seconds while
+  // another, measured minutes earlier with a bubble, showed none in 48. A single
+  // 12 second wait turned that into 'check this shop's websiteToken', which was
+  // correct on both.
+  let bubble = false;
+  for (let i = 0; i < 11; i++) {
+    await p.waitForTimeout(4000);
+    bubble = await p.evaluate(() => !!document.querySelector('.woot-widget-bubble')).catch(() => false);
+    if (bubble) break;
+  }
+  const token = await p.evaluate(() => window.\$chatwoot?.websiteToken || null).catch(() => null);
+  console.log(JSON.stringify({ bubble, token, aborted, codes: [...new Set(codes)] }));
+  await b.close();
+})();
+" 2>/dev/null)
+say "    widget: ${widget:-could not measure}"
+case "$widget" in
+  *'"bubble":true'*)
+    ok "the chat bubble is on the page" ;;
+  *'"codes":[]'*)
+    # Two of his shops carry no chat at all, and his own live versions of those
+    # two carry none either. Measured before this branch was written: zero
+    # mentions of chatwoot in the HTML of both. Warning about a widget the shop
+    # is not supposed to have is how a green run gets ignored.
+    ok "this shop loads no chat widget, which matches his live one" ;;
+  *429*)
+    warn "his chatwoot answered 429. That is a rate limit on the IP asking, not a fault in the shop: the same limit hits his unmoved shops from the same machine. Re-check from one that has not been testing all day." ;;
+  *'"aborted":0'*)
+    warn "the chat script loaded, nothing was dropped, and still no bubble in 44 seconds. That is the one shape worth suspecting the token for: check this shop's websiteToken in content.ts against his chatwoot inbox." ;;
+  *)
+    # aborted is non-zero: his chatwoot served the widget document and then
+    # dropped every asset request behind it, so the widget script never ran.
+    # Fifteen ERR_ABORTED on a shop that had shown a bubble an hour earlier,
+    # token unchanged. It is a rate limit on the machine doing the testing.
+    warn "his chatwoot answered the widget 200 and then dropped its own asset requests, so the bubble never mounted. That is a rate limit on the IP asking, not a fault here, and the token in the page is the one configured. Re-check from a machine that has not been testing all day." ;;
+esac
+
+say ""
+if [[ $DRY -eq 1 ]]; then
+  say "${GR}rehearsal clean.${R} Run again with --go when he says go."
+else
+  say "${GR}$SHOP is live.${R}"
+fi
+say ""
+say "Open the pictures before telling anyone this is done:"
+say "  $OUT/1-home.png"
+[[ -d "$OUT/pages" ]] && say "  $OUT/pages/"

@@ -1,96 +1,362 @@
 #!/usr/bin/env bash
-# Everything the dashboard needs to know about the client's server, in one call.
 #
-#   script/health            survey, check backups, record both into docs/plan.json
-#   script/health --install  install the launchd job that runs this daily
-#   script/health --status   is the launchd job loaded, when did it last run
+# Is the estate healthy. One command, every shop, every failure this project has
+# actually had.
 #
-# This is what the scheduled job runs. It is a separate file rather than three
-# lines in a plist so that changing what "healthy" means does not mean editing
-# XML and reloading a daemon.
+#   script/health              every shop
+#   script/health ca           one shop
+#   script/health --quick      skip the browser, for a check every few minutes
+#   script/health --explain    print what each check is for and stop
 #
-# It deliberately does NOT stop at the first failure. A broken backup must not
-# prevent the estate survey from being recorded, or one problem hides the other
-# and the dashboard shows yesterday's picture of everything except the one thing
-# that broke.
-
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# Seven shops moved onto this server over two days. Every fault that reached the
+# client in that time had the same shape: something that was true stopped being
+# true, and every check still passing was answering a different question.
+#
+#   a shop rendered perfectly and could not take an order
+#   a shop showed grey boxes while an image count said 21 of 21
+#   four shops answered 500 on every content page while the browser walk scored
+#     31 of 31, because the home page was still being served from prerender
+#   a shop's login said "fetch failed" while its catalogue worked, because the
+#     product path and the sign-in path used different hostnames
+#   five containers ran code from before a fix, and the fix had been shipped
+#
+# None of those is exotic. Each is one question nobody was asking. This file is
+# the list of those questions, and it is meant to be run whenever anything is
+# touched and on any morning somebody wants to know the estate is fine.
+#
+# ── how to read a failure ────────────────────────────────────────────────────
+#
+# Every line says what was measured and what to run. A red line is a claim about
+# the shop; if you doubt it, the fastest disproof is the same request by hand.
+# Three times on 28 Aug a red line was the check being wrong, so the message
+# always names the command that reproduces it.
 set -uo pipefail
-cd "$(dirname "$0")/.."
-ROOT=$(pwd)
-LABEL=com.luan.spree.health
-PLIST=$HOME/Library/LaunchAgents/$LABEL.plist
+# The repository root. `git rev-parse --show-toplevel` already IS the root, so
+# appending /.. lands above it and every relative path then misses, which this
+# script reported as "no .estate on this machine" while standing next to one.
+cd "$(dirname "$0")/.." || exit 1
 
-case "${1:-run}" in
-  --install)
-    mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/tmp"
+ONLY=""
+QUICK=0
+for arg in "$@"; do
+  case "$arg" in
+    --quick)   QUICK=1 ;;
+    --explain) EXPLAIN=1 ;;
+    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*)        echo "unknown option $arg" >&2; exit 2 ;;
+    *)         ONLY="$arg" ;;
+  esac
+done
 
-    # Resolve node NOW and pin it into the plist, rather than trusting the job to
-    # find it later. launchd starts with a bare environment, and node here comes
-    # from nvm, which is set up by the interactive shell profile that a launchd
-    # job never reads. `bash -lc` looks like it should be enough and is not: the
-    # first scheduled run failed with `env: node: No such file or directory`
-    # while `which node` answered perfectly from a terminal.
-    NODE_BIN=$(command -v node) || { echo "node is not on PATH, cannot install"; exit 1; }
-    NODE_DIR=$(dirname "$NODE_BIN")
-    echo "pinning node from $NODE_DIR"
+if [[ "${EXPLAIN:-0}" == "1" ]]; then
+  sed -n '/^# ── what each check is for/,/^# ── end of the list/p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
 
-    # 09:00 local, not 02:00. Nothing here fixes itself, so it should land when
-    # someone is awake to read it rather than eight hours before they look.
-    cat > "$PLIST" <<XML
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>$LABEL</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key><string>$NODE_DIR:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-  </dict>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/bash</string>
-    <string>-c</string>
-    <string>cd '$ROOT' && exec script/health</string>
-  </array>
-  <key>StartCalendarInterval</key>
-  <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
-  <!-- The laptop is asleep at 09:00 more often than not. Without this the job is
-       simply skipped and the dashboard quietly ages, which is the exact failure
-       the dashboard is supposed to make visible. -->
-  <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>$ROOT/tmp/health.log</string>
-  <key>StandardErrorPath</key><string>$ROOT/tmp/health.log</string>
-</dict>
-</plist>
-XML
-    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
-    launchctl bootstrap "gui/$(id -u)" "$PLIST" || { echo "could not load $PLIST"; exit 1; }
-    echo "installed $LABEL, runs daily at 09:00 and on login"
-    echo "log: $ROOT/tmp/health.log"
-    exit 0
-    ;;
-  --status)
-    if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-      echo "launchd job loaded"
-      launchctl print "gui/$(id -u)/$LABEL" | grep -E 'last exit code|runs =' | sed 's/^/  /'
-    else
-      echo "launchd job NOT loaded, run script/health --install"
+# ── what each check is for ───────────────────────────────────────────────────
+#
+#  container    The <shop>_web container must run the image the last build made.
+#               `ship` builds and stops; nothing recreates a container. A
+#               remediation task run inside a stale container can UNDO the fix it
+#               was meant to apply.
+#
+#  home         The shop answers on its live hostname with its own title. A wrong
+#               title here means one shop is serving another shop's build.
+#
+#  content      /contact, a policy page and a category page. These render through
+#               the layout, which fetches categories, so they fail together and
+#               they fail SILENTLY: the home page keeps working from prerender.
+#               Four live shops sat at 500 for an hour behind a green browser walk.
+#
+#  api host     The hostname the storefront calls must resolve. After a cutover
+#               the old one stops existing, and a build made before the cutover
+#               still names it.
+#
+#  images       Product photographs on the page, and every image URL re-fetched
+#               FROM THE SERVER. The server reaches a different Cloudflare edge
+#               than a laptop, and an error cached at that edge blanks images for
+#               every visitor while a laptop sees them load.
+#
+#  data         Five things a dump reintroduces every time it is loaded: products
+#               with no image, variant records whose file never came, a rule-based
+#               category the Store API will not serve, an empty on-sale
+#               collection, and a shipping category no method serves.
+#
+#  sells        A POST is accepted. A shop that renders and cannot take an order
+#               is the failure this whole project was rebuilt around.
+#
+#  mail         mail_from on a send. subdomain, and SMTP not pointed at the local
+#               catcher. His roots are on DMARC p=reject, so the wrong From does
+#               not go to junk, it bounces.
+#
+#  payments     At least one card or wallet gateway is active. After a load they
+#               are all switched off on purpose, and switching them back on is a
+#               separate deliberate step that has been forgotten.
+#
+#  indexable    No noindex header. It is correct while a shop is a review copy and
+#               wrong the moment it is live.
+#
+#  prefix       The order number prefix matches .estate. Customers quote these.
+#
+# ── end of the list ──────────────────────────────────────────────────────────
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+[[ -f "$ESTATE_FILE" ]] || { echo "no .estate on this machine, nothing to check" >&2; exit 0; }
+[[ -f .estate.env ]] && source .estate.env
+
+if [[ -t 1 ]]; then
+  B=$'\033[1m'; DIM=$'\033[2m'; R=$'\033[0m'
+  GR=$'\033[32m'; YE=$'\033[33m'; RE=$'\033[31m'; CY=$'\033[36m'
+else B=''; DIM=''; R=''; GR=''; YE=''; RE=''; CY=''; fi
+
+rsh() { ssh -n -i "${SSH_KEY:-}" -p "${SSH_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 "${SSH_HOST:-}" "$@" 2>/dev/null; }
+
+FAILS=0
+WARNS=0
+REMEDIES=""
+
+fail() { printf '    %sFAIL%s  %s\n' "$RE" "$R" "$1"; FAILS=$((FAILS+1)); [[ -n "${2:-}" ]] && REMEDIES="$REMEDIES
+  $2"; }
+warn() { printf '    %s!%s     %s\n' "$YE" "$R" "$1"; WARNS=$((WARNS+1)); }
+pass() { printf '    %sok%s    %s\n' "$GR" "$R" "$1"; }
+
+# One status code, or 000, and never the two stuck together.
+#
+# The first version was `curl ... || echo 000`. When curl printed a code for one
+# hop of a redirect chain and THEN failed, the fallback was appended to what had
+# already been written and the caller read `200000`. That is not a status code,
+# and it failed a healthy shop on a passing network blink.
+#
+# Retried once, because a single dropped connection is not news about a shop. Two
+# in a row is.
+code() {
+  local out rc
+  for _try in 1 2; do
+    out=$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 25 "$1" 2>/dev/null)
+    rc=$?
+    if [[ $rc -eq 0 && "$out" =~ ^[0-9]{3}$ ]]; then
+      printf '%s' "$out"
+      return 0
     fi
-    node -e '
-      const p = require("./docs/plan.json")
-      for (const k of ["estate", "backups"]) {
-        const h = p.health?.[k]
-        if (!h) { console.log(`  ${k}: never recorded`); continue }
-        const t = h.collected_at ?? h.checked_at
-        const hrs = ((Date.now() - new Date(t)) / 3.6e6).toFixed(1)
-        console.log(`  ${k}: ${t} (${hrs}h ago)`)
-      }' 2>/dev/null
-    exit 0
-    ;;
-esac
+    sleep 2
+  done
+  printf '000'
+}
 
-echo "── $(date -u +%Y-%m-%dT%H:%M:%SZ) ─────────────────────────────"
-rc=0
-script/estate --record  || { echo "estate check failed"; rc=1; }
-script/backups --deep --record || { echo "backup check failed"; rc=1; }
-exit $rc
+# ── the shop list ────────────────────────────────────────────────────────────
+SHOPS=$(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+ROWS=()
+while IFS= read -r line; do [[ -n "$line" ]] && ROWS+=("$line"); done < <(printf '%s\n' "$SHOPS")
+
+# The link to the server, before anything is judged by it.
+#
+# Without this, a dropped connection makes every shop report "container is not
+# running" and "could not read the database", which is seven red lines about a
+# healthy estate and a wasted morning. Three round trips, because one success is
+# what a link that drops every few seconds gives you.
+if [[ -n "${SSH_HOST:-}" ]]; then
+  for attempt in 1 2 3; do
+    if ! rsh true >/dev/null 2>&1; then
+      printf '%sthe server did not answer on try %s of 3.%s This is the connection, not the shops.\n' "$RE" "$attempt" "$R" >&2
+      exit 2
+    fi
+  done
+fi
+
+printf '%sestate health%s  %s\n' "$B" "$R" "$(date '+%Y-%m-%d %H:%M')"
+[[ $QUICK -eq 1 ]] && printf '%s  quick: no browser, no image sweep%s\n' "$DIM" "$R"
+
+for row in "${ROWS[@]}"; do
+  IFS='|' read -r shop dir _db port _sport tmp store live prefix <<< "$row"
+  [[ -n "$shop" ]] || continue
+  [[ -z "$ONLY" || "$ONLY" == "$shop" ]] || continue
+
+  host="${live// /}"
+  [[ -n "$host" && "$host" != "-" ]] || host="https://${tmp// /}"
+  [[ "$host" == http* ]] || host="https://$host"
+
+  printf '\n%s==>%s %s%s%s  %s\n' "$CY" "$R" "$B" "$shop" "$R" "${host#https://}"
+
+  # ── container on the current image ─────────────────────────────────────────
+  cur=$(rsh "docker image inspect ${IMAGE:-spree-estate:latest} --format '{{.Id}}'" | tr -d '\r')
+  run=$(rsh "docker inspect -f '{{.Image}}' ${shop}_web" | tr -d '\r')
+  if [[ -z "$run" ]]; then
+    fail "${shop}_web is not running" "script/shop_host start $shop"
+  elif [[ -n "$cur" && "$run" != "$cur" ]]; then
+    fail "${shop}_web runs an image older than the last build" "script/shop_host refresh"
+  else
+    pass "container on the current image"
+  fi
+
+  # ── the shop answers, with its own title ───────────────────────────────────
+  # Twice before believing it, for the same reason as code(): one dropped
+  # connection is not a fact about the shop.
+  title=""
+  for _try in 1 2; do
+    title=$(curl -s -L --max-time 30 "$host" 2>/dev/null | tr -d '\n' | grep -oE '<title>[^<]*' | head -1 | sed 's/<title>//')
+    [[ -n "$title" ]] && break
+    sleep 2
+  done
+  if [[ -z "$title" ]]; then
+    fail "no title from $host, asked twice" "curl -sL $host | head"
+  else
+    pass "answers: ${title:0:52}"
+  fi
+
+  # ── content pages ──────────────────────────────────────────────────────────
+  bad_pages=""
+  for path in /contact /policies/returns /c/collections/on-sale; do
+    c=$(code "$host$path")
+    case "$c" in 200|301|302|308|404) ;; *) bad_pages="$bad_pages $path=$c" ;; esac
+  done
+  if [[ -n "$bad_pages" ]]; then
+    fail "content pages do not answer:$bad_pages" "script/shop_host storefront $shop --live   # usually a build naming a hostname that no longer resolves"
+  else
+    pass "content pages answer"
+  fi
+
+  # ── the API hostname the storefront calls ──────────────────────────────────
+  rails=$(rsh "grep -E '^RAILS_HOST=' /srv/${dir// /}/.env | cut -d= -f2-" | tr -d '\r')
+  if [[ -n "$rails" ]]; then
+    if [[ "$(code "https://$rails/up")" == "200" ]]; then
+      pass "API host $rails answers"
+    else
+      fail "API host $rails does not answer" "dig +short $rails   # if NXDOMAIN, the shop's build names a dead host"
+    fi
+  fi
+
+  # ── data the dump keeps reintroducing ──────────────────────────────────────
+  probe=$(rsh "docker exec ${shop}_web bin/rails runner '
+    active = Spree::Product.where(status: %q{active}, deleted_at: nil)
+    onsale = Spree::Taxon.find_by(permalink: %q{collections/on-sale})
+    orphan = 0
+    ActiveStorage::VariantRecord.includes(image_attachment: :blob).find_each do |v|
+      b = v.image_attachment&.blob
+      orphan += 1 if b.nil? || !(b.service.exist?(b.key) rescue false)
+    end
+    badcat = Spree::ShippingCategory.all.count do |c|
+      Spree::Product.where(shipping_category_id: c.id, deleted_at: nil).exists? &&
+        !Spree::ShippingMethod.joins(:shipping_categories).where(spree_shipping_categories: {id: c.id}).exists?
+    end
+    rules = Spree::Taxon.where(automatic: true).count { |t| t.products.count.positive? }
+    print %q{<<H:} + [active.count, active.where(primary_media_id: nil).count, orphan, badcat, rules,
+      (onsale ? (onsale.automatic ? %q{auto} : onsale.products.count.to_s) : %q{none})].join(%q{|}) + %q{:H>>}
+  ' 2>/dev/null" | sed -n 's/.*<<H:\(.*\):H>>.*/\1/p')
+
+  if [[ -z "$probe" ]]; then
+    warn "could not read the database (container busy or restarting)"
+  else
+    IFS='|' read -r n_active n_noimg n_orphan n_badcat n_rules os <<< "$probe"
+    [[ "${n_noimg:-0}" -eq 0 ]] && pass "$n_active active product(s), all with an image" \
+      || warn "$n_noimg of $n_active active product(s) have no image"
+    [[ "${n_orphan:-0}" -eq 0 ]] && pass "no orphan variant records" \
+      || fail "$n_orphan variant record(s) point at a file that is not here" "docker exec ${shop}_web bin/rails backfill:orphan_variants"
+    [[ "${n_badcat:-0}" -eq 0 ]] && pass "every shipping category is served" \
+      || fail "$n_badcat shipping category(ies) hold products no method serves" "docker exec ${shop}_web bin/rails shipping:category_report"
+    [[ "${n_rules:-0}" -eq 0 ]] && pass "no rule-based category holding products" \
+      || fail "$n_rules rule-based categor(ies) hold products the Store API will not serve" "docker exec ${shop}_web bin/rails taxons:rule_based_report"
+    case "$os" in
+      auto) fail "collections/on-sale is rule-based, so its page is empty" "docker exec ${shop}_web bin/rails on_sale:top_up" ;;
+      none) pass "no on-sale collection on this shop" ;;
+      0)    fail "collections/on-sale is empty" "docker exec ${shop}_web bin/rails on_sale:top_up" ;;
+      *)    pass "on-sale collection holds $os product(s)" ;;
+    esac
+  fi
+
+  # ── mail, payments, indexability, prefix ───────────────────────────────────
+  meta=$(rsh "docker exec ${shop}_web bin/rails runner '
+    s = Spree::Store.default
+    print %q{<<M:} + [s&.mail_from_address.to_s, ENV.fetch(%q{SMTP_HOST}, %q{}), ENV.fetch(%q{ORDER_NUMBER_PREFIX}, %q{}),
+      Spree::PaymentMethod.where(deleted_at: nil, active: true)
+        .where.not(type: [%q{Spree::PaymentMethod::StoreCredit}, %q{Spree::PaymentMethod::Check}]).count].join(%q{|}) + %q{:M>>}
+  ' 2>/dev/null" | sed -n 's/.*<<M:\(.*\):M>>.*/\1/p')
+
+  if [[ -z "$meta" ]]; then
+    # Said out loud. The first version just skipped these four checks when the
+    # runner returned nothing, so a shop whose Rails would not boot scored a
+    # clean sheet on mail, payments and its order prefix by not being asked.
+    warn "could not read mail, payments or order prefix from this shop"
+  else
+    IFS='|' read -r mail_from smtp order_prefix gateways <<< "$meta"
+    case "$mail_from" in
+      *@send.*) pass "mail from $mail_from" ;;
+      "")       fail "no mail_from on this shop" "docker exec ${shop}_web bin/rails runner 'p Spree::Store.default.mail_from_address'" ;;
+      *)        fail "mail_from $mail_from is not on a send. subdomain, and his roots are p=reject, so it BOUNCES" "check SMTP_FROM_ADDRESS in /srv/${dir// /}/.env" ;;
+    esac
+    [[ "$smtp" == "estate-mailpit" || -z "$smtp" ]] \
+      && fail "SMTP is still the local catcher, no customer receives anything" "check SMTP_HOST in /srv/${dir// /}/.env" \
+      || pass "SMTP $smtp"
+    [[ "${gateways:-0}" -gt 0 ]] && pass "$gateways card or wallet gateway(s) active" \
+      || fail "no gateway is active, this shop cannot charge" "script/shop_host restore_payments $shop"
+    want="${prefix// /}"
+    if [[ -n "$want" && "$want" != "-" && -n "$order_prefix" && "$order_prefix" != "$want" ]]; then
+      fail "order prefix is '$order_prefix', .estate says '$want'" "customers quote these, so settle it with him before changing"
+    elif [[ -n "$order_prefix" ]]; then
+      pass "order prefix $order_prefix"
+    fi
+  fi
+
+  # ── indexable, and can it take a write ─────────────────────────────────────
+  robots=$(curl -s -D - -o /dev/null -L --max-time 25 "$host" 2>/dev/null | grep -ci 'x-robots-tag' || true)
+  [[ "${robots:-0}" -eq 0 ]] && pass "no noindex header" || warn "a noindex header is set, correct only on a review copy"
+
+  post=$(curl -s -o /dev/null -w '%{http_code}' -X POST --max-time 25 "$host/api/v3/store/cart" 2>/dev/null || echo 000)
+  [[ "$post" == "403" ]] && warn "writes are blocked (403): his freeze rule is on, nothing can be ordered" \
+    || pass "writes are allowed"
+
+  # ── the browser, unless asked to skip it ───────────────────────────────────
+  if [[ $QUICK -eq 0 ]]; then
+    gated=0
+    [[ -f config/gated_shops ]] && grep -qxF "$shop" config/gated_shops 2>/dev/null && gated=1
+
+    if [[ $gated -eq 1 ]]; then
+      # A closed shop shows a stranger no products at all, so an anonymous image
+      # count returns "0 photographs, 0 decoded" and the old code printed that as
+      # ok. That is a shop reported healthy on the strength of a page that has
+      # nothing on it, which is the exact shape of every fault here.
+      #
+      # Ask the two questions that DO apply: is it still shut to a stranger, and
+      # can somebody who is signed in actually buy.
+      if go=$(node script/check_shop_gate.mjs "$host" "$shop" en 2>&1); then
+        pass "closed to a stranger ($(printf '%s' "$go" | grep -oE '[0-9]+ check' | tail -1))"
+      else
+        fail "the closed shop is not closed" "node script/check_shop_gate.mjs $host $shop en"
+      fi
+      if sell=$(node script/check_gated_can_sell.mjs "$host" "$shop" 2>&1); then
+        printf '    %sok%s    %s\n' "$GR" "$R" "$(printf '%s' "$sell" | tail -1 | sed 's/^ *ok *//;s/^ *//')"
+      else
+        fail "signed in, this shop cannot put anything in a basket" "node script/check_gated_can_sell.mjs $host $shop"
+      fi
+    elif out=$(node script/check_shop_images.mjs "$host" "tmp/health/${shop}.png" 2>&1); then
+      # sed strips the sub-command's own "ok" so the line does not read "ok ok".
+      printf '    %sok%s    %s\n' "$GR" "$R" "$(printf '%s' "$out" | grep -E 'photographs' | tail -1 | sed 's/^ *ok *//;s/^ *//')"
+    else
+      fail "$(printf '%s' "$out" | grep -E 'FAIL' | tail -1 | sed 's/^ *//')" "open tmp/health/${shop}.png and look at it"
+    fi
+
+    if [[ -f script/check_image_origin ]]; then
+      if o2=$(script/check_image_origin "$shop" "$host" 2>&1); then
+        printf '    %sok%s    %s\n' "$GR" "$R" "$(printf '%s' "$o2" | grep -E 'reachable' | tail -1 | sed 's/^ *//')"
+      else
+        fail "image URLs 4xx on the path the SERVER uses" "he needs to purge the Cloudflare cache for this shop's API hostname"
+      fi
+    fi
+  fi
+done
+
+printf '\n'
+mkdir -p tmp/health
+if [[ $FAILS -gt 0 ]]; then
+  printf '%s%s failure(s)%s' "$RE" "$FAILS" "$R"
+  [[ $WARNS -gt 0 ]] && printf ', %s to look at' "$WARNS"
+  printf '\n\nWhat to run:%s\n\n' "$REMEDIES"
+  exit 1
+fi
+if [[ $WARNS -gt 0 ]]; then
+  printf '%sno failures, %s thing(s) to look at%s\n' "$YE" "$WARNS" "$R"
+  exit 0
+fi
+printf '%severy shop healthy%s\n' "$GR" "$R"
+[[ $QUICK -eq 0 ]] && printf '%s  pictures in tmp/health/%s\n' "$DIM" "$R"

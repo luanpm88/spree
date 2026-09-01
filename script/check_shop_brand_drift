@@ -1,0 +1,209 @@
+#!/usr/bin/env node
+/**
+ * Does any shop's copy name, or point at, another shop.
+ *
+ * ── why this exists ─────────────────────────────────────────────────────────
+ *
+ * A client opened one of his shops and found pages in its footer that he had
+ * written for a different shop of his. They had been filed under the wrong key
+ * and nothing read them, although their own SEO titles named the shop they
+ * belonged to the whole time.
+ *
+ * A second one turned up the same morning, and the brand-name check above would
+ * not have caught it: a page whose every visible string named the right shop,
+ * embedding the OTHER shop's booking calendar. A customer booking a meeting
+ * landed in a different shop's diary. The map that was supposed to prevent that
+ * held the right address and is never read, because the renderer returns early
+ * for a page written as blocks.
+ *
+ * ── no client names in this file ────────────────────────────────────────────
+ *
+ * This repository is public, so nothing here may name a shop, a brand or a
+ * domain. The first version of this gate hardcoded all of them and was caught by
+ * script/check_no_client_data before it was committed.
+ *
+ * Everything it needs is derived instead, from files that are already gitignored
+ * because they are the client's:
+ *
+ *   who each shop is    FOOTER_BY_SHOP[shop].legalName in content.ts
+ *   what it may embed   nothing hardcoded: two shops sharing one embed URL IS
+ *                       the fault, whichever shops they are
+ *
+ * That is not only safer, it is better. A brand list written here goes stale the
+ * first time a shop is renamed; a name read from the shop's own footer cannot.
+ */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const FILE = join(ROOT, "storefront/src/lib/blocks/content.ts");
+
+let src;
+try {
+  src = readFileSync(FILE, "utf8");
+} catch {
+  // Gitignored and client-owned. Absent on a fresh clone, and that is not a
+  // failure here: check_deploy_assets is what proves it reaches a server.
+  console.log("  content.ts not present, nothing to check");
+  process.exit(0);
+}
+
+// ── who each shop says it is ────────────────────────────────────────────────
+//
+// Read from the shop's own footer rather than listed here. A shop with no
+// legalName cannot be checked, and that is reported rather than skipped: a gate
+// that quietly covers six of seven shops reads exactly like one that covers all
+// seven.
+function blockFor(constName, shop) {
+  const i = src.indexOf(`export const ${constName}`);
+  if (i < 0) return null;
+  const j = src.indexOf(`\n  ${shop}: {`, i);
+  if (j < 0) return null;
+  const rest = src.slice(j + 5);
+  const n = rest.search(/\n {2}[a-z0-9_]+: \{/);
+  return src.slice(j, j + 5 + (n < 0 ? rest.length : n));
+}
+
+// Every shop key that appears anywhere in the file, in first-seen order.
+const shops = [];
+for (const m of src.matchAll(/\n {2}([a-z][a-z0-9_]*): \{/g)) {
+  if (!shops.includes(m[1])) shops.push(m[1]);
+}
+
+const nameOf = new Map();
+const unnamed = [];
+for (const shop of shops) {
+  const b = blockFor("FOOTER_BY_SHOP", shop);
+  const m = b && b.match(/legalName:\s*\n?\s*"([^"]+)"/);
+  if (m) nameOf.set(shop, m[1]);
+  else unnamed.push(shop);
+}
+
+if (nameOf.size === 0) {
+  console.error("  no shop declares a legalName: this gate cannot check anything");
+  process.exit(1);
+}
+
+// A shop's name often contains a shorter shop's name as a substring (one shop
+// calling itself the wholesale arm of another). Longest first, and a hit is only
+// a hit when the string found is not part of this shop's own name.
+const names = [...nameOf.entries()].sort((a, b) => b[1].length - a[1].length);
+
+const marks = [];
+for (const m of src.matchAll(/\n {2}([a-z][a-z0-9_]*): \{/g)) {
+  marks.push({ shop: m[1], at: m.index });
+}
+
+const named = [];
+const routed = [];
+const embeds = new Map();
+const formIds = new Map();
+
+for (let i = 0; i < marks.length; i++) {
+  const { shop, at } = marks[i];
+  const end = i + 1 < marks.length ? marks[i + 1].at : src.length;
+  const block = src.slice(at, end);
+  const own = nameOf.get(shop) ?? "";
+
+  // ── 1. the customer-facing brand claim ──
+  //
+  // Only the SEO title and description. Body copy legitimately names other
+  // shops, and checking everything produces noise nobody reads, which is worse
+  // than not checking.
+  for (const c of block.matchAll(/\n\s*(title|description):\s*\n?\s*"([^"]+)"/g)) {
+    const text = c[2];
+    for (const [other, otherName] of names) {
+      if (other === shop) continue;
+      if (!text.includes(otherName)) continue;
+      if (own.includes(otherName)) continue; // its own longer name contains theirs
+      named.push({
+        shop,
+        other,
+        otherName,
+        line: src.slice(0, at + c.index).split("\n").length,
+        text: text.length > 90 ? `${text.slice(0, 90)}…` : text,
+      });
+      break;
+    }
+  }
+
+  // ── 2. what the page actually points the customer at ──
+  //
+  // No allow-list of addresses, because there is nothing to write one from that
+  // would not be a client name. The rule needs none: an embedded third party is
+  // per shop by definition, so the SAME address under two shop keys is the
+  // fault, whichever two they are. That is exactly the shape the real one took.
+  for (const m of block.matchAll(/\n\s*src:\s*"(https?:\/\/[^"]+)"/g)) {
+    const url = m[1];
+    if (!embeds.has(url)) embeds.set(url, []);
+    embeds.get(url).push({
+      shop,
+      line: src.slice(0, at + m.index).split("\n").length,
+    });
+  }
+
+  // A form id on two shops puts one shop's enquiries in the other's inbox.
+  for (const m of block.matchAll(/[?&]id=(\d{3,})/g)) {
+    const id = m[1];
+    if (!formIds.has(id)) formIds.set(id, new Set());
+    formIds.get(id).add(shop);
+  }
+}
+
+for (const [url, where] of embeds) {
+  const distinct = [...new Set(where.map((w) => w.shop))];
+  if (distinct.length > 1) routed.push({ url, where, distinct });
+}
+const sharedForms = [...formIds.entries()].filter(([, s]) => s.size > 1);
+
+let bad = 0;
+
+if (named.length) {
+  console.error(`\n  ${named.length} page(s) filed under the wrong shop:\n`);
+  for (const h of named) {
+    console.error(`    content.ts:${h.line}`);
+    console.error(`      under the '${h.shop}' key, but the copy calls itself '${h.otherName}'`);
+    console.error(`      which is the '${h.other}' shop's own name`);
+    console.error(`      ${h.text}\n`);
+  }
+  bad += named.length;
+}
+
+if (routed.length) {
+  console.error(`\n  ${routed.length} address embedded on more than one shop:\n`);
+  for (const r of routed) {
+    console.error(`    ${r.url}`);
+    for (const w of r.where) console.error(`      content.ts:${w.line}  under '${w.shop}'`);
+    console.error(
+      "      An embedded booking or form belongs to one shop. Two shops on one",
+    );
+    console.error("      address sends one shop's customers to the other.\n");
+  }
+  bad += routed.length;
+}
+
+if (sharedForms.length) {
+  console.error("");
+  for (const [id, s] of sharedForms) {
+    console.error(`    form id ${id} is on more than one shop: ${[...s].join(", ")}`);
+    console.error("      One shop's enquiries would arrive in the other's inbox.\n");
+  }
+  bad += sharedForms.length;
+}
+
+if (bad) {
+  console.error("  Move the page to the shop its own copy names, or correct the copy.\n");
+  process.exit(1);
+}
+
+// Say what was NOT covered. A shop with no legalName is invisible to check 1,
+// and a gate that does not say so reads as though it covered everything.
+console.log(
+  `  ok   ${nameOf.size} shop(s) checked, ${embeds.size} embedded address(es), none shared`,
+);
+if (unnamed.length) {
+  console.log(
+    `       ${unnamed.length} key(s) have no legalName and were checked for addresses only: ${unnamed.join(", ")}`,
+  );
+}

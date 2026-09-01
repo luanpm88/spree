@@ -5,6 +5,7 @@ import { PRODUCT_PAGE_EXPAND } from "@/lib/data/cached";
 import { getWholesaleProduct } from "@/lib/data/wholesale";
 import { WHOLESALE_MIN_QUANTITY } from "@/lib/wholesale";
 import { WholesaleGate } from "../../_components/WholesaleGate";
+import { basePathFor } from "@/lib/routing";
 
 interface WholesaleProductPageProps {
   params: Promise<{ country: string; locale: string; slug: string }>;
@@ -24,7 +25,7 @@ export default async function WholesaleProductPage({
   const { country, locale, slug } = await params;
 
   return (
-    <WholesaleGate basePath={`/${country}/${locale}`} allowGuestBrowse>
+    <WholesaleGate basePath={basePathFor(country, locale)} allowGuestBrowse>
       {() => (
         <WholesaleProductContent
           country={country}

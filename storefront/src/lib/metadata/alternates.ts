@@ -9,7 +9,11 @@ import {
 import { canonicalizeLocale } from "@/i18n/normalize";
 import { getMarkets } from "@/lib/data/markets";
 import { buildCanonicalUrl } from "@/lib/seo";
-import { getDefaultCountry, getDefaultLocale } from "@/lib/store";
+import {
+  cleanUrlsEnabled,
+  getDefaultCountry,
+  getDefaultLocale,
+} from "@/lib/store";
 
 export interface LocalizedResourcePath {
   path: string;
@@ -153,6 +157,35 @@ export async function buildLocalizedAlternates({
   resolvePath,
 }: BuildHreflangLanguagesParams): Promise<LocalizedAlternates> {
   const currentLocale = resolveSupportedLocale(locale);
+
+  // Clean URLs: one address per page, and no locale variants in the address.
+  //
+  // The canonical must be the address the page is actually SERVED at. Without
+  // this it was buildCanonicalUrl(storeUrl, "/nz/en/products"), the prefixed
+  // form the middleware now 308s away from, so every product, category and
+  // policy page pointed its canonical at a redirect. Measured on the running
+  // shop: /products answered 200 while its canonical read /nz/en/products.
+  //
+  // The hreflang cluster is dropped rather than rebuilt without prefixes,
+  // because it exists to distinguish locale variants and clean URLs put none in
+  // the address to distinguish: his own words are that a shop grows into
+  // countries and languages "then", not now. So this returns the
+  // self-referencing shape the cluster's own fallback already uses, pointed at
+  // the clean URL.
+  if (cleanUrlsEnabled()) {
+    const cleanUrl = buildCanonicalUrl(
+      storeUrl,
+      path.startsWith("/") ? path : `/${path}`,
+    );
+    return {
+      canonical: cleanUrl,
+      languages: {
+        ...(currentLocale ? { [currentLocale]: cleanUrl } : {}),
+        "x-default": cleanUrl,
+      },
+    };
+  }
+
   const currentUrl = buildCanonicalUrl(
     storeUrl,
     withLocalePrefix(country, locale, path),

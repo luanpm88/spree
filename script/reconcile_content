@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+#
+# The client's own data, before and after we touched it, compared by content.
+#
+#   script/reconcile_content <his_dump_db> <live_db>
+#   script/reconcile_content nz_truth nz_shop
+#
+# ── what this asks that script/reconcile_shop does not ───────────────────────
+#
+# reconcile_shop compares row identity: what left, what arrived. It deliberately
+# says nothing about a row that is present on both sides and whose contents
+# changed, because between two dumps of a live shop the client changes hundreds
+# of them himself and the real finding would drown.
+#
+# This is the other half, and it is only safe to ask when the left-hand database
+# is HIS OWN DUMP restored untouched. Then there is no client editing between the
+# two sides, and every difference is something WE did: a migration, a remediation
+# task, a fix applied by hand. Each one has to have a reason.
+#
+# That is the comparison that was missing on 30 Aug. A shop was reloaded from his
+# dump and then five remediation steps ran against it, and nobody had asked what
+# those five steps changed about his products, his prices or his shipping.
+#
+# ── compared by natural key, never by name and never by id ───────────────────
+#
+# By SKU for a product, by number for an order.
+#
+# Not by name: the first attempt at this diffed products by name and reported
+# three products missing. Two of them were the same products, renamed by the
+# client on his own server, and the report was wrong in the direction that costs
+# most, claiming loss where there was none.
+#
+# Not by id either: his dump comes from an older Spree, the upgrade renumbers
+# some tables, and an id that means one row on his server can mean another here.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+TRUTH="${1:-}"
+LIVE="${2:-}"
+if [[ -z "$TRUTH" || -z "$LIVE" ]]; then
+  echo "usage: script/reconcile_content <his_dump_db> <live_db>" >&2
+  exit 2
+fi
+
+# shellcheck source=/dev/null
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_HOST:?no SSH_HOST, source .estate.env}"
+: "${SSH_PORT:=22}"
+: "${SSH_KEY:?no SSH_KEY}"
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; YE=$'\033[33m'; R=$'\033[0m'
+else GR=''; RE=''; YE=''; R=''; fi
+
+WORK="${TMPDIR:-/tmp}/content.$$"
+mkdir -p "$WORK"
+trap 'rm -rf "$WORK"' EXIT
+
+# One row per line, natural key first, so `join` can pair the two sides up.
+pull() {
+  local db="$1" name="$2" sql="$3"
+  ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+    "docker exec estate-postgres psql -U postgres -At -F'|' -d $db -c \"$sql\"" 2>/dev/null \
+    | tr -d '\r' | grep -v '^$' | sort > "$WORK/$name.$db"
+}
+
+# Compare one aspect and print every row where the two sides disagree.
+compare() {
+  local name="$1" label="$2" sql="$3"
+  pull "$TRUTH" "$name" "$sql"
+  pull "$LIVE"  "$name" "$sql"
+
+  local a="$WORK/$name.$TRUTH" b="$WORK/$name.$LIVE"
+  if [[ ! -s "$a" && ! -s "$b" ]]; then
+    printf '  %-26s %s(khong doc duoc ca hai ben)%s\n' "$label" "$YE" "$R"
+    return
+  fi
+
+  # The key has to be unique, and this refuses to run when it is not.
+  #
+  # `join` pairs EVERY left row with EVERY right row sharing a key. A key that
+  # repeats therefore produces a cartesian product, and every crossed pair that
+  # is not identical is reported as a difference that does not exist.
+  #
+  # It happened here the first time this was pointed at au. One SKU carries three
+  # price rows, so eleven price differences were reported:
+  #
+  #   ECO-044/SP   cua ong 0.00    hien tai 35.00
+  #   ECO-044/SP   cua ong 35.00   hien tai 0.00     <- the same pair, reversed
+  #
+  # The set of prices was identical on both sides. Exactly one of the eleven was
+  # real. Acting on that report would have "fixed" ten things that were correct,
+  # on a live shop, which is the failure mode this whole exercise exists to avoid.
+  #
+  # So a repeated key is a bug in the query above, not a finding, and it stops
+  # here rather than being reported as data.
+  local dup
+  dup=$(cut -d'|' -f1 "$a" | sort | uniq -d | head -3 | tr '\n' ' ')
+  if [[ -n "${dup// /}" ]]; then
+    printf '  %-26s %sKHOA BI LAP: %s%s\n' "$label" "$RE" "$dup" "$R"
+    printf '      moi khoa phai ung voi dung mot dong. Gop lai bang string_agg.\n'
+    DIFFS=$((DIFFS + 1))
+    return
+  fi
+
+  local only_truth only_live changed
+  only_truth=$(comm -23 <(cut -d'|' -f1 "$a" | sort -u) <(cut -d'|' -f1 "$b" | sort -u))
+  only_live=$(comm -13 <(cut -d'|' -f1 "$a" | sort -u) <(cut -d'|' -f1 "$b" | sort -u))
+  changed=$(join -t'|' -j1 <(sort -t'|' -k1,1 "$a") <(sort -t'|' -k1,1 "$b") 2>/dev/null \
+    | awk -F'|' '{
+        k=$1; half=(NF-1)/2; l=""; r="";
+        for (i=2; i<=1+half; i++) l = l (i>2 ? "|" : "") $i;
+        for (i=2+half; i<=NF; i++) r = r (i>2+half ? "|" : "") $i;
+        if (l != r) printf "%s\n      cua ong : %s\n      hien tai: %s\n", k, l, r
+      }')
+
+  local n_ot n_ol n_ch
+  n_ot=$(printf '%s' "$only_truth" | grep -c . || true)
+  n_ol=$(printf '%s' "$only_live"  | grep -c . || true)
+  n_ch=$(printf '%s' "$changed" | grep -cE '^[^ ]' || true)
+
+  if [[ "$n_ot" -eq 0 && "$n_ol" -eq 0 && "$n_ch" -eq 0 ]]; then
+    printf '  %-26s %sgiong het%s  (%s dong)\n' "$label" "$GR" "$R" "$(wc -l < "$a" | tr -d ' ')"
+    return
+  fi
+
+  printf '  %-26s %s%s chi ben ong, %s chi ben minh, %s khac noi dung%s\n' \
+    "$label" "$YE" "$n_ot" "$n_ol" "$n_ch" "$R"
+  [[ "$n_ot" -gt 0 ]] && printf '%s\n' "$only_truth" | sed 's/^/      mat  : /'
+  [[ "$n_ol" -gt 0 ]] && printf '%s\n' "$only_live"  | sed 's/^/      them : /'
+  [[ "$n_ch" -gt 0 ]] && printf '%s\n' "$changed" | head -60 | sed 's/^/    /'
+  DIFFS=$((DIFFS + n_ot + n_ol + n_ch))
+}
+
+DIFFS=0
+echo "  so noi dung: ${TRUTH} (dump cua ong)  ->  ${LIVE} (dang chay)"
+echo
+
+compare products 'san pham (theo SKU)' \
+"SELECT v.sku, string_agg(p.name||' | '||p.slug||' | '||p.status, ' ;; ' ORDER BY p.id)
+ FROM spree_products p JOIN spree_variants v ON v.product_id=p.id AND v.is_master
+ WHERE p.deleted_at IS NULL GROUP BY v.sku ORDER BY 1"
+
+# Every price the SKU carries, gathered into one row and sorted, so the key is
+# unique and the comparison is between two SETS of prices rather than between two
+# arbitrary orderings of the same set.
+compare prices 'gia (theo SKU)' \
+"SELECT v.sku, string_agg(pr.amount::text||'/'||coalesce(pr.compare_at_amount::text,'-')||' '||pr.currency,
+                          ', ' ORDER BY pr.currency, pr.amount)
+ FROM spree_variants v JOIN spree_prices pr ON pr.variant_id=v.id
+ WHERE v.deleted_at IS NULL GROUP BY v.sku ORDER BY 1"
+
+compare shipcat 'nhom giao hang (theo SKU)' \
+"SELECT v.sku, string_agg(coalesce(sc.name,'(khong co)'), ', ' ORDER BY p.id)
+ FROM spree_products p JOIN spree_variants v ON v.product_id=p.id AND v.is_master
+ LEFT JOIN spree_shipping_categories sc ON sc.id=p.shipping_category_id
+ WHERE p.deleted_at IS NULL GROUP BY v.sku ORDER BY 1"
+
+compare stock 'ton kho (theo SKU)' \
+"SELECT v.sku, sum(si.count_on_hand)::text, bool_or(si.backorderable)::text
+ FROM spree_variants v JOIN spree_stock_items si ON si.variant_id=v.id
+ WHERE v.deleted_at IS NULL GROUP BY 1 ORDER BY 1"
+
+compare taxons 'danh muc (SKU + duong dan)' \
+"SELECT v.sku||' @ '||t.permalink, 'co'
+ FROM spree_products_taxons pt
+ JOIN spree_taxons t ON t.id=pt.taxon_id
+ JOIN spree_products p ON p.id=pt.product_id
+ JOIN spree_variants v ON v.product_id=p.id AND v.is_master
+ WHERE p.deleted_at IS NULL ORDER BY 1"
+
+compare orders 'don hoan tat (theo so don)' \
+"SELECT number, state, total::text, coalesce(completed_at::text,'-')
+ FROM spree_orders WHERE completed_at IS NOT NULL ORDER BY 1"
+
+compare shipmethods 'phuong thuc giao hang' \
+"SELECT sm.name, coalesce((SELECT c.type FROM spree_calculators c
+   WHERE c.calculable_id=sm.id AND c.calculable_type='Spree::ShippingMethod' LIMIT 1),'(khong co)')
+ FROM spree_shipping_methods sm WHERE sm.deleted_at IS NULL ORDER BY 1"
+
+compare zones 'vung giao hang' \
+"SELECT z.name, count(zm.id)::text
+ FROM spree_zones z LEFT JOIN spree_zone_members zm ON zm.zone_id=z.id
+ GROUP BY z.name ORDER BY 1"
+
+compare images 'anh san pham (SKU + so anh)' \
+"SELECT v.sku, count(a.id)::text
+ FROM spree_products p JOIN spree_variants v ON v.product_id=p.id AND v.is_master
+ LEFT JOIN spree_assets a ON a.viewable_type='Spree::Variant' AND a.viewable_id IN
+   (SELECT id FROM spree_variants WHERE product_id=p.id)
+ WHERE p.deleted_at IS NULL GROUP BY v.sku ORDER BY 1"
+
+echo
+if [[ "$DIFFS" -gt 0 ]]; then
+  echo "  ${YE}${DIFFS} khac biet.${R} Moi cai phai co ly do truoc khi goi la an toan."
+  exit 1
+fi
+echo "  ${GR}ok${R} — noi dung cua ong khong bi doi cho nao"

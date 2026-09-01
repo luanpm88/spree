@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Catch source the app loads that the deploy will not carry.
+
+    script/check_untracked_source
+
+`script/shop_host ship` builds the file list from `git ls-files`, plus a named
+set of gitignored assets. A file that is neither tracked nor named is simply not
+sent. The build succeeds, the image is fine, and the application is missing a
+file it needs.
+
+── it happened three times in one afternoon ─────────────────────────────────
+
+    a new controller     the route answered 500, uninitialized constant
+    a new view partial   every order email raised Missing partial
+    a new helper         same shape, caught before it shipped
+
+Each time the code was correct, the test against the running shop was correct,
+and the file simply was not there. Each time the fix was `git add`.
+
+This is the same trap as the client-data scanner, which read only tracked files
+and so could not see the file most likely to leak: the one written a minute ago.
+Both now look at what is about to be committed as well as what already is.
+
+── why it does not just add them ───────────────────────────────────────────
+
+Because "this file is source" is a judgement. A scratch file, a local
+experiment and a real controller all look the same to a script. It names them
+and stops, which takes a second to resolve and cannot quietly commit something
+that should not be in a public repository.
+"""
+
+import os
+import subprocess
+import sys
+
+# Directories whose contents the application loads at boot or render time.
+# Anything here that is not tracked will be missing on the server.
+#
+# storefront/src is here because the storefront build sends `git ls-files` too.
+# It was added after a new module under it was written, imported by a layout,
+# and left untracked: the build reached the server without it and failed on
+# "module not found", naming the importer rather than the missing file. Three
+# Ruby files had already been lost the same way in one afternoon, which is why
+# this script exists; the storefront simply was not in its list yet.
+WATCHED = ["app/", "lib/tasks/", "config/", "storefront/src/"]
+
+# Extensions that are actually loaded. A .md note beside a controller is not a
+# deploy problem, and flagging it would train people to ignore this.
+LOADED = (".rb", ".erb", ".rake", ".yml", ".yaml", ".ts", ".tsx", ".mjs")
+
+
+def git(*args):
+    return subprocess.run(
+        ["git", *args], capture_output=True, text=True, check=False
+    ).stdout.splitlines()
+
+
+def main():
+    if not os.path.isdir(".git"):
+        print("  not a git repository, nothing to check")
+        return 0
+
+    untracked = git("ls-files", "--others", "--exclude-standard")
+
+    missing = [
+        f
+        for f in untracked
+        if f.endswith(LOADED) and any(f.startswith(d) for d in WATCHED)
+    ]
+
+    print(f"  {len(untracked)} untracked file(s), {len(missing)} of them source the app loads")
+
+    if not missing:
+        print("\n  ok — every source file the deploy needs is tracked")
+        return 0
+
+    print()
+    for f in missing:
+        print(f"  {f}")
+    print(
+        f"\n  {len(missing)} file(s) would not reach the server.\n"
+        "\n  script/shop_host ship sends `git ls-files`. Untracked source is\n"
+        "  silently left behind, and the failure appears at runtime as a missing\n"
+        "  constant or a missing partial. Run `git add` on the ones that belong\n"
+        "  in the repository."
+    )
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

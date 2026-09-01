@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+#
+# Every shop's transactional mail carries that shop's own logo.
+#
+#   script/check_email_logo
+#   script/check_email_logo nz
+#
+# ── the bug this exists for, and the false green that hid it ────────────────
+#
+# The header partial had two sources for the logo: the store's uploaded
+# attachment, and a url the shop names in its own locale file. Which one wins is
+# a branch order, and the order was turned around once the attachments went
+# stale.
+#
+# It was turned around on one shop and never reached the other six, so on 1 Sep
+# three different shops were still attaching THE SAME uploaded image to their
+# order confirmations while each of the three had its own correct logo named in
+# its own locale file. The shop owner had already reported this once, on the one
+# shop that got fixed.
+#
+# ── why this reads the rendered mail and not the template ──────────────────
+#
+# The check that missed it for a week grepped the template for the string
+#
+#   if fallback
+#
+# which is a substring of
+#
+#   elsif fallback
+#
+# so the OLD order matched the test for the NEW order, and all seven shops
+# reported green while six were wrong. A grep for a fragment cannot tell an
+# order from its reverse.
+#
+# So this builds the real mail through Spree::OrderMailer, the same path
+# emails:smoke uses, and reads the img the customer would actually receive. It
+# never sets the locale: which locale the mailer runs under is part of what is
+# being measured, and a probe that sets it repairs the fault before measuring it.
+#
+# Two ways to fail:
+#
+#   1. the shop renders a logo that is not the one its own locale file names
+#   2. two shops render the same image, which is the shape the fault took
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+ONLY="${1:-}"
+
+# shellcheck source=/dev/null
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_HOST:?no SSH_HOST, source .estate.env}"
+: "${SSH_PORT:=22}"
+: "${SSH_KEY:?no SSH_KEY}"
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; YE=$'\033[33m'; R=$'\033[0m'
+else GR=''; RE=''; YE=''; R=''; fi
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+[[ -f "$ESTATE_FILE" ]] || { echo "  no .estate on this machine"; exit 0; }
+
+bad=0
+checked=0
+seen_file=$(mktemp)
+trap 'rm -f "$seen_file"' EXIT
+
+# No apostrophe anywhere in the Ruby below. One inside a single-quoted remote
+# argument ends the argument, and the command dies with no output, which reads
+# here as "the shop could not be measured" rather than as a broken probe.
+build_probe() {
+  ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+    "docker exec ${1}_web bin/rails runner '
+       order = Spree::Order.complete.order(:id).last || Spree::Order.order(:id).last
+       if order.nil?
+         print %q{<<L:NOORDER||:L>>}
+       else
+         mail = Spree::OrderMailer.confirm_email(order)
+         html = mail.html_part ? mail.html_part.body.to_s : mail.body.to_s
+         got  = html[/<img[^>]+src=\"([^\"]+)\"/i, 1].to_s
+         want = Spree.t(:shop_logo, scope: [:user_emails, :common], default: %q{}).to_s
+         print %q{<<L:} + got + %q{|} + want + %q{|} + I18n.locale.to_s + %q{:L>>}
+       end
+     ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<L:\(.*\):L>>.*/\1/p'
+}
+
+while IFS='|' read -r shop _rest; do
+  [[ -n "$shop" ]] || continue
+  case "$shop" in \#*) continue;; esac
+  [[ -z "$ONLY" || "$ONLY" == "$shop" ]] || continue
+
+  raw=$(build_probe "$shop")
+
+  # One retry before giving up on the shop.
+  #
+  # Seven containers each booting Rails in turn on a 16 GB box makes some of them
+  # slow, and the first shop in the list came back empty once while the identical
+  # command run by hand a minute later answered fine. An unmeasured shop here is
+  # a shop whose mail nobody looked at, so it is worth asking twice.
+  if [[ -z "$raw" ]]; then
+    sleep 5
+    raw=$(build_probe "$shop")
+  fi
+
+  if [[ -z "$raw" ]]; then
+    printf '  %-10s %s(the mail could not be built)%s\n' "$shop" "$YE" "$R"
+    continue
+  fi
+
+  got="${raw%%|*}"
+  rest="${raw#*|}"
+  want="${rest%%|*}"
+  loc="${rest##*|}"
+
+  if [[ "$got" == "NOORDER" ]]; then
+    printf '  %-10s %s(no order to build a mail from, not measured)%s\n' "$shop" "$YE" "$R"
+    continue
+  fi
+  checked=$((checked + 1))
+
+  if [[ -z "$got" ]]; then
+    printf '  %s%-10s the mail rendered with no logo at all%s\n' "$RE" "$shop" "$R"
+    bad=$((bad + 1)); continue
+  fi
+
+  # A shop with no shop_logo key of its own is a separate fault with its own
+  # gate, so this reports it rather than passing it as agreement with nothing.
+  if [[ -z "$want" ]]; then
+    printf '  %s%-10s no shop_logo key of its own, so the mail falls back%s\n' "$RE" "$shop" "$R"
+    bad=$((bad + 1)); continue
+  fi
+
+  base_got="${got##*/}"
+  base_want="${want##*/}"
+
+  # Same image in two shops. Recorded before the per-shop verdict so the second
+  # shop to render it is named alongside the first rather than on its own.
+  prior=$(grep -F "	${base_got}" "$seen_file" 2>/dev/null | head -1 | cut -f1)
+  printf '%s\t%s\n' "$shop" "$base_got" >> "$seen_file"
+
+  if [[ "$got" != "$want" ]]; then
+    printf '  %s%-10s renders %s but its own locale names %s%s\n' \
+      "$RE" "$shop" "$base_got" "$base_want" "$R"
+    bad=$((bad + 1))
+  elif [[ -n "$prior" ]]; then
+    printf '  %s%-10s renders %s, which %s renders too%s\n' \
+      "$RE" "$shop" "$base_got" "$prior" "$R"
+    bad=$((bad + 1))
+  else
+    printf '  %-10s ok   %s  (locale %s)\n' "$shop" "$base_got" "$loc"
+  fi
+done < <(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+
+echo
+if [[ $bad -gt 0 ]]; then
+  cat >&2 <<EOF
+${RE}FAILED${R}: $bad shop(s) mail a logo that is not their own.
+
+Nothing errors and the mail still sends, which is why this needs a gate: the
+customer receives a finished-looking confirmation carrying another shop's brand.
+
+The header is app/views/spree/shared/_email_logo.html.erb. The shop's own url
+from its locale file must be tried BEFORE the uploaded attachment, because an
+attachment goes stale silently and a locale file is the thing he edits.
+
+That file is gitignored and travels in CLIENT_ASSETS, so it reaches a shop only
+through the estate ship script, one shop at a time. Not script/deploy, which is
+built for the single-app reference box and knows nothing about /srv/<shop>:
+
+  script/commercial ship <shop> && script/commercial up <shop>
+
+A container copy fixes the running container and nothing else. It was done that
+way once, on one shop, and that is precisely why the other six kept the fault
+for a week: the copy is invisible to git, to the image and to this gate until
+the container is rebuilt, at which point it is gone.
+EOF
+  exit 1
+fi
+
+echo "  ${GR}ok${R} — $checked shop(s), each mailing its own logo, none shared"

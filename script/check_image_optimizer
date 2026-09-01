@@ -1,0 +1,228 @@
+#!/usr/bin/env node
+// Does this shop's image optimizer actually optimize?
+//
+//   script/check_image_optimizer                    every shop in .estate
+//   script/check_image_optimizer https://host ...   just these
+//
+// ── the failure this exists for ──────────────────────────────────────────────
+//
+// Next resizes images in a request handler and needs sharp to do it. The
+// standalone build did not carry sharp, because pnpm links it as a symlink into
+// .pnpm/ and the dependency tracer does not follow that into the output.
+//
+// Nothing failed. Nothing logged. /_next/image answered 200 to every request
+// and handed back the ORIGINAL file at every width. Measured on 25 August on
+// the running shops, before it was fixed:
+//
+//     hero-au.jpg  w=256   200  263,993 B  decoded 648 x 756
+//     hero-au.jpg  w=384   200  263,993 B  decoded 648 x 756
+//     hero-au.jpg  w=640   200  263,993 B  decoded 648 x 756
+//     the file on disk                     648 x 756, 263,993 B
+//
+// so a phone drawing that photograph 390px wide downloaded all 264 KB of it, on
+// all seven shops, for weeks. With sharp present the same three requests return
+// 11 KB, 18 KB and 33 KB of WebP at 256, 384 and 640 wide.
+//
+// It had a second symptom that was worse and stranger. A first request for an
+// uncached size could hang and never answer, and because Next dedupes
+// concurrent requests for one size, every later request for that same size hung
+// with it. Two were stuck when this was found, both 504 after 120 seconds, both
+// fine the moment the container restarted. The photograph simply never appeared
+// at that width, on that shop, until someone restarted it.
+//
+// A browser cannot tell you any of this. The page renders, the picture is
+// sharp, the screenshot is perfect. Only the bytes say what happened, which is
+// why this reads the bytes.
+//
+// ── what it asserts, per shop ────────────────────────────────────────────────
+//
+// 1. A request for a width well below the source returns FEWER bytes than the
+//    source. That is the whole point of the optimizer and it is what silently
+//    stopped.
+// 2. It answers within TIMEOUT_MS. A hang is the other half of the same fault.
+// 3. It is asked with a real browser's Accept header, because the optimizer
+//    keys its cache on that header and the failure only appeared with it.
+
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// What a browser sends. The stuck entries were only ever reachable with this
+// header, and a plain curl answered 200 in 1.7 seconds beside them, which is
+// how the fault stayed hidden from every hand check.
+const BROWSER_ACCEPT =
+  "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
+
+const TIMEOUT_MS = 30000;
+// A width far below any photograph here, so a working optimizer must shrink it.
+const SMALL = 256;
+// Below this the byte comparison stops meaning anything. A small flat PNG logo
+// re-encoded as WebP is often LARGER than the PNG, which is the encoder being
+// honest about a 6 KB file, not the optimizer failing. Those files still have
+// to come back converted, which the content type below asserts on every one.
+const WORTH_SHRINKING = 600;
+
+const C = process.stdout.isTTY
+  ? { dim: "\x1b[2m", red: "\x1b[31m", green: "\x1b[32m", off: "\x1b[0m" }
+  : { dim: "", red: "", green: "", off: "" };
+
+function shopsFromEstate() {
+  const file = join(ROOT, ".estate");
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter((l) => l.includes("|") && !l.trimStart().startsWith("#"))
+    .map((l) => l.split("|").map((c) => c.trim()))
+    .filter((c) => c.length >= 7 && (c[7] || c[5]))
+    .map((c) => ({ shop: c[0], host: (c[7] || `https://${c[5]}`).replace(/^(?!https?:)/, "https://") }));
+}
+
+/**
+ * How wide the file on disk is, from its own header.
+ *
+ * Needed because the assertion below only makes sense for a file WIDER than the
+ * width being asked for. A 32px favicon asked for at 256 is an upscale, and
+ * WebP of a tiny flat PNG comes back larger than the PNG: five of those were
+ * reported as "the optimizer is handing back the original" on the first run,
+ * which is a check inventing a fault out of its own threshold.
+ */
+function sourceWidth(rel) {
+  const file = join(ROOT, "storefront", "public", rel.replace(/^\//, ""));
+  if (!existsSync(file)) return null;
+  const b = readFileSync(file);
+  // PNG: width is a big-endian 32 bit at offset 16, inside the IHDR chunk.
+  if (b.length > 24 && b[0] === 0x89 && b[1] === 0x50) return b.readUInt32BE(16);
+  // JPEG: walk the segments to the first SOFn, whose width sits 5 bytes in.
+  if (b.length > 4 && b[0] === 0xff && b[1] === 0xd8) {
+    let i = 2;
+    while (i + 9 < b.length) {
+      if (b[i] !== 0xff) { i += 1; continue; }
+      const marker = b[i + 1];
+      const len = b.readUInt16BE(i + 2);
+      // SOF0..SOF3 and SOF5..SOF15, skipping the DHT/JPG/DAC markers among them.
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return b.readUInt16BE(i + 7);
+      }
+      i += 2 + len;
+    }
+  }
+  return null;
+}
+
+/** The brand images each shop ships. Read off disk so this never guesses. */
+function brandImages() {
+  const dir = join(ROOT, "storefront", "public", "brand");
+  if (!existsSync(dir)) return [];
+  return readFileSync(join(ROOT, "storefront", "src", "lib", "blocks", "content.ts"), "utf8")
+    .split("\n")
+    .flatMap((l) => l.match(/"\/brand\/[^"]+\.(?:jpg|jpeg|png)"/g) || [])
+    .map((s) => s.replace(/"/g, ""));
+}
+
+async function fetchImage(host, path, width) {
+  const url = `${host}/_next/image?url=${encodeURIComponent(path)}&w=${width}&q=75`;
+  const started = Date.now();
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { headers: { Accept: BROWSER_ACCEPT }, signal: ctl.signal });
+    const body = await res.arrayBuffer();
+    return {
+      status: res.status,
+      bytes: body.byteLength,
+      type: res.headers.get("content-type"),
+      ms: Date.now() - started,
+    };
+  } catch (e) {
+    return { status: 0, bytes: 0, type: null, ms: Date.now() - started, error: e.name };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const argHosts = process.argv.slice(2).filter((a) => a.startsWith("http"));
+const targets = argHosts.length
+  ? argHosts.map((h) => ({ shop: h.replace(/^https?:\/\//, "").split(".")[0], host: h }))
+  : shopsFromEstate();
+
+if (!targets.length) {
+  console.error("  no shops to check: pass hostnames, or add an .estate file");
+  process.exit(2);
+}
+
+const images = [...new Set(brandImages())];
+if (!images.length) {
+  console.error("  found no /brand/ images in content.ts, so there is nothing to measure");
+  process.exit(2);
+}
+
+let failures = 0;
+
+for (const { shop, host } of targets) {
+  console.log(`\n  ${shop}  ${C.dim}${host.replace(/^https?:\/\//, "")}${C.off}`);
+
+  // The full size first, as the size to beat. Asking for a width above the
+  // source is what the optimizer passes through untouched, so it is the honest
+  // baseline rather than the file on disk, which this host may not even have.
+  let checked = 0;
+  for (const path of images) {
+    // Only files genuinely wider than the width being asked for. Anything
+    // smaller cannot be shrunk by asking for 256, so a size comparison there
+    // measures the WebP encoder, not the optimizer.
+    const sw = sourceWidth(path);
+    const compareBytes = sw === null || sw >= WORTH_SHRINKING;
+    const full = await fetchImage(host, path, 3840);
+    if (full.status !== 200) continue; // this shop does not ship that image
+    const small = await fetchImage(host, path, SMALL);
+    checked += 1;
+
+    const name = path.replace("/brand/", "");
+    if (small.status !== 200) {
+      console.log(
+        `    ${C.red}FAIL${C.off}  ${name.padEnd(24)} w=${SMALL} answered ${small.error || small.status} after ${small.ms}ms`,
+      );
+      failures += 1;
+      continue;
+    }
+    const ratio = small.bytes / full.bytes;
+
+    // The direct evidence, and it needs no threshold. A working optimizer
+    // re-encodes to the best format the browser said it accepts. When sharp was
+    // missing every one of these came back as the SOURCE type, image/jpeg for a
+    // jpeg and image/png for a png, because the request handler had nothing to
+    // encode with and handed the file straight back.
+    const converted = /image\/(webp|avif)/.test(small.type || "");
+    // And the size, but only where a resize can actually save anything.
+    const shrank = !compareBytes || ratio <= 0.9;
+    const bad = !converted || !shrank;
+    if (bad) failures += 1;
+
+    const why = !converted
+      ? `   returned ${small.type}, so nothing re-encoded it`
+      : !shrank
+        ? "   same bytes as the full size, so nothing resized it"
+        : "";
+    console.log(
+      `    ${bad ? `${C.red}FAIL${C.off}` : `${C.green}ok  ${C.off}`}  ${name.padEnd(24)} ` +
+        `full ${String(full.bytes).padStart(7)} B  ->  w=${SMALL} ${String(small.bytes).padStart(7)} B ` +
+        `(${(100 * ratio).toFixed(0)}%${compareBytes ? "" : ", size not compared"})  ${small.type}  ${small.ms}ms${why}`,
+    );
+  }
+
+  if (!checked) {
+    console.log(`    ${C.red}no brand image on this shop answered at all${C.off}`);
+    failures += 1;
+  }
+}
+
+console.log();
+if (failures) {
+  console.log(`  ${C.red}${failures} image(s) are not being optimized${C.off}`);
+  console.log(
+    `  ${C.dim}the runtime image needs sharp: see the sharp stage in storefront/Dockerfile${C.off}`,
+  );
+  process.exit(1);
+}
+console.log(`  ${C.green}ok — every shop's optimizer is resizing, and none of them hang${C.off}`);

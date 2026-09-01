@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+#
+# Let a guest use a coupon code, by removing the rule that demands an account.
+#
+#   script/coupon_guest_access                 every shop, dry run
+#   script/coupon_guest_access nz              one shop, dry run
+#   APPLY=1 script/coupon_guest_access nz      remove the rule on that shop
+#   LIMIT=200 APPLY=1 script/coupon_guest_access nz   and cap total uses at 200
+#
+# ── what the client reported, and what it actually is ───────────────────────
+#
+# "When a customer gets a Coupon Code the customer can only use this if logged
+# in. We are having many customers not wishing to create an account."
+#
+# It is one promotion rule, Spree::Promotion::Rules::OneUsePerUser:
+#
+#   if order.user.present?
+#     ... refuse if this user has already used it ...
+#   else
+#     eligibility_errors.add(:base, eligibility_error_message(:no_user_specified))
+#   end
+#
+# A guest order has no user, so the else branch always fires. Measured on a real
+# guest order on a live shop:
+#
+#   eligible? = false
+#   "You need to login before applying this coupon code."
+#
+# ── the trade this makes, stated plainly ────────────────────────────────────
+#
+# The rule is doing two jobs at once: it blocks guests, AND it stops one customer
+# using the same code twice. Removing it does both. A code with no rule can be
+# used again and again, by anyone, including the same person.
+#
+# Spree's replacement that works for guests is usage_limit, a cap on TOTAL uses
+# across everybody. It is not the same protection, and it is the only one
+# available without an account. Pass LIMIT= to set it in the same run.
+#
+# Nothing is destroyed: the rule row is deleted, and it is one row with no
+# settings of its own, so putting it back is adding it again in the admin. The
+# database is dumped first regardless.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+ONLY="${1:-}"
+APPLY="${APPLY:-0}"
+LIMIT="${LIMIT:-}"
+
+# shellcheck source=/dev/null
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_HOST:?no SSH_HOST, source .estate.env}"
+: "${SSH_PORT:=22}"
+: "${SSH_KEY:?no SSH_KEY}"
+eval K="$SSH_KEY"; P=$(printf '%s' "$SSH_PORT" | tr -d '"')
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; YE=$'\033[33m'; DIM=$'\033[2m'; R=$'\033[0m'
+else GR=''; RE=''; YE=''; DIM=''; R=''; fi
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+[[ -f "$ESTATE_FILE" ]] || { echo "  no .estate on this machine"; exit 0; }
+
+rsh() { ssh -n -i "$K" -p "$P" -o BatchMode=yes "$SSH_HOST" "$@"; }
+
+RULE='Spree::Promotion::Rules::OneUsePerUser'
+total=0
+changed=0
+
+[[ "$APPLY" == "1" ]] || echo "  ${DIM}dry run, nothing is changed. Add APPLY=1 to do it.${R}"
+
+while IFS='|' read -r shop _rest; do
+  [[ -n "$shop" ]] || continue
+  case "$shop" in \#*) continue;; esac
+  [[ -z "$ONLY" || "$ONLY" == "$shop" ]] || continue
+
+  rows=$(rsh "docker exec estate-postgres psql -U postgres -At -F'|' -d ${shop}_shop -c \"
+    SELECT p.id, coalesce(p.code,'(no code)'), p.name,
+           coalesce(p.usage_limit::text,'none'),
+           (SELECT count(*) FROM spree_order_promotions op WHERE op.promotion_id=p.id)
+    FROM spree_promotions p
+    WHERE EXISTS (SELECT 1 FROM spree_promotion_rules r
+                  WHERE r.promotion_id=p.id AND r.type='$RULE')
+    ORDER BY p.id\"" 2>/dev/null | tr -d '\r' | grep -v '^$')
+
+  if [[ -z "$rows" ]]; then
+    printf '  %-10s %sno coupon on this shop asks for an account%s\n' "$shop" "$GR" "$R"
+    continue
+  fi
+
+  printf '  %s\n' "$shop"
+  n=0
+  while IFS='|' read -r pid code name lim used; do
+    [[ -n "$pid" ]] || continue
+    n=$((n + 1)); total=$((total + 1))
+    printf '    %-16s %-32s limit=%-6s used=%s\n' "$code" "${name:0:32}" "$lim" "$used"
+  done <<< "$rows"
+
+  if [[ "$APPLY" == "1" ]]; then
+    stamp=$(rsh "date +%Y%m%d-%H%M%S" | tr -d '\r')
+    dump="/root/${shop}-before-coupon-${stamp}.sql.gz"
+    rsh "docker exec estate-postgres pg_dump -U postgres --no-owner --no-acl ${shop}_shop | gzip -9 > $dump" \
+      || { printf '    %sbackup failed, nothing changed on %s%s\n' "$RE" "$shop" "$R"; continue; }
+    rsh "gzip -t $dump" || { printf '    %sbackup will not read back, nothing changed%s\n' "$RE" "$R"; continue; }
+
+    # Through Rails, so the promotion's own cache and counters keep up.
+    out=$(rsh "docker exec ${shop}_web bin/rails runner '
+      gone = 0
+      Spree::Promotion.joins(:promotion_rules).where(spree_promotion_rules: { type: %q{$RULE} }).distinct.each do |p|
+        p.promotion_rules.where(type: %q{$RULE}).destroy_all
+        ${LIMIT:+p.update_column(:usage_limit, $LIMIT)}
+        gone += 1
+        puts %q{DONE|} + p.code.to_s
+      end
+      puts %q{TOTAL|} + gone.to_s
+    ' 2>/dev/null" 2>/dev/null | tr -d '\r' | grep -E '^(DONE|TOTAL)\|')
+
+    printf '%s\n' "$out" | grep '^DONE|' | while IFS='|' read -r _ c; do
+      printf '    %sok%s   %s can now be used without an account\n' "$GR" "$R" "$c"
+    done
+    left=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${shop}_shop -c \"
+      SELECT count(*) FROM spree_promotion_rules WHERE type='$RULE'\"" 2>/dev/null | tr -d '\r ')
+    if [[ "${left:-1}" == "0" ]]; then
+      printf '    %sok%s   no rule left on this shop, copy at %s\n' "$GR" "$R" "$dump"
+      changed=$((changed + n))
+    else
+      printf '    %s%s rule(s) still there. Copy at %s%s\n' "$RE" "$left" "$dump" "$R"
+    fi
+  fi
+done < <(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+
+echo
+if [[ "$APPLY" != "1" ]]; then
+  echo "  $total coupon(s) currently require an account."
+  cat <<EOF
+
+  ${YE}Before removing them, know what goes with them.${R}
+  The rule blocks guests AND stops one customer using a code twice. Removing it
+  does both, so a code becomes reusable by anyone, repeatedly. The only limit
+  that works for guests is a cap on total uses:
+
+    LIMIT=200 APPLY=1 script/coupon_guest_access <shop>
+
+  Without LIMIT the codes become unlimited.
+EOF
+  exit 0
+fi
+echo "  ${GR}done${R} — $changed coupon(s) opened to guests"

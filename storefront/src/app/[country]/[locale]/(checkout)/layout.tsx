@@ -5,17 +5,21 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CheckoutProvider,
   CheckoutSummary,
   useCheckout,
 } from "@/contexts/CheckoutContext";
-import { POLICY_LINKS } from "@/lib/constants/policies";
+import { shopBrand } from "@/lib/blocks/brand";
+import { getPolicies } from "@/lib/data/policies";
 import { getStoreName } from "@/lib/store";
 import { extractBasePath } from "@/lib/utils/path";
 
 const storeName = getStoreName();
+// Read at module scope, like storeName above. Both come from build-time
+// environment, so there is nothing per-request about either.
+const logoUrl = process.env.NEXT_PUBLIC_LOGO_URL || shopBrand().logo || "";
 
 function CheckoutHeader() {
   const pathname = usePathname();
@@ -24,15 +28,37 @@ function CheckoutHeader() {
 
   return (
     <header className="flex items-center justify-between h-16">
+      {/* The shop's own mark, the same source the site header uses.
+
+          This was hardcoded to /spree.png, the FRAMEWORK's logo, so every shop
+          built from this storefront wore Spree's mark on its checkout. The site
+          header was converted months ago and this one was missed, which is why
+          it survived: nothing walks the checkout, because reaching it needs a
+          signed-in account and a cart.
+
+          He found it and reported it as "Logo at the top is not showing", and
+          not showing is exactly right: measured on the wholesale shop, that
+          request answered 400 with naturalWidth 0, so the page rendered the alt
+          text where the logo belongs. Two of them, header and footer.
+
+          Falls back to the shop's name as text rather than to somebody else's
+          logo, which is never wrong. */}
       <Link href={basePath || "/"} className="flex items-center space-x-2">
-        <Image
-          src="/spree.png"
-          alt={storeName}
-          width={90}
-          height={32}
-          fetchPriority="high"
-          loading="eager"
-        />
+        {logoUrl ? (
+          <Image
+            src={logoUrl}
+            alt={storeName}
+            width={240}
+            height={38}
+            className="h-8 w-auto max-w-[190px] object-contain"
+            fetchPriority="high"
+            loading="eager"
+          />
+        ) : (
+          <span className="text-lg font-bold tracking-tight truncate">
+            {storeName}
+          </span>
+        )}
       </Link>
       <Link
         href={basePath || "/"}
@@ -50,21 +76,47 @@ function CheckoutFooter() {
   const pathname = usePathname();
   const basePath = extractBasePath(pathname);
   const t = useTranslations("checkoutLayout");
-  const tp = useTranslations("policies");
+
+  // Fetched rather than listed in the code. The list that used to be here named
+  // two policies the client's store does not have, so this footer carried two
+  // links to a page that said it did not exist. Slugs are store data and the shop
+  // owner can rename them in the admin at any time.
+  //
+  // An effect because this whole module is a client component and the getter is a
+  // server action. Synchronising with the network is what effects are still for.
+  // The links appearing a moment after the rest of the footer is the right trade
+  // against restructuring the checkout shell.
+  const [policies, setPolicies] = useState<{ slug: string; name: string }[]>(
+    [],
+  );
+  useEffect(() => {
+    let live = true;
+    getPolicies()
+      .then((list) => {
+        if (live) setPolicies(list);
+      })
+      .catch(() => {
+        // A checkout that fails because its footer could not list policies would
+        // be a worse outcome than a checkout with no policy links.
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   return (
     <footer className="py-4 text-xs text-gray-500 border-t border-gray-200 mt-auto flex flex-wrap items-center gap-x-3 gap-y-1">
       <p>
         {t("allRightsReserved", { year: new Date().getFullYear(), storeName })}
       </p>
-      {POLICY_LINKS.map((policy) => (
+      {policies.map((policy) => (
         <Link
           key={policy.slug}
           href={`${basePath}/policies/${policy.slug}`}
           target="_blank"
           className="text-gray-500 underline hover:text-gray-700"
         >
-          {tp(policy.nameKey)}
+          {policy.name}
         </Link>
       ))}
     </footer>

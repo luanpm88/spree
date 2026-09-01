@@ -13,4 +13,11 @@
 
 <%= Spree.t('customer_mailer.welcome_email.expiry') %>
 <% end -%>
+
+<%= Spree.t(:owner_name, scope: [:user_emails, :common]) %>
+<%= Spree.t(:owner_title, scope: [:user_emails, :common]) %>
+<% slogan = Spree.t(:slogan, scope: [:user_emails, :common], default: '') -%>
+<% if slogan.present? -%>
+<%= slogan %>
+<% end -%>
 <% end %>

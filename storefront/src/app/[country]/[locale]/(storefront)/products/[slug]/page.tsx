@@ -2,9 +2,11 @@ import type { Category } from "@spree/sdk";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Breadcrumbs } from "@/components/navigation/Breadcrumbs";
+import { ProductReviews } from "@/components/products/ProductReviews";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { getCachedProduct, PRODUCT_PAGE_EXPAND } from "@/lib/data/cached";
 import { generateProductMetadata } from "@/lib/metadata/product";
+import { basePathFor } from "@/lib/routing";
 import {
   buildBreadcrumbJsonLd,
   buildCanonicalUrl,
@@ -49,7 +51,7 @@ export default async function ProductPage({
 }: ProductPageProps) {
   const { country, locale, slug } = await params;
   const { category_id } = await searchParams;
-  const basePath = `/${country}/${locale}`;
+  const basePath = basePathFor(country, locale);
 
   let product;
   try {
@@ -95,6 +97,8 @@ export default async function ProductPage({
         )}
       </div>
       <ProductDetails product={product} basePath={basePath} />
+      {/* Renders nothing when the product has no reviews. See the component. */}
+      <ProductReviews slug={product.slug} locale={locale} />
     </>
   );
 }

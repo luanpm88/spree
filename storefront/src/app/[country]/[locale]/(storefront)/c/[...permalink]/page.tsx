@@ -10,6 +10,7 @@ import { buildBreadcrumbJsonLd } from "@/lib/seo";
 import { getStoreUrl } from "@/lib/store";
 import { parseListingSearchParams } from "@/lib/utils/listing-search-params";
 import { CategoryBanner } from "./CategoryBanner";
+import { basePathFor } from "@/lib/routing";
 
 interface CategoryPageProps {
   params: Promise<{
@@ -34,7 +35,7 @@ export default async function CategoryPage({
   const { country, locale, permalink } = await params;
   const rawSearchParams = await searchParams;
   const fullPermalink = permalink.join("/");
-  const basePath = `/${country}/${locale}`;
+  const basePath = basePathFor(country, locale);
 
   let category;
   try {

@@ -2,9 +2,12 @@ import type { Category } from "@spree/sdk";
 import Link from "next/link";
 import { connection } from "next/server";
 import { cache, Suspense } from "react";
+import { AnnouncementBar } from "@/components/layout/AnnouncementBar";
 import { Footer, FooterCategoryLinks } from "@/components/layout/Footer";
 import { Header, HeaderMobileMenu } from "@/components/layout/Header";
 import { getCategories } from "@/lib/data/categories";
+import { basePathFor } from "@/lib/routing";
+import { enforceShopGate } from "@/lib/spree/shop-gate";
 
 interface StorefrontLayoutProps {
   children: React.ReactNode;
@@ -31,7 +34,11 @@ function MobileNavigationFallback() {
 function FooterCategoryLinksFallback() {
   return (
     <li aria-hidden="true">
-      <span className="block h-4 w-24 rounded bg-white/10 animate-pulse motion-reduce:animate-none" />
+      {/* currentColor at low opacity, not a fixed white. A white bar at 10%
+          is a reasonable placeholder on the wholesale shop's dark footer and
+          all but invisible on the retail shops, whose footer is light grey.
+          Following the text colour makes one bar work on both. */}
+      <span className="block h-4 w-24 rounded bg-current opacity-10 animate-pulse motion-reduce:animate-none" />
     </li>
   );
 }
@@ -49,7 +56,11 @@ const getRootCategories = cache(async (country: string, locale: string) => {
   return getCategories(
     {
       depth_eq: 0,
-      expand: ["children.children"],
+      // Four levels, not three. His navigation runs Categories > Bottles & Cups >
+      // Single Wall Bottles > the individual sizes, and stopping a level short
+      // dropped every leaf: the menu showed the groups and none of the products
+      // people actually look for. Found by diffing his live pages against these.
+      expand: ["children.children.children"],
     },
     { country, locale },
   )
@@ -128,10 +139,43 @@ export default async function StorefrontLayout({
   params,
 }: StorefrontLayoutProps) {
   const { country, locale } = await params;
-  const basePath = `/${country}/${locale}`;
+  const basePath = basePathFor(country, locale);
+
+  // A shop that may not be browsed without an account checks that here, where
+  // the session is verified against the API, rather than trusting the cookie
+  // the middleware had to take on faith. Returns immediately on an open shop,
+  // so the five retail shops pay nothing for it. See lib/spree/shop-gate.ts.
+  const gate = await enforceShopGate(basePath);
+
+  /**
+   * On a closed shop, a stranger only ever reaches the sign-in pages and the
+   * four policies. Those render here, inside the shop's own chrome, and that
+   * chrome is not neutral: the header carries the whole category tree and a
+   * search box, and the footer repeats the categories. Handing all of that to
+   * someone with no account undoes the gate quietly, because nobody thinks of
+   * a header as a page.
+   *
+   * So they get the shop's name, the page, and nothing that describes what it
+   * sells. A signed-in wholesale customer sees the full navigation, and the
+   * five open shops never take this branch at all.
+   *
+   * The footer goes with it, at his ask on 20 Aug. It carried the same category
+   * links a second time, so leaving it in place would have handed a stranger the
+   * catalogue underneath the sign-in form. The page ends at the form.
+   */
+  if (gate.gated && !gate.signedIn) {
+    return (
+      <>
+        <Header basePath={basePath} locale={locale as Locale} />
+        <main className="flex-1">{children}</main>
+      </>
+    );
+  }
 
   return (
     <>
+      {/* Above the header, which is where his current shop puts it. */}
+      <AnnouncementBar locale={locale as Locale} />
       <Header
         basePath={basePath}
         locale={locale as Locale}

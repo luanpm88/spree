@@ -5,6 +5,7 @@ import { resolveCurrency } from "@/lib/data/markets";
 import { getProductFilters, getProducts } from "@/lib/data/products";
 import { generateProductsMetadata } from "@/lib/metadata/products";
 import { parseListingSearchParams } from "@/lib/utils/listing-search-params";
+import { basePathFor } from "@/lib/routing";
 
 interface ProductsPageProps {
   params: Promise<{
@@ -27,7 +28,7 @@ export default async function ProductsPage({
 }: ProductsPageProps) {
   const { country, locale } = await params;
   const rawSearchParams = await searchParams;
-  const basePath = `/${country}/${locale}`;
+  const basePath = basePathFor(country, locale);
   const currency = await resolveCurrency(country);
 
   const listingState = parseListingSearchParams(rawSearchParams);

@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Prove the page copy's inline markup is closed, before it prints itself at him.
+
+    script/check_copy_markup
+
+The storefront's copy carries formatting as markers rather than as HTML, so the
+content file can never inject a tag. `**bold**`, `*italic*` and `[label](url)`
+are turned into elements by components/blocks/Inline.tsx.
+
+Inline runs per array entry, and that is the whole failure this gate exists for.
+
+── the failure it caught, on 17 Aug ─────────────────────────────────────────
+
+The copy was pulled off the client's own live pages. A line break inside a link
+label came across as a paragraph break, so one entry ended with
+
+    "Please visit our support portal: [https://help.example.com",
+
+and the next began with
+
+    "](https://help.example.com)",
+
+Neither half matches the link pattern on its own, so both printed their own
+brackets on the page. Four of them across the file, on two shops. The client
+found one and sent a screenshot captioned "FAQ last answer"; the other three
+were still sitting there on shops he had not looked at yet.
+
+Nothing failed. No error, no warning, no log line. The page renders, the FAQ
+opens, and the answer reads `[https://...](https://...)` to a customer.
+
+── why a gate and not a careful read ───────────────────────────────────────
+
+The content file is 67 kB of the client's own words and it is regenerated every
+time a page is pulled off his site, so the same break arrives again the next
+time one of his paragraphs wraps inside a link. A person re-reading 1400 strings
+looking for an unbalanced bracket is a person who will miss one.
+"""
+
+import glob
+import re
+import sys
+
+# Any file that holds page copy as an array of marker-bearing strings.
+TARGETS = [
+    "storefront/src/lib/blocks/content.ts",
+    "storefront/src/lib/blocks/content.example.ts",
+]
+
+# One entry of a string array, with or without its trailing comma. Deliberately
+# not a TypeScript parse: the check has to run with no toolchain installed, and
+# every string this matters for is written on one line.
+ENTRY = re.compile(r'^\s*"(.*?)",?\s*$')
+CLOSED_LINK = re.compile(r"\[[^\]]*\]\([^)]*\)")
+
+
+def problems(text):
+    """Return the reasons this one string is broken, if any."""
+    found = []
+    # A `[` that never gets its `](...)`. Count the openers that are not part of
+    # a complete link rather than matching brackets, because a label may legally
+    # contain neither.
+    if text.count("[") > len(CLOSED_LINK.findall(text)):
+        found.append("link opened and never closed")
+    if text.lstrip().startswith("]("):
+        found.append("orphan link target, the label is on the line before")
+    # An odd number of ** means one run is unterminated, which prints the stars.
+    if text.count("**") % 2:
+        found.append("unbalanced ** run")
+    # A stray single * that is not part of a ** pair and not a closed italic.
+    without_bold = re.sub(r"\*\*[^*]+\*\*", "", text)
+    if len(re.sub(r"\*[^*]+\*", "", without_bold).split("*")) > 1:
+        found.append("unbalanced * run")
+    return found
+
+
+def main():
+    files = [f for pattern in TARGETS for f in glob.glob(pattern)]
+    if not files:
+        print("no copy files on this machine, nothing to check")
+        return 0
+
+    broken = []
+    checked = 0
+    for path in files:
+        with open(path, encoding="utf-8") as handle:
+            for number, line in enumerate(handle, 1):
+                match = ENTRY.match(line.rstrip("\n"))
+                if not match:
+                    continue
+
+                # A tracking snippet is code, not copy.
+                #
+                # One shop's entry carries a chat widget's <script> block, and
+                # JavaScript is full of brackets and parentheses: the check read
+                # `(function(d,t)` as a link label opened and never closed and
+                # reported it as text that would print its own markers. It would
+                # not; it never reaches a paragraph. A false alarm here is worse
+                # than in most gates, because this one is read by whoever is
+                # about to paste the client's copy in, and a check that cries
+                # wolf on its first line is a check they will stop reading.
+                if "<script" in match.group(1) or "</script" in match.group(1):
+                    continue
+
+                checked += 1
+                for reason in problems(match.group(1)):
+                    broken.append((path, number, reason, match.group(1)))
+
+    print(f"  {checked} copy strings across {len(files)} file(s)")
+
+    if not broken:
+        print("\n  ok — every bold run, italic run and link is closed")
+        return 0
+
+    print()
+    for path, number, reason, text in broken:
+        print(f"  {path}:{number}")
+        print(f"      {reason}")
+        print(f"      {text[:100]}")
+
+    print(
+        f"\n  {len(broken)} string(s) would print their own markers on the page.\n"
+        "\n  A link split across two entries is joined into one. Inline runs per\n"
+        "  entry, so a label and its target must sit in the same string."
+    )
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

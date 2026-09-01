@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+#
+# Every product image, fetched from the network path the SERVER uses.
+#
+#   script/check_image_origin <shop> [https://host]
+#
+# ── why this is not the same as opening the shop ─────────────────────────────
+#
+# Next optimises images on the server. The browser asks our box for
+# /_next/image?url=<origin>, and our box fetches <origin> itself. That fetch
+# leaves from the server, so it resolves at the server's own Cloudflare edge,
+# which is not the edge a person testing from a laptop reaches.
+#
+# On 27 Aug that difference hid a live fault for hours. The same URL, at the same
+# moment:
+#
+#   from a laptop        200  cf-cache-status: HIT   age 186
+#   from the server      404  cf-cache-status: HIT   age 16140
+#
+# The edge nearest the server was still serving a 404 it had cached before the
+# fix. Every visitor anywhere saw a blank image, because the optimiser always
+# takes the server's path, and every check run from a laptop said the shop was
+# perfect. Ten of 104 image URLs were in that state on one shop and none on
+# another, so it cannot be reasoned about either: it has to be asked.
+#
+# Opening the shop in a browser is still necessary and still not sufficient. A
+# lazy image below the fold that nobody scrolled to is not fetched at all, and an
+# image the browser already holds is not re-fetched. This walks the pages, takes
+# every candidate URL out of src AND srcset, and then asks the server about each
+# one from inside the storefront container.
+#
+# ── what a failure here means ────────────────────────────────────────────────
+#
+# Not "an image is missing". The origin is almost always fine and the file is on
+# disk. It means an edge is holding an error, and the remedy is a cache purge on
+# that hostname, which is the client's to do.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+SHOP="${1:-}"
+HOST="${2:-}"
+[[ -n "$SHOP" ]] || { echo "usage: script/check_image_origin <shop> [https://host]" >&2; exit 2; }
+
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_KEY:?SSH_KEY is not set — see .estate.env}"
+: "${SSH_PORT:?}" ; : "${SSH_HOST:?}"
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+[[ -f "$ESTATE_FILE" ]] || { echo "no .estate in this checkout" >&2; exit 1; }
+
+if [[ -z "$HOST" ]]; then
+  HOST=$(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep "^$SHOP|" | cut -d'|' -f8)
+  [[ -n "$HOST" ]] || { echo "no live hostname for $SHOP in $ESTATE_FILE" >&2; exit 1; }
+fi
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+LIST="$WORK/urls.txt"
+
+# ── collect ──────────────────────────────────────────────────────────────────
+
+echo "  sweeping $HOST for image URLs"
+# The sweep is a file in this repository, not a temp one. Node resolves
+# `playwright` from node_modules upward from the file, so a script written to
+# /tmp cannot import it: the sweep printed nothing and this script read the empty
+# list as "not one image URL", on a shop with 46 good photographs.
+node script/image_origin_sweep.mjs "$HOST" "$SHOP" > "$LIST" 2>"$WORK/sweep.err"
+if [[ ! -s "$LIST" && -s "$WORK/sweep.err" ]]; then
+  echo "  the sweep itself failed, so this proves nothing about the shop:" >&2
+  head -4 "$WORK/sweep.err" >&2
+  exit 1
+fi
+COUNT=$(grep -c . "$LIST" || true)
+if [[ "${COUNT:-0}" -eq 0 ]]; then
+  echo "  FAIL  not one image URL on this shop. That is the blank-thumbnail fault, not an edge problem." >&2
+  exit 1
+fi
+echo "  $COUNT distinct image URL(s)"
+
+# ── ask the server ───────────────────────────────────────────────────────────
+scp -q -i "$SSH_KEY" -P "$SSH_PORT" "$LIST" "$SSH_HOST:/tmp/imgcheck_$SHOP.txt" || { echo "  could not copy the list to the server" >&2; exit 1; }
+
+RESULT=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+  "docker cp /tmp/imgcheck_$SHOP.txt ${SHOP}_storefront:/tmp/imgcheck.txt >/dev/null 2>&1 && docker exec ${SHOP}_storefront node -e \"
+const fs=require('fs');
+(async () => {
+  const urls = fs.readFileSync('/tmp/imgcheck.txt','utf8').split('\n').filter(u => u.startsWith('http'));
+  let ok = 0; const bad = [];
+  for (const u of urls) {
+    try {
+      const r = await fetch(u);
+      if (r.status >= 400) bad.push(r.status + ' cf=' + r.headers.get('cf-cache-status') + ' age=' + r.headers.get('age') + ' ' + decodeURIComponent(u.split('/').pop()).slice(0,44));
+      else ok++;
+    } catch (e) { bad.push('ERR ' + e.message.slice(0,40)); }
+  }
+  console.log('COUNT ' + ok + ' ' + urls.length);
+  bad.forEach(b => console.log('BAD ' + b));
+})();
+\"" 2>&1)
+
+echo "$RESULT" | grep '^COUNT' | awk '{printf "  reachable from the server: %s of %s\n", $2, $3}'
+BADN=$(echo "$RESULT" | grep -c '^BAD' || true)
+
+if [[ "${BADN:-0}" -gt 0 ]]; then
+  echo "$RESULT" | grep '^BAD' | sed 's/^BAD /    /'
+  cat >&2 <<EOF
+
+FAILED: $BADN image URL(s) answer 4xx on the path the server uses, while the shop
+looks correct from here.
+
+cf=HIT with a large age means an edge is serving an error it cached before the
+origin was fixed. The origin is fine; the cache is not. Ask him to purge the
+cache for the API hostname of this shop. It clears on its own eventually, and
+until it does those images are blank for every visitor, everywhere.
+EOF
+  exit 1
+fi
+
+echo "  ok    every image URL resolves from the server's own network path"

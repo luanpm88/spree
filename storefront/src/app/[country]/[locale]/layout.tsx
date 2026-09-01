@@ -139,7 +139,25 @@ export async function CountryLocaleLayoutContent({
 
   // Validate that the URL country belongs to an available market.
   // If not, redirect server-side to avoid SSR with wrong prices.
-  const currentMarket = findMarketForCountry(markets, country);
+  let currentMarket = findMarketForCountry(markets, country);
+
+  // A shop whose configured country is not one of its Market's countries.
+  //
+  // One of these shops sells to 34 countries and is not based in any of them,
+  // so it is addressed by its own name rather than by an ISO pair, the same way
+  // the others happen to be addressed by theirs. No Market lists that name, so
+  // the lookup failed, the layout redirected at the default Market's first
+  // country, and the page answered 307 to itself until the browser stopped.
+  //
+  // Narrow on purpose: this only applies when the segment is the country this
+  // build was made for. Any other unknown country still redirects, because that
+  // is a visitor asking for a market the shop does not serve.
+  if (
+    !currentMarket &&
+    country.toLowerCase() === getDefaultCountry().toLowerCase()
+  ) {
+    currentMarket = markets.find((m) => m.default) ?? markets[0];
+  }
 
   if (!currentMarket) {
     const defaultTarget = getDefaultMarketLocaleTarget(markets);

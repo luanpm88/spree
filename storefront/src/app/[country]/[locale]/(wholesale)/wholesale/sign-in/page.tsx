@@ -3,6 +3,7 @@ import { getCustomer } from "@/lib/data/customer";
 import { getWholesaleChannel } from "@/lib/data/wholesale";
 import { safeRedirectPath } from "@/lib/utils/path";
 import { WholesaleSignInWall } from "../_components/WholesaleSignInWall";
+import { basePathFor } from "@/lib/routing";
 
 interface WholesaleSignInPageProps {
   params: Promise<{ country: string; locale: string }>;
@@ -25,7 +26,7 @@ export default async function WholesaleSignInPage({
 }: WholesaleSignInPageProps) {
   const { country, locale } = await params;
   const { redirect: redirectParam } = await searchParams;
-  const basePath = `/${country}/${locale}`;
+  const basePath = basePathFor(country, locale);
 
   const [customer, channel] = await Promise.all([
     getCustomer(),

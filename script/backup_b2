@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+#
+# Back every shop's database up to Backblaze B2, and prove one comes back.
+#
+#   script/backup_b2 run            dump every shop, upload, verify each object
+#   script/backup_b2 verify         list what is in the bucket, newest first
+#   script/backup_b2 restore <shop> download the newest dump for that shop and
+#                                   restore it into a SCRATCH database, count
+#                                   rows against the live one, then drop it
+#
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# Measured on 26 August, before any of this: the estate server had no backup of
+# any kind. No rclone, no script, no cron entry. The only dumps were ones taken
+# by hand, and they sat on the same disk as the databases they protect. Seven
+# shops were days from going live in that state.
+#
+# The client set up two Backblaze buckets and sent the keys, one bucket for this
+# estate's server and one for his commercial server. Both were empty.
+#
+# ── the part that is not optional ────────────────────────────────────────────
+#
+# `restore` is the point of the whole file. A dump that has never been restored
+# is not a backup, it is a file. This project has already shipped a dump routine
+# that reported success and wrote six empty files, because pg_dump was given a
+# database name that did not exist and its error went to a suppressed stderr.
+#
+# So: every upload is read back and its size compared, and `restore` takes the
+# newest object for a shop, restores it into a database with a different name,
+# counts rows in tables that would be empty if the restore had silently failed,
+# and drops it again. It prints the numbers rather than the word ok.
+#
+# ── the credentials ──────────────────────────────────────────────────────────
+#
+# In .b2.env here, gitignored, mode 600, and written onto the server as an
+# rclone config so they never appear on a command line. He pasted them in plain
+# text in a tracker comment, so they are to be rotated once this has been proved.
+#
+# no_check_bucket in that config is load bearing: his key is scoped to one
+# bucket, which is the correct way to issue one, and rclone's default existence
+# check is a bucket-level call the key is not entitled to. Without it every copy
+# fails with "AccessDenied: not entitled", which reads exactly like a bad key.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_OFF=$'\e[0m'
+
+[[ -f .b2.env ]]     || { echo "  no .b2.env — the bucket credentials are not on this machine"; exit 2; }
+[[ -f .estate.env ]] || { echo "  no .estate.env — cannot reach the server"; exit 2; }
+set -a; . ./.b2.env; set +a
+set -a; . ./.estate.env; set +a
+eval SSH_KEY_E="$SSH_KEY"; SSH_PORT_E=$(echo "$SSH_PORT" | tr -d '"')
+rsh() { ssh -i "$SSH_KEY_E" -p "$SSH_PORT_E" -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" "$@"; }
+
+BUCKET="${B2_ESTATE_BUCKET:?}"
+PG=estate-postgres
+STAMP=$(date -u +%Y%m%d-%H%M%S)
+
+# The databases, asked of the containers rather than read from a file.
+#
+# The estate file's third column says <shop>_migrate and every container is
+# actually on <shop>_shop. Dumping the names in that column produced six
+# zero-byte files with the error suppressed, which is the exact failure this
+# whole script is written against.
+live_dbs() {
+  rsh "docker exec $PG psql -U postgres -lqt | cut -d'|' -f1 | sed 's/^ *//;s/ *\$//' | grep -E '_shop\$'" </dev/null 2>/dev/null
+}
+
+cmd_run() {
+  echo "==> Dumping every shop and sending it to the bucket"
+  local dbs; dbs=$(live_dbs)
+  [[ -n "$dbs" ]] || { printf '  %sno databases matched, refusing to report success%s\n' "$C_RED" "$C_OFF"; exit 1; }
+
+  local failed=0
+  while read -r db; do
+    [[ -z "$db" ]] && continue
+    local obj="postgres/${db}/${db}-${STAMP}.dump"
+    local out
+    out=$(rsh "set -o pipefail
+      f=/tmp/${db}-${STAMP}.dump
+      docker exec $PG pg_dump -U postgres -Fc '$db' > \$f 2>/tmp/pgerr || { echo 'DUMPFAIL '\$(head -1 /tmp/pgerr); exit 1; }
+      # A dump that reads back is the only kind worth uploading.
+      n=\$(docker exec -i $PG pg_restore -l < \$f 2>/dev/null | grep -c 'TABLE DATA') || n=0
+      [ \"\$n\" -gt 0 ] || { echo 'EMPTYDUMP'; exit 1; }
+      sz=\$(stat -c %s \$f)
+      rclone copy \$f b2s3:$BUCKET/postgres/$db/ >/dev/null 2>&1 || { echo 'UPLOADFAIL'; exit 1; }
+      # Read the size back OFF the bucket, not off the local file.
+      remote=\$(rclone ls b2s3:$BUCKET/postgres/$db/ | awk -v f=\"${db}-${STAMP}.dump\" '\$2==f {print \$1}')
+      rm -f \$f
+      echo \"OK \$n \$sz \$remote\"" </dev/null 2>/dev/null)
+
+    case "$out" in
+      OK*)
+        set -- $out
+        local tables=$2 local_sz=$3 remote_sz=$4
+        if [[ "$local_sz" == "$remote_sz" ]]; then
+          printf '  %sok%s   %-18s %s tables of data, %s bytes, size matches on the bucket\n' \
+            "$C_GRN" "$C_OFF" "$db" "$tables" "$local_sz"
+        else
+          printf '  %sFAIL%s %-18s uploaded %s bytes, bucket holds %s\n' "$C_RED" "$C_OFF" "$db" "$local_sz" "${remote_sz:-nothing}"
+          failed=$((failed + 1))
+        fi
+        ;;
+      *) printf '  %sFAIL%s %-18s %s\n' "$C_RED" "$C_OFF" "$db" "${out:-no output}"; failed=$((failed + 1)) ;;
+    esac
+  done <<< "$dbs"
+
+  echo
+  [[ "$failed" -eq 0 ]] || { printf '  %s%s shop(s) did not back up%s\n' "$C_RED" "$failed" "$C_OFF"; exit 1; }
+  printf '  %severy shop dumped, uploaded and read back at the same size%s\n' "$C_GRN" "$C_OFF"
+  printf '  %sthat is not yet a backup. script/backup_b2 restore <shop> is.%s\n' "$C_DIM" "$C_OFF"
+}
+
+cmd_verify() {
+  echo "==> What the bucket holds"
+  rsh "rclone lsl b2s3:$BUCKET/postgres/ 2>/dev/null | sort -k2 -r | head -40" </dev/null \
+    | awk '{printf "  %10.1f MB  %s %s  %s\n", $1/1048576, $2, substr($3,1,8), $4}'
+  local n
+  n=$(rsh "rclone ls b2s3:$BUCKET/postgres/ 2>/dev/null | wc -l" </dev/null | tr -d ' \r')
+  echo
+  printf '  %s object(s) under postgres/\n' "${n:-0}"
+
+  # The images, which used to be missing from both the backup and this report.
+  #
+  # He asked on 29 Aug whether the images were backed up. They were not, and this
+  # command would have told anyone who ran it that the bucket was healthy, because
+  # it only ever looked under postgres/. A report that covers half of what is at
+  # risk reads exactly like a report that covers all of it.
+  echo
+  echo "==> Product images and uploads"
+  rsh "for s in \$(rclone lsf --dirs-only b2s3:$BUCKET/storage/ 2>/dev/null | tr -d /); do
+         printf '  %-10s %s file(s)  %s\n' \"\$s\" \
+           \"\$(rclone ls b2s3:$BUCKET/storage/\$s/ 2>/dev/null | wc -l | tr -d ' ')\" \
+           \"\$(rclone size b2s3:$BUCKET/storage/\$s/ 2>/dev/null | sed -n 's/Total size: //p' | tr -d '\\n')\"
+       done" </dev/null
+
+  local fn
+  fn=$(rsh "rclone ls b2s3:$BUCKET/storage/ 2>/dev/null | wc -l" </dev/null | tr -d ' \r')
+  if [[ "${fn:-0}" -eq 0 ]]; then
+    printf '\n  %sNo images in the bucket at all.%s A database restored without them is a\n' "$C_RED" "$C_OFF"
+    printf '  shop where every product is a grey box.\n'
+  else
+    printf '\n  %s object(s) under storage/\n' "$fn"
+  fi
+}
+
+cmd_restore() {
+  local shop="${1:?usage: script/backup_b2 restore <shop>}"
+  local db="${shop}_shop"
+  local scratch="restoreproof_${shop}"
+
+  echo "==> Proving the newest $shop dump actually restores"
+  printf '  %sinto %s, a database that does not exist yet. The live one is never touched.%s\n' "$C_DIM" "$scratch" "$C_OFF"
+
+  local out
+  out=$(rsh "set -o pipefail
+    newest=\$(rclone lsf b2s3:$BUCKET/postgres/$db/ 2>/dev/null | sort | tail -1)
+    [ -n \"\$newest\" ] || { echo 'NONE'; exit 1; }
+    rclone copy b2s3:$BUCKET/postgres/$db/\$newest /tmp/ >/dev/null 2>&1 || { echo 'DOWNLOADFAIL'; exit 1; }
+    f=/tmp/\$newest
+
+    # A scratch database, dropped first in case a previous run died half way.
+    docker exec $PG psql -U postgres -c 'DROP DATABASE IF EXISTS $scratch' >/dev/null 2>&1
+    docker exec $PG psql -U postgres -c 'CREATE DATABASE $scratch' >/dev/null 2>&1 || { echo 'CREATEFAIL'; exit 1; }
+    docker exec -i $PG pg_restore -U postgres -d $scratch --no-owner --no-acl < \$f >/dev/null 2>&1
+
+    # Rows, in tables that would be empty if the restore had quietly failed.
+    q() { docker exec $PG psql -U postgres -d \"\$1\" -tAc \"\$2\" 2>/dev/null | tr -d ' \r'; }
+    for t in spree_products spree_orders spree_variants spree_prices; do
+      a=\$(q $scratch \"select count(*) from \$t\")
+      b=\$(q $db      \"select count(*) from \$t\")
+      echo \"ROW \$t \${a:-x} \${b:-x}\"
+    done
+    docker exec $PG psql -U postgres -c 'DROP DATABASE $scratch' >/dev/null 2>&1
+    rm -f \$f
+    echo \"DONE \$newest\"" </dev/null 2>/dev/null)
+
+  case "$out" in
+    NONE*) printf '  %snothing in the bucket for %s%s\n' "$C_RED" "$db" "$C_OFF"; exit 1 ;;
+    *DOWNLOADFAIL*|*CREATEFAIL*) printf '  %s%s%s\n' "$C_RED" "$out" "$C_OFF"; exit 1 ;;
+  esac
+
+  local mismatch=0
+  while read -r line; do
+    case "$line" in
+      ROW*)
+        set -- $line
+        local table=$2 restored=$3 live=$4
+        if [[ "$restored" == "$live" && "$restored" != "x" && "$restored" != "0" ]]; then
+          printf '  %sok%s   %-18s %s rows restored, %s live\n' "$C_GRN" "$C_OFF" "$table" "$restored" "$live"
+        else
+          printf '  %sFAIL%s %-18s %s rows restored, %s live\n' "$C_RED" "$C_OFF" "$table" "$restored" "$live"
+          mismatch=$((mismatch + 1))
+        fi
+        ;;
+      DONE*) printf '  %sfrom %s%s\n' "$C_DIM" "${line#DONE }" "$C_OFF" ;;
+    esac
+  done <<< "$out"
+
+  echo
+  [[ "$mismatch" -eq 0 ]] || { printf '  %sthe restore did not reproduce the live shop%s\n' "$C_RED" "$C_OFF"; exit 1; }
+  printf '  %srestored from the bucket and every count matches the live shop%s\n' "$C_GRN" "$C_OFF"
+}
+
+case "${1:-}" in
+  run)     shift; cmd_run "$@" ;;
+  verify)  shift; cmd_verify "$@" ;;
+  restore) shift; cmd_restore "$@" ;;
+  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' ; exit 2 ;;
+esac

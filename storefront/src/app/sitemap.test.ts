@@ -6,6 +6,23 @@ const api = vi.hoisted(() => ({
   categoriesList: vi.fn(),
 }));
 
+/**
+ * The addresses that are neither a product nor a category are pinned here.
+ *
+ * They used to be a hardcoded 3 inside sitemap.ts. They are now computed from
+ * the shop's own content pages and from the policies the Store API reports, and
+ * both of those differ per shop: pageSlugs() reads a file that is gitignored, so
+ * left unmocked this test's arithmetic would depend on which shop's copy happens
+ * to be checked out, and would pass or fail by machine.
+ *
+ * One page and no policy keeps the static count at 3 so that every chunk
+ * expectation below still means what it meant when it was written. The policy
+ * and page behaviour is covered by its own test at the end of this file, where
+ * the numbers are small enough to read.
+ */
+vi.mock("@/lib/blocks/pages", () => ({ pageSlugs: () => ["about"] }));
+vi.mock("@/lib/data/policies", () => ({ getPolicies: async () => [] }));
+
 vi.mock("@/lib/data/sitemap", () => ({
   getSitemapMarkets: async (options: { country: string; locale: string }) =>
     (await api.marketsList(options)).data,
@@ -43,10 +60,14 @@ vi.mock("@/lib/data/sitemap", () => ({
     ).data,
 }));
 
+const store = vi.hoisted(() => ({ accountRequired: false, cleanUrls: false }));
+
 vi.mock("@/lib/store", () => ({
   getDefaultCountry: () => "us",
   getDefaultLocale: () => "en",
   getStoreUrl: () => "https://store.example",
+  isAccountRequired: () => store.accountRequired,
+  cleanUrlsEnabled: () => store.cleanUrls,
 }));
 
 function marketCountries(...isos: string[]) {
@@ -249,6 +270,83 @@ describe("localized sitemap generation", () => {
     expect(entries.some((entry) => entry.url.includes("/products/p-"))).toBe(
       false,
     );
+  });
+
+  /**
+   * What the static half of the sitemap actually advertises.
+   *
+   * This half was a hardcoded 3 and two of the three facts behind that number
+   * were wrong, which nothing here could see: /c was listed and answers 404, and
+   * the content pages and policies were listed nowhere at all. The count also
+   * feeds the chunk arithmetic above, so a wrong number does not merely
+   * advertise the wrong address, it drops real entries off the end of a chunk.
+   *
+   * This test re-mocks the two sources with a set it can read, so it asserts on
+   * the addresses themselves rather than on a total.
+   */
+  it("advertises the content pages and the policies, and no categories index", async () => {
+    vi.doMock("@/lib/blocks/pages", () => ({
+      pageSlugs: () => ["about", "faq"],
+    }));
+    vi.doMock("@/lib/data/policies", () => ({
+      getPolicies: async () => [
+        { slug: "privacy-policy", name: "Privacy Policy" },
+        { slug: "shipping-policy", name: "Shipping Policy" },
+      ],
+    }));
+
+    api.marketsList.mockResolvedValue({ data: marketCountries("US") });
+    mockCatalog(0, 0);
+    const { default: sitemap } = await import("@/app/sitemap");
+
+    const urls = (await sitemap({ id: Promise.resolve("0") })).map(
+      (entry) => entry.url,
+    );
+
+    expect(urls).toEqual(
+      expect.arrayContaining([
+        "https://store.example/us/en",
+        "https://store.example/us/en/products",
+        "https://store.example/us/en/pages/about",
+        "https://store.example/us/en/pages/faq",
+        "https://store.example/us/en/policies/privacy-policy",
+        "https://store.example/us/en/policies/shipping-policy",
+      ]),
+    );
+
+    // /c has no page in this storefront. It was advertised for months and
+    // answered 404 to anything that followed it.
+    expect(urls).not.toContain("https://store.example/us/en/c");
+    expect(urls.filter((url) => url.endsWith("/c"))).toHaveLength(0);
+
+    vi.doUnmock("@/lib/blocks/pages");
+    vi.doUnmock("@/lib/data/policies");
+  });
+
+  /**
+   * A crawler never signs in, so anything a sitemap lists is public forever:
+   * a search engine that has read the file keeps the addresses whether or not
+   * the file is corrected afterwards.
+   *
+   * The wholesale shop's requirement is that a URL shows nothing to someone
+   * without an account. Publishing every one of those URLs in a machine
+   * readable list defeats it more completely than any single page could.
+   */
+  it("publishes nothing at all for a shop that requires an account", async () => {
+    store.accountRequired = true;
+    try {
+      api.marketsList.mockResolvedValue({ data: marketCountries("US") });
+      mockCatalog(500, 20);
+      const { default: sitemap, generateSitemaps } = await import(
+        "@/app/sitemap"
+      );
+
+      expect(await generateSitemaps()).toEqual([]);
+      expect(await sitemap({ id: Promise.resolve("0") })).toEqual([]);
+      expect(api.productsList).not.toHaveBeenCalled();
+    } finally {
+      store.accountRequired = false;
+    }
   });
 
   it("rejects invalid sitemap chunk identifiers before loading data", async () => {

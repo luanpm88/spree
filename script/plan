@@ -96,6 +96,27 @@ function validate(plan) {
     if (!SEVERITY.includes(r.severity)) errors.push(`risk ${r.id}: severity "${r.severity}" not one of ${SEVERITY.join(', ')}`)
   }
 
+  // Every one of these is rendered by its `title`, and a missing one does not
+  // render as a blank: it renders the word "undefined", in the HIGH RISK list,
+  // on the dashboard. One risk carried its text under the key `risk` instead and
+  // sat there saying "undefined" until someone read the JSON. Validation passed
+  // the whole time, because it only ever checked id and severity.
+  for (const coll of ['tasks', 'risks', 'done']) {
+    for (const item of plan[coll] ?? []) {
+      if (typeof item.title !== 'string' || !item.title.trim()) {
+        errors.push(`${coll} ${item.id}: no title, so it renders as "undefined"`)
+      }
+    }
+  }
+
+  // Same fault, second spelling: nineteen done entries carried their date under
+  // `completed`, and every one of them rendered as "(undefined)" in PLAN.md.
+  // Two names for one field is how that happens, so only one of them is right.
+  for (const d of plan.done ?? []) {
+    if (d.completed && !d.date) errors.push(`done ${d.id}: date is under "completed", the renderer reads "date"`)
+    if (!d.date) errors.push(`done ${d.id}: no date, so it renders as "(undefined)"`)
+  }
+
   for (const s of plan.shops ?? []) {
     if (s.risk_ref && !has(s.risk_ref)) errors.push(`shop ${s.id}: risk_ref "${s.risk_ref}" does not exist`)
   }

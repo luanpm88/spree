@@ -16,27 +16,59 @@ function isAllowedLocalizedDestination(
 }
 
 /**
+ * Every page of this market, rather than the two that normally send someone to
+ * sign in.
+ *
+ * A shop can be gated as a whole, and on such a shop any address at all bounces
+ * to the login page: the wholesale shop must not show a product to someone who
+ * was forwarded the link. If the return target stayed narrowed to account and
+ * checkout, that person would sign in and land on their account page with no
+ * sign of the product they were sent, which reads as a broken link rather than
+ * as a gate.
+ *
+ * The narrowing that matters is still here. `resolveLocalPath` has already
+ * rejected anything cross-origin, and the path must sit inside this market's
+ * own prefix, so this cannot be used to bounce someone to another shop or to
+ * another site.
+ */
+function isWithinMarket(pathname: string, basePath: string): boolean {
+  return pathname === basePath || pathname.startsWith(`${basePath}/`);
+}
+
+/**
  * Resolve a login return target without allowing cross-origin or cross-market
  * navigation: a safe local path, narrowed to the destinations that send users
- * through the account sign-in page. Account and checkout are the only two today.
+ * through the account sign-in page. Account and checkout are the only two on a
+ * shop anyone may browse; a gated shop passes `anyPageInMarket` because every
+ * page of it is behind the login.
  */
 export function resolveAccountRedirect(
   redirect: string | null | undefined,
   basePath: string,
+  anyPageInMarket = false,
 ): string | null {
   const target = resolveLocalPath(redirect);
   if (!target) return null;
 
   const { pathname } = new URL(target, INTERNAL_ORIGIN);
-  return isAllowedLocalizedDestination(pathname, basePath) ? target : null;
+  const allowed = anyPageInMarket
+    ? isWithinMarket(pathname, basePath)
+    : isAllowedLocalizedDestination(pathname, basePath);
+
+  return allowed ? target : null;
 }
 
 export function buildAccountLoginHref(
   basePath: string,
   returnTo?: string | null,
+  anyPageInMarket = false,
 ): string {
   const accountPath = `${basePath}/account`;
-  const safeReturnTo = resolveAccountRedirect(returnTo, basePath);
+  const safeReturnTo = resolveAccountRedirect(
+    returnTo,
+    basePath,
+    anyPageInMarket,
+  );
 
   if (!safeReturnTo || safeReturnTo === accountPath) return accountPath;
 

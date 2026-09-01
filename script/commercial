@@ -55,6 +55,53 @@ CLIENT_ASSETS=(
   # so that is not a quiet failure: the container will not boot at all. It took the
   # backend down on the first deploy after the calculator went up without it.
   "config/initializers/inflections.rb"
+  # The words on the storefront's pages. Gitignored because this repository is
+  # public and the copy names the client, his brand and his founder; carried by
+  # hand for the same reason as everything above. Without it the Next.js build
+  # fails on a missing import rather than degrading, which is the better of the
+  # two failures but still a failed deploy.
+  "storefront/src/lib/blocks/content.ts"
+  # His logo, favicons, social cards and home page photographs. Gitignored for the
+  # same reason as the copy: this repository is public and they are his brand.
+  # Missing, the pages still render, so this one degrades quietly — which is why
+  # it is checked inside the finished image rather than trusted.
+  "storefront/public/brand"
+  # Where a retired page now sends people. Gitignored for the same reason as the
+  # copy: a source path and a destination both name his shops. Missing, the build
+  # succeeds with no redirects at all, so a retired URL would quietly go back to
+  # answering 200 with a not-found body.
+  "storefront/src/lib/blocks/retired-urls.json"
+  "storefront/public/favicon.ico"
+  # One file per shop, each holding that shop's own email wording, selected at
+  # boot by config/initializers/shop_locale.rb from the SHOP variable. Outside
+  # config/locales on purpose: Rails globs that tree recursively, so a
+  # subdirectory under it is loaded into every shop, which is the exact failure
+  # this replaces. Missing, the shop refuses to boot rather than mailing another
+  # shop's brand, which is what it did before this existed.
+  "config/shop_locales"
+  # Which category fills each home page row, per shop. Gitignored because the
+  # shop names are the client's brands. Missing on the server, script/shop_host
+  # falls back to the three retail permalinks, which on a shop that does not have
+  # them returns three empty ids and the build refuses. So this one fails loudly
+  # rather than quietly, but it still has to travel.
+  "config/shop_collections"
+  # Which shops serve clean URLs. Gitignored because its keys are shop names,
+  # so git archive leaves it behind and every shop would silently revert to the
+  # prefixed shape on the next deploy.
+  "config/clean_url_shops"
+  # Which calculators each shop offers in its admin dropdown, read at boot by
+  # config/initializers/shipping_calculators.rb. Gitignored because its keys are
+  # shop names. Missing on the server, that initializer raises rather than
+  # registering nothing: a shop without it boots, shows only the six calculators
+  # Spree ships with, and keeps quoting correctly right up until somebody edits
+  # the shipping method. Nothing fails and nothing logs, so it must not degrade.
+  "config/shop_calculators"
+  # Per-shop template overrides, prepended to the view path by
+  # config/initializers/shop_views.rb. Gitignored because the directory names the
+  # shop. Missing on the server, that shop silently falls back to the shared
+  # template, which is the design six other shops use: nothing errors and the
+  # email still sends, which is the failure this whole list exists for.
+  "app/views/shops"
 )
 # Locale files are a glob, so they are collected at ship time rather than listed.
 while IFS= read -r f; do CLIENT_ASSETS+=("$f"); done < <(cd "$ROOT" && ls config/locales/*.yml 2>/dev/null | grep -vE "/(en|ar|bg|ca|cs|da|de|el|es|et|fa|fi|fr|he|hi|hr|hu|id|it|ja|ko|lt|lv|mk|nb|nl|pl|pt|ro|ru|sk|sl|sq|sr|sv|th|tr|uk|vi|zh)\.yml$" || true)

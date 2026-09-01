@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+#
+# Carry one real order across a database reload.
+#
+#   script/carry_over_order <shop> <order_number> --capture
+#   script/carry_over_order <shop> <order_number> --restore
+#
+# ── the gap this closes ──────────────────────────────────────────────────────
+#
+# A shop is cut over from a dump taken hours or days earlier. Orders placed on
+# the client's server between the dump and the DNS change stay on his server, and
+# the only way to collect them is a fresh dump and a reload.
+#
+# But a reload replaces everything, and by then OUR server has taken orders of its
+# own. His dump cannot contain them. On au on 30 Aug:
+#
+#   his fresh dump      171 completed orders, all five he was missing
+#   our live shop       167, one of which is a real customer order placed after
+#                       the cutover, which his dump has never heard of
+#
+# Reloading without this loses that customer's order. Importing his five into our
+# live database instead means remapping every id by hand across eight tables, on
+# a database holding real orders, and the ids genuinely collide:
+#
+#   spree_payments 175   ours: the new order, pending
+#                        his:  a different order of his, completed
+#
+#   spree_orders 411,412,413   ours: three test carts from our own browser walks
+#                              his:  three real completed customer orders
+#
+# The id space forked at the cutover. So the safe order of operations is: take
+# the one order out first, reload from his dump on the rehearsed path, put the
+# order back with fresh ids. One small order to move by hand instead of five.
+#
+# ── it never reuses an id ────────────────────────────────────────────────────
+#
+# Every row goes back in with a new id from the table's own sequence, and every
+# foreign key is rewritten to match. Reusing the original ids is what would
+# overwrite one of his orders.
+#
+# ── it refuses rather than guesses ───────────────────────────────────────────
+#
+# The order points at rows it does not own: a variant, a payment method, a stock
+# location. Those come back with the reload, and their ids are his server's ids,
+# which is also where ours came from. That is a reasonable expectation and it is
+# still checked, by SKU and by name, before a single row is written. A variant id
+# that now means a different product would silently move the order onto the wrong
+# item and the totals would still add up.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+SHOP="${1:-}"
+NUMBER="${2:-}"
+MODE="${3:-}"
+[[ -n "$SHOP" && -n "$NUMBER" && -n "$MODE" ]] || {
+  echo "usage: script/carry_over_order <shop> <order_number> --capture|--restore" >&2
+  exit 2
+}
+
+# shellcheck source=/dev/null
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_HOST:?no SSH_HOST, source .estate.env}"
+: "${SSH_PORT:=22}"
+: "${SSH_KEY:?no SSH_KEY}"
+eval K="$SSH_KEY"; P=$(printf '%s' "$SSH_PORT" | tr -d '"')
+
+# CARRY_DB exists so the restore can be rehearsed against a scratch copy before
+# it is pointed at the shop customers are using. A restore that has never been
+# run is not a plan, and this one writes to eleven tables holding real orders.
+DB="${CARRY_DB:-${SHOP}_shop}"
+VAULT="tmp/carried/${SHOP}-${NUMBER}"
+mkdir -p "$VAULT"
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_BLD=$'\e[1m'; C_OFF=$'\e[0m'
+step() { printf '\n%s==>%s %s\n' "$C_BLD" "$C_OFF" "$*"; }
+ok()   { printf '  %sok%s   %s\n' "$C_GRN" "$C_OFF" "$*"; }
+warn() { printf '  %s!%s    %s\n' "$C_YEL" "$C_OFF" "$*"; }
+info() { printf '  %s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
+die()  { printf '\n%sFAILED%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+
+psq() { ssh -n -i "$K" -p "$P" -o BatchMode=yes "$SSH_HOST" \
+          "docker exec estate-postgres psql -U postgres -At -F'|' -d $DB -c \"$1\"" 2>/dev/null | tr -d '\r'; }
+
+# The tables an order owns, in the order they must be written: a row is only
+# written once everything it points at exists.
+#
+# Each line is  table | how to find its rows | which columns are foreign keys we
+# rewrite. Anything not listed as a foreign key is carried across untouched.
+OWNED=(
+  "spree_line_items|order_id|order_id"
+  "spree_shipments|order_id|order_id,address_id"
+  "spree_shipping_rates|shipment_id|shipment_id"
+  "spree_inventory_units|order_id|order_id,shipment_id,line_item_id"
+  "spree_payments|order_id|order_id"
+  "spree_adjustments|order_id|order_id"
+  "spree_state_changes|stateful_id|stateful_id"
+  "spree_log_entries|source_id|source_id"
+)
+
+# ── capture ──────────────────────────────────────────────────────────────────
+if [[ "$MODE" == "--capture" ]]; then
+  step "Reading $NUMBER out of $DB"
+
+  oid=$(psq "SELECT id FROM spree_orders WHERE number='$NUMBER'")
+  [[ -n "$oid" ]] || die "no order $NUMBER in $DB"
+  info "order id $oid"
+
+  summary=$(psq "SELECT number||' | '||state||' | '||total::text||' '||currency||' | '||coalesce(email,'(guest)')||' | '||coalesce(completed_at::text,'not completed') FROM spree_orders WHERE id=$oid")
+  ok "$summary"
+
+  # What it points at that it does NOT own, recorded by a name that survives a
+  # reload, so the restore can prove the id still means the same thing.
+  psq "SELECT 'variant|'||li.variant_id||'|'||coalesce(v.sku,'(no sku)')
+       FROM spree_line_items li JOIN spree_variants v ON v.id=li.variant_id WHERE li.order_id=$oid
+       UNION ALL
+       SELECT 'payment_method|'||pm.id||'|'||pm.name FROM spree_payments p
+       JOIN spree_payment_methods pm ON pm.id=p.payment_method_id WHERE p.order_id=$oid
+       UNION ALL
+       SELECT 'stock_location|'||sl.id||'|'||sl.name FROM spree_shipments s
+       JOIN spree_stock_locations sl ON sl.id=s.stock_location_id WHERE s.order_id=$oid" \
+    > "$VAULT/anchors.txt"
+  ok "$(grep -c . "$VAULT/anchors.txt") outside reference(s) recorded by name"
+
+  # The addresses and the user first: the order points at them.
+  ssh -n -i "$K" -p "$P" -o BatchMode=yes "$SSH_HOST" \
+    "docker exec estate-postgres psql -U postgres -d $DB -c \"\\copy (SELECT * FROM spree_addresses WHERE id IN (SELECT bill_address_id FROM spree_orders WHERE id=$oid UNION SELECT ship_address_id FROM spree_orders WHERE id=$oid)) TO STDOUT\"" \
+    2>/dev/null > "$VAULT/spree_addresses.tsv"
+  ok "$(grep -c . "$VAULT/spree_addresses.tsv" || echo 0) address row(s)"
+
+  ssh -n -i "$K" -p "$P" -o BatchMode=yes "$SSH_HOST" \
+    "docker exec estate-postgres psql -U postgres -d $DB -c \"\\copy (SELECT * FROM spree_orders WHERE id=$oid) TO STDOUT\"" \
+    2>/dev/null > "$VAULT/spree_orders.tsv"
+  [[ -s "$VAULT/spree_orders.tsv" ]] || die "the order row did not come out"
+  ok "the order row"
+
+  for spec in "${OWNED[@]}"; do
+    IFS='|' read -r table find_col _fks <<< "$spec"
+    case "$table" in
+      spree_shipping_rates)
+        where="shipment_id IN (SELECT id FROM spree_shipments WHERE order_id=$oid)" ;;
+      spree_state_changes)
+        where="stateful_id=$oid AND stateful_type='Spree::Order'" ;;
+      spree_log_entries)
+        where="source_id IN (SELECT id FROM spree_payments WHERE order_id=$oid) AND source_type='Spree::Payment'" ;;
+      *)
+        where="${find_col}=$oid" ;;
+    esac
+    ssh -n -i "$K" -p "$P" -o BatchMode=yes "$SSH_HOST" \
+      "docker exec estate-postgres psql -U postgres -d $DB -c \"\\copy (SELECT * FROM $table WHERE $where) TO STDOUT\"" \
+      2>/dev/null > "$VAULT/$table.tsv"
+    # Not `grep -c . || echo 0`.
+    #
+    # grep -c prints its count and THEN exits non-zero when the count is zero, so
+    # the fallback is appended rather than substituted and an empty table reports
+    # "0\n0 row(s)". That exact shape has now appeared three times on this project
+    # in three different scripts (see DISCOVERIES 15), so it is counted without a
+    # fallback at all.
+    n=$(wc -l < "$VAULT/$table.tsv" 2>/dev/null | tr -d ' ')
+    printf '  %-26s %s row(s)\n' "$table" "${n:-0}"
+  done
+
+  # Column order, so the restore can put the values back in the right places even
+  # if a later migration adds a column.
+  for f in "$VAULT"/*.tsv; do
+    t=$(basename "$f" .tsv)
+    psq "SELECT string_agg(column_name, ',' ORDER BY ordinal_position)
+         FROM information_schema.columns WHERE table_schema='public' AND table_name='$t'" \
+      > "$VAULT/$t.columns"
+  done
+
+  # The stock the order took out of the warehouse.
+  #
+  # Missed on the first run, and the miss was invisible in every check that looked
+  # at the order: it came back complete, with its line, its payment and
+  # its shipment, and ECO-071 read 58 on hand where it had read 57. His dump never
+  # saw that order, so its stock is the stock from before it was placed, and
+  # carrying the order without carrying what it consumed leaves him one unit richer
+  # on paper than in the warehouse. He would find it when he shipped it.
+  #
+  # Recorded by variant SKU and stock location NAME rather than by stock_item id,
+  # because the restore has to find the same shelf in a database that has just been
+  # replaced.
+  psq "SELECT sm.quantity||'|'||v.sku||'|'||sl.name||'|'||sm.originator_type||'|'||sm.originator_id||'|'||sm.created_at
+       FROM spree_stock_movements sm
+       JOIN spree_stock_items si ON si.id=sm.stock_item_id
+       JOIN spree_variants v ON v.id=si.variant_id
+       JOIN spree_stock_locations sl ON sl.id=si.stock_location_id
+       WHERE (sm.originator_type='Spree::Shipment'
+              AND sm.originator_id IN (SELECT id FROM spree_shipments WHERE order_id=$oid))
+          OR (sm.originator_type='Spree::InventoryUnit'
+              AND sm.originator_id IN (SELECT id FROM spree_inventory_units WHERE order_id=$oid))" \
+    > "$VAULT/stock_movements.txt"
+  ok "$(wc -l < "$VAULT/stock_movements.txt" | tr -d ' ') stock movement(s), by SKU and warehouse name"
+
+  printf '%s\n' "$oid" > "$VAULT/original_order_id"
+  step "Captured"
+  ok "$VAULT"
+  info "it is a copy: nothing in $DB was changed"
+  info "restore it after the reload with:"
+  info "  script/carry_over_order $SHOP $NUMBER --restore"
+  exit 0
+fi
+
+[[ "$MODE" == "--restore" ]] || die "unknown mode $MODE"
+
+# ── restore ──────────────────────────────────────────────────────────────────
+step "Putting $NUMBER back into $DB"
+[[ -d "$VAULT" ]] || die "nothing captured at $VAULT. Run --capture first."
+[[ -s "$VAULT/spree_orders.tsv" ]] || die "$VAULT holds no order row"
+
+already=$(psq "SELECT id FROM spree_orders WHERE number='$NUMBER'")
+[[ -z "$already" ]] || die "$DB already holds order $NUMBER (id $already). Nothing to do, and overwriting it is not something this will do."
+
+# Every outside reference still means what it meant.
+step "Checking what the order points at still means the same thing"
+bad=0
+while IFS='|' read -r kind id name; do
+  [[ -n "$kind" ]] || continue
+  case "$kind" in
+    variant)        now=$(psq "SELECT coalesce(sku,'(no sku)') FROM spree_variants WHERE id=$id") ;;
+    payment_method) now=$(psq "SELECT name FROM spree_payment_methods WHERE id=$id") ;;
+    stock_location) now=$(psq "SELECT name FROM spree_stock_locations WHERE id=$id") ;;
+    *) continue ;;
+  esac
+  if [[ -z "$now" ]]; then
+    warn "$kind $id ($name) no longer exists after the reload"
+    bad=$((bad + 1))
+  elif [[ "$now" != "$name" ]]; then
+    warn "$kind $id was '$name', is now '$now'"
+    bad=$((bad + 1))
+  else
+    ok "$kind $id still '$name'"
+  fi
+done < "$VAULT/anchors.txt"
+[[ "$bad" -eq 0 ]] || die "$bad reference(s) changed meaning. Writing the order would attach it to the wrong thing."
+
+step "Writing, in one transaction"
+REMOTE_DIR="/root/carried-${SHOP}-${NUMBER}"
+ssh -n -i "$K" -p "$P" -o BatchMode=yes "$SSH_HOST" "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR" || die "could not make $REMOTE_DIR"
+scp -q -i "$K" -P "$P" "$VAULT"/*.tsv "$VAULT"/*.columns "$SSH_HOST:$REMOTE_DIR/" || die "could not send the captured rows"
+
+OLD_OID=$(cat "$VAULT/original_order_id")
+
+# Staged, remapped and inserted inside one transaction, so a failure anywhere
+# leaves the live database exactly as it was.
+SQL=$(cat <<SQLEOF
+BEGIN;
+
+CREATE TEMP TABLE stage_addresses AS SELECT * FROM spree_addresses WHERE false;
+CREATE TEMP TABLE stage_orders    AS SELECT * FROM spree_orders    WHERE false;
+\\copy stage_addresses FROM '$REMOTE_DIR/spree_addresses.tsv'
+\\copy stage_orders    FROM '$REMOTE_DIR/spree_orders.tsv'
+
+CREATE TEMP TABLE map_address (old bigint, new bigint);
+INSERT INTO map_address SELECT id, nextval('spree_addresses_id_seq') FROM stage_addresses;
+UPDATE stage_addresses s SET id = m.new FROM map_address m WHERE m.old = s.id;
+INSERT INTO spree_addresses SELECT * FROM stage_addresses;
+
+UPDATE stage_orders o SET
+  id              = nextval('spree_orders_id_seq'),
+  bill_address_id = (SELECT new FROM map_address WHERE old = o.bill_address_id),
+  ship_address_id = (SELECT new FROM map_address WHERE old = o.ship_address_id);
+INSERT INTO spree_orders SELECT * FROM stage_orders;
+
+CREATE TEMP TABLE map_order AS SELECT $OLD_OID::bigint AS old, id AS new FROM stage_orders;
+SQLEOF
+)
+
+for spec in "${OWNED[@]}"; do
+  IFS='|' read -r table _find fks <<< "$spec"
+  [[ -s "$VAULT/$table.tsv" ]] || continue
+  seq_name="${table}_id_seq"
+  SQL+=$'\n'"CREATE TEMP TABLE stage_$table AS SELECT * FROM $table WHERE false;"
+  SQL+=$'\n'"\\copy stage_$table FROM '$REMOTE_DIR/$table.tsv'"
+  SQL+=$'\n'"CREATE TEMP TABLE map_$table (old bigint, new bigint);"
+  SQL+=$'\n'"INSERT INTO map_$table SELECT id, nextval('$seq_name') FROM stage_$table;"
+  SQL+=$'\n'"UPDATE stage_$table s SET id = m.new FROM map_$table m WHERE m.old = s.id;"
+
+  IFS=',' read -ra cols <<< "$fks"
+  for col in "${cols[@]}"; do
+    case "$col" in
+      order_id|stateful_id)
+        SQL+=$'\n'"UPDATE stage_$table s SET $col = (SELECT new FROM map_order);" ;;
+      address_id)
+        SQL+=$'\n'"UPDATE stage_$table s SET address_id = (SELECT new FROM map_address WHERE old = s.address_id) WHERE s.address_id IS NOT NULL;" ;;
+      shipment_id)
+        SQL+=$'\n'"UPDATE stage_$table s SET shipment_id = (SELECT new FROM map_spree_shipments WHERE old = s.shipment_id) WHERE s.shipment_id IS NOT NULL;" ;;
+      line_item_id)
+        SQL+=$'\n'"UPDATE stage_$table s SET line_item_id = (SELECT new FROM map_spree_line_items WHERE old = s.line_item_id) WHERE s.line_item_id IS NOT NULL;" ;;
+      source_id)
+        SQL+=$'\n'"UPDATE stage_$table s SET source_id = (SELECT new FROM map_spree_payments WHERE old = s.source_id) WHERE s.source_id IS NOT NULL;" ;;
+    esac
+  done
+  SQL+=$'\n'"INSERT INTO $table SELECT * FROM stage_$table;"
+done
+
+SQL+=$'\n''COMMIT;'
+
+printf '%s\n' "$SQL" > "$VAULT/restore.sql"
+info "the exact SQL is at $VAULT/restore.sql"
+
+scp -q -i "$K" -P "$P" "$VAULT/restore.sql" "$SSH_HOST:$REMOTE_DIR/restore.sql" || die "could not send the SQL"
+
+# Into the CONTAINER, not just onto the server.
+#
+# psql runs inside estate-postgres, so -f and psql's own \copy both resolve paths
+# in the container's filesystem. Landing the files on the host looks right, gets
+# as far as the transaction, and fails with "No such file or directory" pointing
+# at a path that plainly exists when you ssh in and look.
+ssh -n -i "$K" -p "$P" -o BatchMode=yes "$SSH_HOST" \
+  "docker exec estate-postgres rm -rf $REMOTE_DIR && docker cp $REMOTE_DIR estate-postgres:$REMOTE_DIR" \
+  >/dev/null 2>&1 || die "could not put the captured rows inside the database container"
+
+out=$(ssh -n -i "$K" -p "$P" -o BatchMode=yes "$SSH_HOST" \
+  "docker exec -i estate-postgres psql -U postgres -v ON_ERROR_STOP=1 -d $DB -f $REMOTE_DIR/restore.sql" 2>&1 | tr -d '\r')
+printf '%s\n' "$out" | grep -iE 'error|rollback' && die "the write failed, and the transaction rolled back. $DB is untouched."
+
+step "Proving it is there"
+back=$(psq "SELECT o.number||' | '||o.state||' | '||o.total::text||' '||o.currency||' | '||coalesce(o.email,'(guest)')||' | '||coalesce(o.completed_at::text,'-')||' | '||
+            (SELECT count(*) FROM spree_line_items li WHERE li.order_id=o.id)||' line, '||
+            (SELECT count(*) FROM spree_payments p WHERE p.order_id=o.id)||' payment, '||
+            (SELECT count(*) FROM spree_shipments s WHERE s.order_id=o.id)||' shipment'
+            FROM spree_orders o WHERE o.number='$NUMBER'")
+[[ -n "$back" ]] || die "the order is not in $DB after the write"
+ok "$back"
+
+addr=$(psq "SELECT coalesce(a.firstname,'')||' '||coalesce(a.lastname,'')||', '||coalesce(a.city,'')||' '||coalesce(a.zipcode,'')
+            FROM spree_orders o JOIN spree_addresses a ON a.id=o.ship_address_id WHERE o.number='$NUMBER'")
+ok "ships to $addr"
+
+orphan=$(psq "SELECT count(*) FROM spree_line_items li WHERE li.order_id=(SELECT id FROM spree_orders WHERE number='$NUMBER') AND NOT EXISTS (SELECT 1 FROM spree_variants v WHERE v.id=li.variant_id)")
+[[ "${orphan:-0}" == "0" ]] || die "$orphan line item(s) point at a variant that does not exist"
+ok "every line item points at a product that exists"
+
+# ── the stock the order took ─────────────────────────────────────────────────
+#
+# Written after the order, and separately, because it changes a number that does
+# not belong to the order: the count on a shelf. Done in the same transaction as
+# the movement row, so the count and the record of why it changed can never
+# disagree.
+if [[ -s "$VAULT/stock_movements.txt" ]]; then
+  step "Taking back out the stock the order consumed"
+  new_ship=$(psq "SELECT id FROM spree_shipments WHERE order_id=(SELECT id FROM spree_orders WHERE number='$NUMBER') ORDER BY id LIMIT 1")
+  moved=0
+  while IFS='|' read -r qty sku loc otype _oid created; do
+    [[ -n "$sku" ]] || continue
+    item=$(psq "SELECT si.id FROM spree_stock_items si
+                JOIN spree_variants v ON v.id=si.variant_id
+                JOIN spree_stock_locations sl ON sl.id=si.stock_location_id
+                WHERE v.sku='$sku' AND sl.name='$loc'")
+    if [[ -z "$item" ]]; then
+      warn "no shelf for $sku in '$loc' after the reload, stock left alone"
+      continue
+    fi
+    [[ "$otype" == "Spree::Shipment" ]] && ref="$new_ship" || ref="$new_ship"
+    ssh -n -i "$K" -p "$P" -o BatchMode=yes "$SSH_HOST" \
+      "docker exec estate-postgres psql -U postgres -q -v ON_ERROR_STOP=1 -d $DB -c \"
+         BEGIN;
+         INSERT INTO spree_stock_movements (stock_item_id, quantity, originator_type, originator_id, created_at, updated_at)
+           VALUES ($item, $qty, 'Spree::Shipment', $ref, '$created', now());
+         UPDATE spree_stock_items SET count_on_hand = count_on_hand + ($qty), updated_at = now() WHERE id = $item;
+         COMMIT;\"" >/dev/null 2>&1 || die "the stock movement for $sku did not write"
+    now=$(psq "SELECT sum(count_on_hand)::text FROM spree_stock_items si JOIN spree_variants v ON v.id=si.variant_id WHERE v.sku='$sku'")
+    ok "$sku $qty in '$loc', now $now on hand"
+    moved=$((moved + 1))
+  done < "$VAULT/stock_movements.txt"
+  ok "$moved stock movement(s) carried"
+fi
+
+ssh -n -i "$K" -p "$P" -o BatchMode=yes "$SSH_HOST" \
+  "rm -rf $REMOTE_DIR; docker exec estate-postgres rm -rf $REMOTE_DIR" >/dev/null 2>&1
+step "Done"
+ok "$NUMBER carried across the reload, with new ids, nothing of his overwritten"

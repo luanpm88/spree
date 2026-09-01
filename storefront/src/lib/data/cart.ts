@@ -164,7 +164,20 @@ export async function addToCart(
 ) {
   return actionResult(async () => {
     const cart = await getOrCreateCart(undefined, surface);
-    const spreeToken = await getCartToken(surface);
+    // The token comes off the cart itself, not back out of the cookie jar.
+    //
+    // getOrCreateCart writes the token to the RESPONSE cookies. getCartToken
+    // reads the REQUEST cookies, which for a visitor with no cart yet were sent
+    // before that cart existed. So on a first visit the token came back
+    // undefined, the API rejected the item with 403 access_denied, and the
+    // shopper saw an empty toast and an empty cart. Every first add to cart on
+    // this storefront failed, and only on the first, which is why it survived a
+    // page that otherwise looks perfect.
+    //
+    // Falls back to the cookie for the case this was written for: an existing
+    // cart, where the request did carry the token and the cart object may be a
+    // cached read without one.
+    const spreeToken = cart.token ?? (await getCartToken(surface));
     const token = await getAccessToken();
 
     const updatedCart = await getClientForSurface(surface).carts.items.create(

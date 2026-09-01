@@ -238,8 +238,16 @@ export function MobileMenu({
                   </Link>
                 ),
               )}
+              {/* The contact page, not a fragment on the home page. He
+                  photographed this item with the address bar showing
+                  `.../#contact` and wrote the address he expected beside it.
+                  A fragment link is the same click as a page link and a
+                  different outcome: it scrolled the home page and left you
+                  there, and every shop has had a real contact page all along.
+                  Every shop with a storefront has an entry in CONTACT_BY_SHOP,
+                  so this route answers on all of them. */}
               <Link
-                href={`${basePath}/#contact`}
+                href={`${basePath}/contact`}
                 onClick={() => setOpen(false)}
                 className={linkClass}
               >

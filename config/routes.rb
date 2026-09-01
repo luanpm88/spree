@@ -13,6 +13,29 @@ Rails.application.routes.draw do
       end
     end
 
+    # Newsletter signup that keeps the name the visitor typed.
+    #
+    # A route of our own rather than a decorator on Spree's controller. The
+    # platform's endpoint accepts email only and drops anything else without
+    # saying so, and nothing about that is a bug to patch: it is simply a
+    # narrower endpoint than this shop needs. Adding beside it leaves the
+    # original working for anything that already calls it.
+    namespace :api do
+      namespace :v3 do
+        namespace :store do
+          resources :newsletter_signups, only: [:create]
+
+          # His customers' reviews, which came across in every dump with nothing
+          # reading them: Spree 5.6 has no reviews of its own and the extension
+          # that wrote them is not installed here. Read only, and nested under the
+          # product so a shop can never be asked for another shop's.
+          resources :products, only: [] do
+            resources :reviews, only: [:index], controller: 'product_reviews'
+          end
+        end
+      end
+    end
+
     # Admin authentication
     devise_for(
       Spree.admin_user_class.model_name.singular_route_key,

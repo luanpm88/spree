@@ -8,7 +8,14 @@ interface LocalizedRedirectParams {
   search?: string | null;
 }
 
-const LOCALIZED_PREFIX = /^\/[a-z]{2}\/[a-z]{2,3}(?:-[a-z0-9]{2,8})*(?=\/|$)/i;
+// The country segment is not always an ISO pair. One shop is addressed by its
+// own name because it sells to 34 countries and belongs to none of them, and
+// `[a-z]{2}` did not match that, so the prefix was never recognised and never
+// stripped: the redirect appended a second copy of it and the page answered 307
+// to itself until the browser gave up. Measured as
+// /nolocal/en -> /nolocal/en/nolocal/en -> ... 5 hops before curl stopped.
+const LOCALIZED_PREFIX =
+  /^\/[a-z]{2,12}\/[a-z]{2,3}(?:-[a-z0-9]{2,8})*(?=\/|$)/i;
 
 /** Replace only the country/locale prefix while retaining the requested page. */
 export function buildLocalizedRedirectPath({

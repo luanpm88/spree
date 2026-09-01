@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+#
+# No product is stranded in a shipping category nothing ships.
+#
+#   script/check_sellable
+#   script/check_sellable au
+#
+# ── the fault this exists for ────────────────────────────────────────────────
+#
+# A shipping method serves a list of shipping categories. A product in a category
+# no live method serves gets no shipping rate, so checkout cannot complete: the
+# customer reaches the delivery step and is offered nothing.
+#
+# Nothing about it looks wrong from outside. The product page renders, the price
+# is right, the photographs load, the Store API answers 200, and the item goes
+# into the cart. The failure is at the last step and only for that item.
+#
+# Found twice on 30 Aug, on two shops, both times by accident:
+#
+#   one shop   a 600ml steel bottle, sitting in a Digital shipping category.
+#              Zero orders ever, in a shop with 398 completed orders.
+#   another    two more bottles, in Digital after a database reload put back the
+#              older rows. Zero orders ever, in a shop with 172.
+#
+# "Never sold anything, in a shop that sells" is the fingerprint, and it was
+# visible in the data the whole time.
+#
+# Neither the browser walk nor the checkout check caught it. Both add ONE product
+# to a cart, and both take the first product on the page.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+ONLY="${1:-}"
+
+# shellcheck source=/dev/null
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_HOST:?no SSH_HOST, source .estate.env}"
+: "${SSH_PORT:=22}"
+: "${SSH_KEY:?no SSH_KEY}"
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; R=$'\033[0m'
+else GR=''; RE=''; R=''; fi
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+[[ -f "$ESTATE_FILE" ]] || { echo "  no .estate on this machine"; exit 0; }
+
+bad=0
+shops=0
+
+while IFS='|' read -r shop _rest; do
+  [[ -n "$shop" ]] || continue
+  case "$shop" in \#*) continue;; esac
+  [[ -z "$ONLY" || "$ONLY" == "$shop" ]] || continue
+  shops=$((shops + 1))
+
+  # A category is servable when at least one live shipping method lists it.
+  # Asked of the join table Spree itself reads, not of a name.
+  out=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+    "docker exec estate-postgres psql -U postgres -At -F'|' -d ${shop}_shop -c \"
+       SELECT coalesce(sc.name,'(no category at all)'),
+              count(p.id),
+              coalesce(string_agg(coalesce(nullif(v.sku,''),p.slug), ', ' ORDER BY v.sku),'-')
+       FROM spree_products p
+       LEFT JOIN spree_variants v ON v.product_id=p.id AND v.is_master
+       LEFT JOIN spree_shipping_categories sc ON sc.id=p.shipping_category_id
+       WHERE p.deleted_at IS NULL AND p.status='active'
+         AND NOT EXISTS (
+           SELECT 1 FROM spree_shipping_method_categories smc
+           JOIN spree_shipping_methods sm ON sm.id=smc.shipping_method_id AND sm.deleted_at IS NULL
+           WHERE smc.shipping_category_id = p.shipping_category_id)
+       GROUP BY sc.name ORDER BY 1\"" 2>/dev/null | tr -d '\r' | grep -v '^$')
+
+  if [[ -z "$out" ]]; then
+    printf '  %-10s %sok%s   every live product is in a category something ships\n' "$shop" "$GR" "$R"
+    continue
+  fi
+
+  while IFS='|' read -r cat n skus; do
+    [[ -n "$cat" ]] || continue
+    printf '  %s%-10s %s product(s) in "%s", which no live shipping method serves%s\n' \
+      "$RE" "$shop" "$n" "$cat" "$R"
+    printf '             %s\n' "${skus:0:200}"
+    bad=$((bad + n))
+  done <<< "$out"
+done < <(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+
+echo
+if [[ $bad -gt 0 ]]; then
+  cat >&2 <<EOF
+${RE}FAILED${R}: $bad live product(s) cannot be bought.
+
+A customer can put them in the cart and will then be offered no delivery option.
+Either move the product into a category a method serves, or add that category to
+a shipping method. Check what the other shops do with the same SKU before
+choosing: on both occasions here, every other shop had it as Physical.
+EOF
+  exit 1
+fi
+
+echo "  ${GR}ok${R} — $shops shop(s), nothing stranded"

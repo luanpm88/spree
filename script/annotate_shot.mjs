@@ -18,55 +18,68 @@
 // Output: tmp/annotated/<name>.png
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
+import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+
+const die = (m) => { console.error(`FAIL  ${m}`); process.exit(1); };
 
 const BASE = process.env.BASE_URL || 'http://localhost:3001/us/en';
 const OUT = process.env.OUT || 'tmp/annotated';
 
 // Each shot: where to go, what to point at, and what to say about it.
-const SHOTS = [
-  {
-    // Proof of delivery. No callout: the heading and the four paragraphs are his own
-    // words, so a label pointing at them says nothing the picture does not, and the
-    // first version of this shot put the label straight on top of the paragraph it was
-    // meant to be showing off.
-    name: '1-contact-page',
-    url: `${BASE}/contact`,
-    viewport: { width: 1440, height: 1150 },
-    notes: []
-  },
-  {
-    name: '2-footer-link',
-    url: `${BASE}/contact`,
-    viewport: { width: 1440, height: 1000 },
-    scrollTo: 'footer',
-    notes: [
-      {
-        selector: 'footer a[href$="/contact"]',
-        text: 'New: the page is linked here.\nBefore this it existed but nothing pointed at it.',
-        tone: 'ok'
-      }
-    ]
-  },
-  {
-    name: '3-submit-button',
-    url: `${BASE}/contact`,
-    viewport: { width: 1440, height: 1000 },
-    frameSelector: 'iframe',
-    scrollTo: 'button[type="submit"]',
-    notes: [
-      {
-        frame: 'iframe',
-        selector: 'button[type="submit"]',
-        text: 'Green now. The line that does it is\n#main_body button[type="submit"].',
-        tone: 'ok'
-      }
-    ]
+// Hosts come from .estate, which is gitignored, rather than being written here.
+// This file is tracked and the repository is public, so a hostname typed into it
+// is client data in the open. check_no_client_data caught exactly that.
+//
+//   node script/annotate_shot.mjs            uses the shops named in SHOTS below
+//
+// SHOP_HOST('b2b') returns that shop's storefront host from the estate file.
+const estate = existsSync('.estate') ? readFileSync('.estate', 'utf8') : '';
+const SHOP_HOST = (key) => {
+  for (const line of estate.split('\n')) {
+    const c = line.split('|');
+    if (c[0]?.trim() === key && c[5]?.trim() && c[5].trim() !== '-') return `https://${c[5].trim()}`;
   }
-];
+  die(`no storefront host for '${key}' in .estate`);
+};
+// The shot list.
+//
+// A client's list names his shops and quotes his page copy, so it lives in
+// tmp/client/annotate_shots.mjs, which is gitignored. check_no_client_data
+// caught this file carrying hostnames and a shop key, in a public repository.
+//
+// Falls back to one generic shot so the tool still runs in a fresh checkout.
+const SHOTS = existsSync('tmp/client/annotate_shots.mjs')
+  ? (await import(`${process.cwd()}/tmp/client/annotate_shots.mjs`)).default({ SHOP_HOST })
+  : [
+      {
+        name: '1-home',
+        url: `${process.env.BASE_URL || 'http://localhost:3001/us/en'}/`,
+        viewport: { width: 1440, height: 900 },
+        notes: []
+      }
+    ];
 
 
-const die = (m) => { console.error(`FAIL  ${m}`); process.exit(1); };
+// ── signing in, because the shop he reviews most is the one behind a login ───
+//
+// The wholesale shop refuses every address to a visitor without an account, so
+// this tool could photograph any shop except the one that gets the most notes
+// drawn on it. Every proof shot of it had to be taken by hand.
+//
+// Credentials come from .shopauth, which is gitignored, keyed by shop. A shot
+// asks for sign-in with `signIn: 'b2b'`.
+const readAuth = async (shop) => {
+  const { readFile } = await import('node:fs/promises');
+  const env = {};
+  for (const line of (await readFile('.shopauth', 'utf8')).split('\n')) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/);
+    if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
+  }
+  const k = shop.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  if (!env[`${k}_EMAIL`]) die(`no ${k}_EMAIL in .shopauth, cannot photograph a gated shop`);
+  return { email: env[`${k}_EMAIL`], password: env[`${k}_PASSWORD`] };
+};
 
 await mkdir(OUT, { recursive: true });
 const browser = await chromium.launch();
@@ -76,6 +89,27 @@ try {
   for (const shot of SHOTS) {
     const ctx = await browser.newContext({ viewport: shot.viewport, deviceScaleFactor: 2 });
     const page = await ctx.newPage();
+
+    if (shot.signIn) {
+      const { email, password } = await readAuth(shot.signIn);
+      await page.goto(shot.signInUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+      await page.waitForTimeout(2500);
+      if (await page.locator('input[type="password"]').count()) {
+        await page.fill('input[type="email"], input[name="email"]', email);
+        await page.fill('input[type="password"], input[name="password"]', password);
+        await Promise.all([
+          page.waitForLoadState('networkidle').catch(() => {}),
+          page.click('button[type="submit"]'),
+        ]);
+        await page.waitForTimeout(3000);
+      }
+      // Assert it worked. A failed sign-in leaves the login form on screen, and
+      // a shot of the login form labelled "your product names are back" is worse
+      // than no shot at all.
+      if (await page.locator('input[type="password"]').count()) {
+        die(`${shot.name}: sign-in did not take, still looking at the password field`);
+      }
+    }
 
     // This page embeds a third party form that pulls in a captcha, so networkidle is at
     // the mercy of someone else's server. One retry, and a skip is FATAL rather than a
@@ -154,7 +188,7 @@ try {
       }, process.env.LABEL);
     }
 
-    if (boxes.length) await page.evaluate((items) => {
+    if (boxes.length) await page.evaluate(({ items, spotlight }) => {
       const COLOUR = { ok: '#1f7a3d', warn: '#c2410c' };
       const layer = document.createElement('div');
       layer.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif';
@@ -162,10 +196,24 @@ try {
       for (const { box, note } of items) {
         const c = COLOUR[note.tone] || COLOUR.warn;
 
+        // The spotlight is opt-in now, and it used to be always on.
+        //
+        // It was a 35% white scrim over everything except the ring, which is a
+        // fair way to draw the eye and a bad way to show a client a colour. His
+        // #065146 footer photographed as #5D8E87 and his #EAEEED strip as
+        // #F1F4F3: every colour on the page 35% lighter than it really is, in a
+        // picture sent to prove those exact colours were right. He had just
+        // reported colour faults, so the shot invited another one.
+        //
+        // The DOM was innocent and said so: computed background was rgb(6,81,70)
+        // the whole time, and nothing in the ancestor chain had opacity below 1.
+        // Only sampling the saved PNG found it, which is the same lesson as
+        // "open every image" one screen up.
         const ring = document.createElement('div');
         ring.style.cssText = `position:absolute;left:${box.x - 6}px;top:${box.y - 6}px;` +
           `width:${box.width + 12}px;height:${box.height + 12}px;` +
-          `border:3px solid ${c};border-radius:8px;box-shadow:0 0 0 9999px rgba(255,255,255,.35)`;
+          `border:3px solid ${c};border-radius:8px` +
+          (spotlight ? `;box-shadow:0 0 0 9999px rgba(255,255,255,.35)` : '');
         layer.appendChild(ring);
 
         // Put the label wherever there is room, so it never runs off the viewport.
@@ -198,11 +246,53 @@ try {
         layer.appendChild(line);
       }
       document.body.appendChild(layer);
-    }, boxes);
+    }, { items: boxes, spotlight: Boolean(shot.spotlight) });
 
     await page.waitForTimeout(250);
     const file = path.join(OUT, `${shot.name}.png`);
-    await page.screenshot({ path: file, fullPage: shot.fullPage });
+    // animations: 'disabled' fast-forwards CSS transitions to their end state.
+    //
+    // Without it this shipped a picture of the client's shop with every colour on
+    // the page washed out. The storefront fades content in, and the shot landed
+    // mid fade: his #065146 footer photographed as #5D8E87, the strip as #F1F4F3.
+    // Measured rather than guessed, and the tell was that all three were the
+    // declared colour at exactly 0.65 alpha over white, which is one fade rather
+    // than three wrong values.
+    //
+    // getComputedStyle could not have caught it either: it reports the DECLARED
+    // colour, so a probe said rgb(6,81,70) while the pixels said otherwise. The
+    // only thing that catches this is sampling the image, which is why the rule
+    // above says open every file.
+    await page.screenshot({ path: file, fullPage: shot.fullPage, animations: 'disabled' });
+
+    // Then prove it, by reading a pixel back rather than trusting the flag.
+    //
+    // `expectColour` names a selector and the colour it must actually photograph
+    // as. The check samples the saved PNG at that element's centre and fails when
+    // the pixel is more than a few values off. A washed-out shot of a client's
+    // brand colour is worse than no shot: it invites him to report a bug that is
+    // only in the picture.
+    if (shot.expectColour) {
+      const { selector, hex } = shot.expectColour;
+      const box = await page.locator(selector).first().boundingBox();
+      if (!box) die(`${shot.name}: cannot measure ${selector} to verify its colour`);
+      const want = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+      const { execFileSync } = await import('node:child_process');
+      const px = execFileSync('python3', ['-c', `
+from PIL import Image
+im = Image.open("${file}").convert("RGB")
+w,h = im.size
+# The PNG is deviceScaleFactor times the CSS box, so scale before sampling.
+sx = w / ${page.viewportSize().width}
+print(*im.getpixel((int((${box.x} + ${box.width}/2) * sx), int((${box.y} + ${box.height}/2) * sx))))
+`]).toString().trim().split(/\s+/).map(Number);
+      const off = Math.max(...want.map((v, i) => Math.abs(v - px[i])));
+      if (off > 6) {
+        die(`${shot.name}: ${selector} photographed as rgb(${px.join(',')}) but should be ${hex}. ` +
+            `Off by ${off}. If every colour on the page is off by a similar ratio the shot caught a fade.`);
+      }
+      console.log(`  colour ok  ${selector} is ${hex}`);
+    }
     made++;
     console.log(`  ok    ${file}`);
     await ctx.close();

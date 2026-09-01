@@ -10,10 +10,15 @@ export async function actionResult<T extends Record<string, unknown>>(
     const result = await fn();
     return { success: true, ...result };
   } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : fallbackMessage,
-    };
+    // The fallback also covers an Error with a blank message, not only a thrown
+    // non-Error. That case is real and it is the worst one: the add to cart
+    // failure that hid all afternoon threw an Error whose message was empty, so
+    // the toast rendered as an empty box and the shopper was told nothing at all.
+    const message = error instanceof Error ? error.message.trim() : "";
+    // Logged as well as returned. A server action that fails silently on the
+    // client should still be findable in the container's logs.
+    console.error("action failed:", fallbackMessage, error);
+    return { success: false, error: message || fallbackMessage };
   }
 }
 

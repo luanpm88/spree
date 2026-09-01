@@ -53,6 +53,13 @@ module SpreeStarter
     config.mission_control.jobs.http_basic_auth_password =
       ENV.fetch("MISSION_CONTROL_PASSWORD") { "spree123" if Rails.env.local? }
 
+    # Answer with Markdown when a caller asks for it, for AI agents reading the
+    # shop. Carried across from the client's 5.4 install, which pairs it with a
+    # robots.txt and llms.txt written for the same audience. app/middleware is
+    # not autoloaded, hence the explicit require.
+    require_relative '../app/middleware/markdown_negotiation'
+    config.middleware.use MarkdownNegotiation
+
     config.action_mailer.deliver_later_queue_name = :mailers
     config.active_storage.queues.purge = :active_storage_purge
     config.active_storage.queues.analysis = :active_storage_analysis

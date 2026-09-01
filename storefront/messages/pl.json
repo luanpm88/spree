@@ -182,7 +182,9 @@
     "properties": "Właściwości",
     "yes": "Tak",
     "no": "Nie",
-    "optionFilterChip": "{filter}: {value}"
+    "optionFilterChip": "{filter}: {value}",
+    "reviewsHeading": "Opinie klientów",
+    "reviewsCount": "({count, plural, one {# opinia} few {# opinie} many {# opinii} other {# opinii}})"
   },
   "navigation": {
     "home": "Strona główna",
@@ -261,7 +263,13 @@
     "policyConsentRequired": "Musisz zaakceptować regulamin sklepu przed złożeniem zamówienia",
     "iAgreeToThe": "Zgadzam się z",
     "policySeparatorComma": ", ",
-    "policySeparatorAnd": " i "
+    "policySeparatorAnd": " i ",
+    "noteTitle": "Uwagi do zamówienia",
+    "noteHint": "Wszystko, co powinniśmy wiedzieć o tym zamówieniu lub dostawie.",
+    "notePlaceholder": "Na przykład: zadzwonić przed przyjazdem lub zostawić u sąsiada",
+    "noteSaving": "Zapisywanie…",
+    "noteSaved": "Zapisano",
+    "noteNotSaved": "Nie udało się zapisać notatki. Nie ma to wpływu na zamówienie."
   },
   "address": {
     "firstName": "Imię",

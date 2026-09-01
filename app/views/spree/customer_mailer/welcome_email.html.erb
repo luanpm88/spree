@@ -34,5 +34,20 @@
         <span style="word-break: break-all;"><%= @reset_url %></span>
       </p>
     <% end %>
+
+  <%# The founder sign-off, the same block the order, shipping and refund mails carry. %>
+  <%# It was missing here, so the 13 Aug reply is wrong in a bigger way than the %>
+  <%# slogan being absent: there was no founder line for it to sit under at all. %>
+  <%# The slogan renders only where he has supplied the word, which today is the %>
+  <%# business shop alone. Every other shop file has owner_name and owner_title %>
+  <%# and no slogan, so those mails sign off with the founder and nothing more. %>
+  <p class="text-center" style="margin: 24px 0 10px 0;mso-line-height-rule: exactly;text-align: center;">
+    <strong><%= Spree.t(:owner_name, scope: [:user_emails, :common]) %></strong><br>
+    <em><%= Spree.t(:owner_title, scope: [:user_emails, :common]) %></em>
+  </p>
+  <% slogan = Spree.t(:slogan, scope: [:user_emails, :common], default: '') %>
+  <% if slogan.present? %>
+    <p class="text-center" style="margin: 0 0 10px 0;mso-line-height-rule: exactly;text-align: center;"><%= slogan %></p>
+  <% end %>
   <% end %>
 <% end %>

@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+# Is every sentence he wrote actually on the page?
+#
+#   python3 script/page_copy_parity.py tmp/client/<dir>
+#
+# ── why ──────────────────────────────────────────────────────────────────────
+#
+# "Matching his words is not matching his page" is written in CLAUDE.md because
+# every sentence on three pages was verified present and he still said it was
+# not right. This is the other half: it does not prove the page LOOKS right, it
+# proves nothing of his was dropped on the way in.
+#
+# It found three real drops on its first run, all the same shape. Each of his
+# three freight cards ends with its own line about where the tracking number
+# comes from, and all three had been collapsed into one shared line under the
+# group, with wording that was partly invented to cover all three.
+import glob
+import html
+import os
+import re
+import sys
+import unicodedata
+import zipfile
+
+
+def docx_lines(path):
+    with zipfile.ZipFile(path) as z:
+        xml = z.read("word/document.xml").decode("utf8")
+    xml = re.sub(r"</w:p>", "\n", xml)
+    xml = re.sub(r"<w:br[^>]*/>", "\n", xml)
+    txt = html.unescape(re.sub(r"<[^>]+>", "", xml))
+    return [l.strip() for l in txt.split("\n") if l.strip()]
+
+
+def norm(s):
+    s = unicodedata.normalize("NFKD", s)
+    for a, b in (("’", "'"), ("‘", "'"), ("“", '"'), ("”", '"'),
+                 ("—", " "), ("–", "-")):
+        s = s.replace(a, b)
+    s = s.replace("**", "")
+    s = re.sub(r"[^a-z0-9 ]", " ", s.lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+# His own notes to me, not copy for a customer.
+NOTE = re.compile(
+    r"^(main image|use your attached|it visually explains|i would not put|"
+    r"then beneath|then use three|under the button|this makes open|"
+    r"left\b|right\b|i prefer this|i.d use|seo|page seo|title:|page title|url:|"
+    r"meta description|and a meta description|immediately underneath|"
+    r"production & project tracking|button linking|contact form|"
+    r"this cross-linking|find it|insert form|preview url|embed booking)",
+    re.I,
+)
+
+# And raw markup. He pastes the embed code for a form or a calendar straight
+# into the document beside the words, so the line is an instruction carrying a
+# URL rather than anything a customer reads. The URL inside it still has to be
+# right, and it is: the block that carries it is checked by opening it.
+MARKUP = re.compile(r"^\s*<[a-z!/]", re.I)
+
+# One more of his notes, which reads like copy and is not. It is his caption for
+# the tracking diagram, listing what the picture shows, and it sits directly
+# under "I would not put any additional text over this image. It already
+# contains enough visual information." Printing it on the page would be doing
+# the one thing he asked not to be done.
+NOT_COPY = ("production project management sea freight air freight rail freight delivery",)
+
+
+def probes(line):
+    """The strings that must appear somewhere in the copy for this line to be present.
+
+    A numbered step arrives as "3. Design & Development" and is rendered from
+    the title alone, with the number drawn by the component, so the prefix comes
+    off. A run of categories arrives as one line joined by middots and is
+    rendered as one item each, so it is split. Both were reported as missing on
+    the first run and both were on the page.
+    """
+    line = re.sub(r"^\d+[.)]\s*", "", line.strip())
+    parts = [p.strip() for p in line.split("·")] if "·" in line else [line]
+    return [norm(p) for p in parts if len(norm(p)) >= 8]
+
+
+def main():
+    src = sys.argv[1] if len(sys.argv) > 1 else "tmp/client/business-pages-2026-08-25b"
+    content = norm(open("storefront/src/lib/blocks/content.ts", encoding="utf8").read())
+    missing_total = 0
+    for path in sorted(glob.glob(os.path.join(src, "*", "*.docx"))):
+        if "__MACOSX" in path:
+            continue
+        name = os.path.basename(os.path.dirname(path))
+        missing, checked = [], 0
+        for line in docx_lines(path):
+            if (
+                NOTE.match(line)
+                or MARKUP.match(line)
+                or (line.startswith("[") and line.endswith("]"))
+            ):
+                continue
+            for p in probes(line):
+                if p in NOT_COPY:
+                    continue
+                checked += 1
+                if p[:400] not in content:
+                    missing.append(line if len(line) < 110 else line[:110] + "...")
+                    break
+        missing_total += len(missing)
+        mark = "ok  " if not missing else "MISS"
+        print(f"  {mark}  {name}: {checked} of his strings checked, {len(missing)} not on the page")
+        for m in missing:
+            print(f"          {m}")
+    print()
+    if missing_total:
+        print(f"  {missing_total} line(s) he wrote are not on the pages")
+        raise SystemExit(1)
+    print("  ok — every line he wrote is on the page")
+
+
+main()

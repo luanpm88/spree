@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { shopBrand } from "@/lib/blocks/brand";
 import { cachedGetPolicy, getPolicy } from "@/lib/data/policies";
 import {
   buildLocalizedAlternates,
   translationFingerprint,
 } from "@/lib/metadata/alternates";
+import { SOCIAL_IMAGE_PATH } from "@/lib/seo";
 import { getStoreName, getStoreUrl } from "@/lib/store";
 
 interface PolicyPageProps {
@@ -71,6 +73,10 @@ export async function generateMetadata({
       title: policy.name,
       description,
       ...(localizedAlternates ? { url: localizedAlternates.canonical } : {}),
+      // The 4 policies are the only pages a signed out visitor can read on the
+      // closed shop, so they are the ones most likely to be shared as a link,
+      // and they were the ones with no picture behind them.
+      images: [shopBrand().og || SOCIAL_IMAGE_PATH],
     },
   };
 }

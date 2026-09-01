@@ -56,12 +56,64 @@ if [ "$STAGED" = "1" ]; then
   read_file() { git show ":$1" 2>/dev/null; }
   WHAT="staged for commit"
 else
-  FILES=$(git ls-files)
+  # Tracked files AND files that are new but not ignored.
+  #
+  # `git ls-files` alone reads only what git already knows about, so a file
+  # written five minutes ago and about to be committed is invisible to this
+  # check. That is precisely the moment the check exists for: a new rake task
+  # went past clean while carrying the client's product slugs in its comments,
+  # because it had not been `git add`ed yet.
+  #
+  # --others --exclude-standard adds the untracked files that are not gitignored,
+  # which is the set that would go in on the next `git add -A`.
+  FILES=$( { git ls-files; git ls-files --others --exclude-standard; } | sort -u )
   read_file() { cat "$1" 2>/dev/null; }
-  WHAT="tracked"
+  WHAT="tracked or about to be"
 fi
 
 [ -z "$FILES" ] && { echo "nothing $WHAT"; exit 0; }
+
+# ── the second pass: shapes, not names ───────────────────────────────────────
+#
+# The list above can only hold what is known in advance: the client's brands, his
+# domains, his product names. It cannot hold his CUSTOMERS, because nobody knows
+# their names until one of them places an order.
+#
+# That gap was found the hard way, twice in two days. Both times a real customer's
+# name, email address and street went into a comment while writing up what had
+# been measured, and this check passed, because a customer is not on the list and
+# never could be.
+#
+# So these patterns match by shape and name nobody:
+#
+#   an order number    three capitals then nine digits, which is his format
+#   an email address   any real one, minus the placeholder domains below
+#
+# Case sensitive on purpose. Matched case-insensitively, a sha256 in Gemfile.lock
+# contains "eca4752..." and reads as an order number.
+SHAPES='\b[A-Z]{3}[0-9]{9}\b|\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
+
+# Addresses that are examples, machinery, or ours. Anything else in a public file
+# is somebody's real address and does not belong here.
+#
+# The placeholder list is deliberately multilingual. The first run of this pass
+# flagged the German, Spanish, French and Polish sign-up forms, because every
+# translator wrote "example" in their own language and only the English one was
+# allowed for. A gate that cries wolf on four translation files gets switched off.
+SHAPE_SAFE='@(example|test|invalid|localhost|127\.0\.0\.1)'
+SHAPE_SAFE="$SHAPE_SAFE"'|@(beispiel|ejemplo|exemple|przyklad|esempio|voorbeeld)\.'
+SHAPE_SAFE="$SHAPE_SAFE"'|@(domain|email|company|your-domain|mydomain|shop)\.(com|net|org)'
+SHAPE_SAFE="$SHAPE_SAFE"'|@[a-z0-9.-]*(spreecommerce|getvendo|rubygems|github|anthropic|nodejs|npmjs|sentry\.io)'
+SHAPE_SAFE="$SHAPE_SAFE"'|noreply@|no-reply@|postmaster@|your-?email@|user@|admin@example'
+SHAPE_SAFE="$SHAPE_SAFE"'|@sha256|@types/|@spree/|@playwright/|@tailwindcss/|@biomejs/'
+# Our own company, and the demo domain of an unrelated project already in this
+# tree. Neither is the client and neither is a customer of his.
+SHAPE_SAFE="$SHAPE_SAFE"'|@hoangkhang\.com\.vn|@b-teka\.com'
+
+# Dependency locks and checksums, where a shape match is never a person, and
+# binaries, where matching bytes mean nothing. A PDF flagged on its own
+# compressed streams was the first false red this pass produced.
+SHAPE_SKIP_FILE='^(Gemfile\.lock|.*/?package-lock\.json|.*/?pnpm-lock\.yaml|yarn\.lock|.*\.sum)$|\.(pdf|png|jpe?g|webp|gif|ico|woff2?|ttf|zip|gz|mp4|webm|db|sqlite3?)$'
 
 hits=0
 count=0
@@ -69,6 +121,14 @@ while IFS= read -r f; do
   [ -n "$f" ] || continue
   count=$((count + 1))
   found=$(read_file "$f" | grep -inE "$PATTERNS" | filter | head -3)
+
+  if ! printf '%s' "$f" | grep -qE "$SHAPE_SKIP_FILE"; then
+    shaped=$(read_file "$f" | grep -nE "$SHAPES" | grep -vE "$SHAPE_SAFE" | filter | head -3)
+    if [ -n "$shaped" ]; then
+      found=$(printf '%s\n%s' "$found" "$shaped" | grep -v '^$')
+    fi
+  fi
+
   if [ -n "$found" ]; then
     hits=$((hits + 1))
     printf '\n  %s\n' "$f"

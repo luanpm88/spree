@@ -15,6 +15,7 @@ import {
   useState,
 } from "react";
 import { AddressSection } from "@/components/checkout/AddressSection";
+import { CustomerNote } from "@/components/checkout/CustomerNote";
 import { DeliveryMethodSection } from "@/components/checkout/DeliveryMethodSection";
 import {
   type PaymentCompleteResult,
@@ -38,6 +39,7 @@ import {
   removeDiscountCode,
   removeGiftCard,
   selectDeliveryRate,
+  updateCustomerNote,
   updateOrderAddresses,
 } from "@/lib/data/checkout";
 import { isAuthenticated as checkAuth } from "@/lib/data/cookies";
@@ -363,6 +365,26 @@ function CheckoutPageContentInner({
   );
 
   // Handle delivery rate selection
+  // Saving the note must not be able to stop the order.
+  //
+  // It returns the shape CustomerNote expects and swallows nothing: a failure
+  // comes back as success:false with a message, the customer sees it under the
+  // box, and everything else on the page carries on. Nobody loses a sale
+  // because a delivery instruction would not attach.
+  const handleSaveCustomerNote = useCallback(
+    async (note: string) => {
+      const currentOrder = cartRef.current;
+      if (!currentOrder) return { success: false, error: "No order" };
+      const result = await updateCustomerNote(currentOrder.id, note);
+      if (result.success) {
+        setCart(result.cart as Cart);
+        return { success: true };
+      }
+      return { success: false, error: result.error };
+    },
+    [setCart],
+  );
+
   const handleDeliveryRateSelect = useCallback(
     async (fulfillmentId: string, rateId: string) => {
       const currentOrder = cartRef.current;
@@ -727,6 +749,17 @@ function CheckoutPageContentInner({
             onDeliveryRateSelect={handleDeliveryRateSelect}
             processing={processing}
             errors={sectionErrors.shipping}
+          />
+        </div>
+
+        {/* The customer own message, placed between delivery and payment
+            because that is what it is usually about: how the parcel should
+            reach them. */}
+        <div id="checkout-section-note" className="mt-6">
+          <CustomerNote
+            cart={cart}
+            onSave={handleSaveCustomerNote}
+            processing={processing}
           />
         </div>
 

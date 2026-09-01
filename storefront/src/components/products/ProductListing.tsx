@@ -11,7 +11,6 @@ import { InfiniteProductList } from "@/components/products/InfiniteProductList";
 import { ListingAnalytics } from "@/components/products/ListingAnalytics";
 import { ListingFilterBar } from "@/components/products/ListingFilterBar";
 import { ProductListingSkeleton } from "@/components/products/ProductListingSkeleton";
-import { PRODUCT_CARD_FIELDS } from "@/lib/data/cached";
 import {
   type ListingSearchParams,
   listingKey,
@@ -109,7 +108,18 @@ async function ProductListingInner({
     limit: PAGE_SIZE,
     ...queryParams,
     ...baseParams,
-    fields: PRODUCT_CARD_FIELDS,
+    // fields is deliberately NOT passed here.
+    //
+    // `fields` does not only trim the JSON, Spree narrows the SQL SELECT to match.
+    // thumbnail_url is not a column: the serializer computes it from
+    // product.primary_media, which needs primary_media_id in the row. Without it
+    // Active Record raises MissingAttributeError, the serializer turns that into a
+    // null, and every product card renders with no img tag at all. The API answers
+    // 200 and nothing is logged, which is how a shop went live showing grey boxes.
+    //
+    // The payload is larger. A shop with photographs is worth more than the bytes.
+    // fields: PRODUCT_CARD_FIELDS,
+    expand: ["media"],
   };
 
   // Filters fetch: Ransack-wrapped with the same active filter
