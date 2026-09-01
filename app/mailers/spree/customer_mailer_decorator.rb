@@ -269,6 +269,31 @@ module Spree
       # was cleared.
       return if store.new_order_notifications_email.blank?
 
+      # A shop where nobody can be approved must not announce that somebody is
+      # waiting for approval.
+      #
+      # This was missing, and it reached the client as a real mail from a RETAIL
+      # shop. His words: "I just got an email for a new retail customer who signed
+      # up in AU shop. It states: Someone has signed up and is waiting for approval.
+      # This email and its message is only for the [wholesale shops], no retail shop
+      # should have this message for customer or admin."
+      #
+      # The two guards that were here are both true on a retail shop: it has a
+      # notifications address like every shop, and a retail customer belongs to no
+      # group. So every retail signup announced itself.
+      #
+      # Customer groups are the test rather than a per-shop flag, because approval on
+      # this shop IS a customer group: the admin approves by moving somebody into one,
+      # and the three outcomes are three groups. A shop with none has no way to
+      # approve anybody, so the mail cannot be acted on and is meaningless by
+      # construction. Measured across the estate on 1 Sep: the wholesale shop has 3
+      # groups, every retail shop has 0.
+      #
+      # It also needs no maintenance. Give a retail shop its first customer group and
+      # approval genuinely becomes possible there, and the mail starts on its own.
+      return unless store.respond_to?(:customer_groups)
+      return unless store.customer_groups.where(deleted_at: nil).exists?
+
       # Somebody who belongs to a group has already been approved, which is what has
       # happened when the shop creates a trade customer and assigns them in one sitting.
       # Nothing to approve, nothing to announce.

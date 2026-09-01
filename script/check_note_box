@@ -43,6 +43,14 @@ if [[ ! -f "$ESTATE_FILE" ]]; then
   exit 0
 fi
 
+# Needed to clean up after the probe, not to run it. The measurement is a browser
+# against a public address; the cleanup is a database write and needs the server.
+# shellcheck source=/dev/null
+[[ -f .estate.env ]] && source .estate.env
+CAN_CLEAN=1
+[[ -n "${SSH_HOST:-}" && -n "${SSH_KEY:-}" ]] || CAN_CLEAN=0
+: "${SSH_PORT:=22}"
+
 if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; YE=$'\033[33m'; R=$'\033[0m'
 else GR=''; RE=''; YE=''; R=''; fi
 
@@ -123,17 +131,20 @@ try {
   await p.waitForTimeout(8000);
   const kept = await p.locator("#checkout-customer-note").inputValue().catch(() => "");
   if (kept.trim() !== MSG) { out("FAIL", `typed but did not persist, read back "${kept.slice(0, 40)}"`); await b.close(); process.exit(0); }
-  // Clear what the probe wrote before leaving.
+  // The marker is LEFT IN PLACE on purpose. Do not add a clearing step here.
   //
-  // This gate runs on every shop, repeatedly, against LIVE data. The first
-  // version left "check_note_box probe, please ignore" sitting in twenty carts
-  // across six shops, and on the wholesale shop it wrote into the owner own
-  // cart, because the credentials for a closed shop are his account. A check
-  // that dirties the thing it measures cannot be run often, and a check that
-  // cannot be run often is not a gate.
-  await p.locator("#checkout-customer-note").fill("").catch(() => {});
-  await p.locator("h2").first().click({ timeout: 8000 }).catch(() => {});
-  await p.waitForTimeout(4000);
+  // The shell removes the whole order afterwards, and it finds it by this exact
+  // sentence. That is the only identifier that cannot be confused with a real
+  // shopper: on the wholesale shop the probe signs in as the owner, so the order
+  // it creates carries HIS user id, and every guest-shaped guard correctly
+  // refuses to touch it.
+  //
+  // An earlier version cleared the text instead and was believed to be clean.
+  // It was not: walking to a checkout moves the order from `cart` to `address`,
+  // so each run left a draft order behind on every shop. They accumulated until
+  // the client opened Draft Orders, saw a column of N/A customers and asked
+  // whether something was broken. Deleting the order removes the text with it,
+  // which clearing never did the other way round.
   out("OK", `${Math.round(bb.width)}x${Math.round(bb.height)}, saved and read back`);
 } catch (e) {
   out("FAIL", e.message.slice(0, 90));
@@ -180,7 +191,52 @@ while IFS='|' read -r shop _dir _db _port _sport tmp _store live _rest; do
     sleep 8
     line=$(node "$PROBE" "$host" "$email" "$password" 2>/dev/null | grep -E '^(OK|FAIL|SKIP)\|' | head -1)
   fi
+  # Remove the order the probe just created.
+  #
+  # Clearing the TEXT was not enough, and believing it was is what made this a
+  # problem the client had to report. Walking to a checkout moves the order from
+  # `cart` to `address`, so every run of this gate left a draft order behind on
+  # every shop, and they accumulated: 24 of them across five shops by 1 Sep. He
+  # opened Draft Orders, saw a column of "N/A" customers, and asked whether
+  # something was broken. Nothing was broken. He was looking at our probe.
+  #
+  # The order is found by the sentence the probe typed, and by nothing else.
+  #
+  #   incomplete                a completed order is never touched, whatever it says
+  #   note is EXACTLY the marker no shopper types this sentence, and an equality test
+  #                             cannot spread the way a LIKE can. A cleanup here once
+  #                             matched a real customer order with `%Waze app%`
+  #                             because the pattern was a fragment
+  #   created minutes ago       bounded to this run
+  #
+  # Deliberately NO guest condition. On the closed shop the probe signs in as the
+  # owner, so its order carries his user id; a guest-shaped guard would skip the one
+  # shop where leaving rubbish in a cart matters most, which is what it did.
+  #
+  # If the delete somehow leaves anything, the text is blanked as a fallback so a
+  # failure here can never end with the probe's words sitting in a live cart.
+  cleaned=0
+  [[ "$CAN_CLEAN" == 1 ]] && cleaned=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+    "docker exec ${shop}_web bin/rails runner '
+       marker = %q{check_note_box probe, please ignore}
+       scope = Spree::Order.where(completed_at: nil, special_instructions: marker)
+                           .where(%q{created_at > ?}, 30.minutes.ago)
+       gone = 0
+       scope.to_a.each do |o|
+         id = o.id
+         Spree::Order.transaction do
+           o.destroy
+           raise ActiveRecord::Rollback if Spree::Order.exists?(id: id)
+         end
+         gone += 1 unless Spree::Order.exists?(id: id)
+       end
+       left = Spree::Order.where(completed_at: nil, special_instructions: marker)
+       left.update_all(special_instructions: nil) if left.exists?
+       print %q{<<C:} + gone.to_s + %q{:C>>}
+     ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<C:\(.*\):C>>.*/\1/p')
+
   verdict="${line%%|*}"; detail="${line#*|}"
+  [[ "${cleaned:-0}" -gt 0 ]] && detail="$detail, cleaned up after itself"
   case "$verdict" in
     OK)   checked=$((checked + 1)); printf '  %-10s %sok%s   %s\n' "$shop" "$GR" "$R" "$detail" ;;
     SKIP) printf '  %-10s %s%s%s\n' "$shop" "$YE" "$detail" "$R" ;;

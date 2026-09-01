@@ -77,7 +77,10 @@ build_probe() {
          html = mail.html_part ? mail.html_part.body.to_s : mail.body.to_s
          got  = html[/<img[^>]+src=\"([^\"]+)\"/i, 1].to_s
          want = Spree.t(:shop_logo, scope: [:user_emails, :common], default: %q{}).to_s
-         print %q{<<L:} + got + %q{|} + want + %q{|} + I18n.locale.to_s + %q{:L>>}
+         own  = Rails.root.join(%q{app/views/shops}, ENV[%q{SHOP}].to_s,
+                                %q{spree/order_mailer/confirm_email.html.erb})
+         print %q{<<L:} + got + %q{|} + want + %q{|} + I18n.locale.to_s +
+               %q{|} + (File.exist?(own) ? %q{rieng} : %q{chung}) + %q{:L>>}
        end
      ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<L:\(.*\):L>>.*/\1/p'
 }
@@ -105,10 +108,7 @@ while IFS='|' read -r shop _rest; do
     continue
   fi
 
-  got="${raw%%|*}"
-  rest="${raw#*|}"
-  want="${rest%%|*}"
-  loc="${rest##*|}"
+  IFS='|' read -r got want loc kind <<< "$raw"
 
   if [[ "$got" == "NOORDER" ]]; then
     printf '  %-10s %s(no order to build a mail from, not measured)%s\n' "$shop" "$YE" "$R"
@@ -136,14 +136,27 @@ while IFS='|' read -r shop _rest; do
   prior=$(grep -F "	${base_got}" "$seen_file" 2>/dev/null | head -1 | cut -f1)
   printf '%s\t%s\n' "$shop" "$base_got" >> "$seen_file"
 
-  if [[ "$got" != "$want" ]]; then
-    printf '  %s%-10s renders %s but its own locale names %s%s\n' \
-      "$RE" "$shop" "$base_got" "$base_want" "$R"
-    bad=$((bad + 1))
-  elif [[ -n "$prior" ]]; then
+  # Two shops mailing one image is the fault the client reported, and it is a
+  # failure whatever template either of them uses. Checked first for that reason.
+  if [[ -n "$prior" ]]; then
     printf '  %s%-10s renders %s, which %s renders too%s\n' \
       "$RE" "$shop" "$base_got" "$prior" "$R"
     bad=$((bad + 1))
+
+  # The locale rule applies only to a shop that renders the SHARED header, which
+  # is the file that was fixed. A shop with its own mailer design does not go
+  # through it at all: the second brand has a bespoke confirm_email with no img
+  # of its own, so its logo comes from Spree's own mailer layout and is the image
+  # that shop uploaded. That is its own logo, correctly, and an earlier version of
+  # this gate called it a fault. A false red costs more here than the fault does,
+  # and this project has paid that bill several times.
+  elif [[ "$kind" == "chung" && "$got" != "$want" ]]; then
+    printf '  %s%-10s renders %s but its own locale names %s%s\n' \
+      "$RE" "$shop" "$base_got" "$base_want" "$R"
+    bad=$((bad + 1))
+
+  elif [[ "$kind" != "chung" ]]; then
+    printf '  %-10s ok   %s  (own mailer design, own uploaded logo)\n' "$shop" "$base_got"
   else
     printf '  %-10s ok   %s  (locale %s)\n' "$shop" "$base_got" "$loc"
   fi
@@ -161,11 +174,15 @@ The header is app/views/spree/shared/_email_logo.html.erb. The shop's own url
 from its locale file must be tried BEFORE the uploaded attachment, because an
 attachment goes stale silently and a locale file is the thing he edits.
 
-That file is gitignored and travels in CLIENT_ASSETS, so it reaches a shop only
-through the estate ship script, one shop at a time. Not script/deploy, which is
-built for the single-app reference box and knows nothing about /srv/<shop>:
+That file is gitignored and travels in CLIENT_ASSETS, so it reaches the shops
+through a build, not through a container copy:
 
-  script/commercial ship <shop> && script/commercial up <shop>
+  script/shop_host ship            builds one image for the whole estate
+  script/shop_host refresh         puts every shop onto it
+
+NOT script/commercial, and not script/deploy. Both drive different machines: the
+seven shops are one box, script/commercial is another box entirely, and a ship
+aimed at the wrong one reports success and changes nothing here.
 
 A container copy fixes the running container and nothing else. It was done that
 way once, on one shop, and that is precisely why the other six kept the fault

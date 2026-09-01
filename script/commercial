@@ -4,7 +4,7 @@
 #
 #   script/commercial survey        read-only: what is on the box right now
 #   script/commercial prepare       swap, sysctl, certbot. Idempotent.
-#   script/commercial ship <shop>   send HEAD to /srv/<shop>/app
+#   script/commercial ship <shop>   send HEAD to that shop's own directory
 #   script/commercial up <shop>     build, start, wait for health
 #   script/commercial nginx <shop> [backend|storefront]   vhost, nginx -t, certbot
 #   script/commercial status        what is deployed and what revision
@@ -192,9 +192,36 @@ cmd_prepare() {
   info "  own server, so it is asked for rather than done."
 }
 
+# ── which directory is this shop ────────────────────────────────────────────
+
+# The shop must ALREADY be there. Every command here changes a shop that exists;
+# none of them creates one.
+#
+# ship used to open with `mkdir -p /srv/$shop/app`, which turns a name that is
+# wrong into a silent success. On 1 Sep a ship was run with the name of a shop
+# that lives on the OTHER server. This box had never heard of it, mkdir made the
+# directory, tar filled it with 57 MB, and the run printed
+#
+#   ok   45 client files in place
+#
+# Nothing was deployed, the real shop was untouched, and nothing said so. It
+# surfaced only because the next command wanted a .env that the invented
+# directory did not have.
+#
+# Note that .estate is NOT the mapping to use here. That file describes the other
+# server, whose directories are named after the domain; this box uses the shop
+# name and holds shops that do not appear in it at all. The two estates are
+# separate and the only safe common rule is: if it is not there, stop.
+require_shop_dir() {
+  local dir="/srv/$1"
+  host "test -d '$dir'" \
+    || die "$dir does not exist on this server, so nothing was sent. Check the name, and check you meant THIS box: the seven-shop estate is a different machine and ships with script/shop_host. 'script/commercial survey' lists what is actually here."
+  printf '%s' "$dir"
+}
+
 # ── ship ────────────────────────────────────────────────────────────────────
 
-# Send the current commit to /srv/<shop>/app, plus the compose file.
+# Send the current commit to the shop's own directory, plus the compose file.
 #
 # `git archive` rather than `git clone`: no push, no deploy key, no branch to
 # keep in step, and the tree that lands is exactly one commit with nothing
@@ -202,7 +229,7 @@ cmd_prepare() {
 # answer "what is actually running here".
 cmd_ship() {
   local shop="${1:?usage: script/commercial ship <shop>}"
-  local dir="/srv/$shop"
+  local dir; dir="$(require_shop_dir "$shop")"
   local sha; sha="$(git -C "$ROOT" rev-parse HEAD)"
 
   if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
@@ -210,7 +237,7 @@ cmd_ship() {
   fi
 
   step "Shipping ${sha:0:7} to $dir/app"
-  host "mkdir -p '$dir/app'"
+  host "mkdir -p '$dir/app'"   # inside a shop that require_shop_dir already proved exists
   git -C "$ROOT" archive --format=tar HEAD | host "tar -x -C '$dir/app'"
   host "echo '$sha' > '$dir/app/REVISION'"
   ok "$(host "find '$dir/app' -type f | wc -l | tr -d ' '") files"
@@ -264,7 +291,7 @@ cmd_ship() {
 
 cmd_up() {
   local shop="${1:?usage: script/commercial up <shop>}"
-  local dir="/srv/$shop"
+  local dir; dir="$(require_shop_dir "$shop")"
 
   host "test -f '$dir/.env'" || die "no $dir/.env yet. Create it first."
 
@@ -303,7 +330,7 @@ cmd_up() {
 cmd_nginx() {
   local shop="${1:?usage: script/commercial nginx <shop> [backend|storefront]}"
   local which="${2:-backend}"
-  local dir="/srv/$shop"
+  local dir; dir="$(require_shop_dir "$shop")"
 
   # Two vhosts per shop: the API and admin on store.<domain>, and the shop customers
   # see on <domain>. Same template, different upstream, because nothing about the
