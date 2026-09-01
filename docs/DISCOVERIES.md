@@ -4703,3 +4703,79 @@ thứ đang được đo, và một probe tự đặt locale sẽ sửa lỗi tr
 
 Điều tổng quát hơn: **một phép kiểm tìm mảnh chuỗi không đo được thứ tự.** Muốn
 biết thứ hai nhánh nào thắng thì phải chạy nó ra kết quả, chứ không đọc mã nguồn.
+
+## 29. Xoá chữ trong ô không xoá được cái đơn, và khách hàng là người phát hiện (1 Sep)
+
+`check_note_box` mở checkout thật trên từng shop, gõ vào ô ghi chú, tải lại trang,
+đọc lại. Bản đầu để lại nguyên câu thử trong giỏ của 20 người. Đã sửa: probe xoá
+chữ trước khi thoát.
+
+Sửa như vậy **chưa đủ**, và tôi đã tin là đủ.
+
+### Cái bị bỏ sót
+
+Đi tới checkout làm đơn chuyển trạng thái từ `cart` sang `address`. Xoá chữ không
+đụng gì tới điều đó. Nên mỗi lần chạy cổng để lại **một đơn nháp trên mỗi shop**,
+và chúng tích lại.
+
+Chủ shop mở màn hình Draft Orders, thấy một cột toàn `N/A` ở ô khách hàng, và hỏi
+có phải hệ thống hỏng gì không. Đo lúc đó: **24 đơn trên 5 shop**, tất cả tạo trong
+cùng một ngày, dồn thành từng cụm cách nhau vài phút đúng bằng nhịp cổng đi qua hệ.
+
+Không có gì hỏng. Ông đang nhìn probe của chúng tôi.
+
+### Một dấu vân tay trông rất thuyết phục, và nó sai
+
+Các đơn đó mang `special_instructions = ''` — chuỗi rỗng, không phải NULL. Lập luận
+lúc đó: chỉ thứ gì gõ vào ô rồi xoá mới để lại như vậy, khách chưa chạm vào ô thì để
+NULL. Nghe kín kẽ, và tôi đã ghi nó vào đây như một sự thật.
+
+Đo lại toàn hệ thì **sai**:
+
+```
+don chua xong co ghi chu = chuoi rong:  221
+trong do co email hoac tai khoan:       221
+trong do an danh:                         0
+som nhat:                        31/08/2025
+```
+
+221 đơn thật mang chuỗi rỗng, sớm nhất từ một năm trước khi probe này tồn tại. Ô ghi
+chú được ghi `''` chứ không phải NULL trong đường đi bình thường. Chuỗi rỗng **không**
+phân biệt được gì cả.
+
+Thứ thật sự nhận diện được probe là **tổ hợp**, và mảnh mạnh nhất trong đó không phải
+ô ghi chú: đơn ở trạng thái `address` mà **không có email**. Khách thật đi qua được
+`cart` chính là nhờ nhập email; probe thì không.
+
+Con số cứu tôi: sau khi xoá, số đơn ẩn danh mang chuỗi rỗng còn **0**, đúng bằng việc
+24 đơn bị xoá là toàn bộ của probe và không dư một đơn khách nào.
+
+Và ngay cả tổ hợp đó cũng **không** dùng làm điều kiện xoá lâu dài được, vì trên shop
+đóng probe đăng nhập bằng tài khoản của chính chủ shop, nên đơn nó tạo mang `user_id`
+của ông. Mọi guard hình dạng "khách vãng lai" đều bỏ qua đúng cái shop mà rác trong
+giỏ đáng ngại nhất.
+
+### Cách làm đúng
+
+Probe **để nguyên** câu đánh dấu. Cổng xoá cả đơn theo **đúng câu đó**, so sánh bằng,
+không phải `LIKE`:
+
+```ruby
+Spree::Order.where(completed_at: nil, special_instructions: marker)
+            .where('created_at > ?', 30.minutes.ago)
+```
+
+Xoá đơn thì chữ đi theo, còn xoá chữ thì đơn ở lại. Một chiều đúng, chiều kia không.
+
+So sánh bằng chứ không `LIKE`, vì một lượt dọn trước đây dùng `%Waze app%` và khớp
+trúng đơn thật của một khách hàng.
+
+### Điều tổng quát
+
+**Một phép kiểm chạy trên hệ thống đang bán phải trả lại hiện trường như lúc nó đến,
+và "hiện trường" gồm cả những hàng nó tạo ra, không chỉ những ô nó gõ vào.** Trước
+khi tin là đã dọn sạch, hãy hỏi trạng thái nào đã thay đổi mà mình chưa nhìn tới.
+
+Và cái thứ hai, đắt ngang: **một dấu vân tay chỉ là dấu vân tay sau khi đã đếm xem
+bao nhiêu thứ khác cũng mang nó.** Ở đây là 221. Lập luận "chỉ probe mới để lại như
+vậy" nghe kín kẽ và không tốn gì để kiểm, mà tôi vẫn viết nó ra trước khi đếm.
