@@ -61,9 +61,38 @@ function categoryId(key: keyof typeof CATEGORY_IDS): string | undefined {
  * words on the Canada shop, because the copy was read off one site and reused
  * everywhere. Each shop writes its own, down to the year in the About story.
  */
+/**
+ * The shape a shop gets when it has said nothing about itself.
+ *
+ * His requirement, on 1 Sep: "This theme will become the default theme for all
+ * other business catalog shops we build for others. Take this in mind for making
+ * it easy to setup and implement on your side."
+ *
+ * So a new business catalogue shop needs NO content entry to have a working home
+ * page. It gets a banner it can fill in later and a product row per category, and
+ * every word on it comes from that shop's own catalogue rather than from here.
+ * There is nothing to write, nothing to copy from another shop, and nothing that
+ * can therefore be another shop's.
+ *
+ * ── this replaces a fallback that was a landmine ───────────────────────────
+ *
+ * It used to fall through to the New Zealand RETAIL shop. Any shop without an
+ * entry rendered that shop's welcome copy, its About story about a founder, and
+ * its consumer newsletter box. The commercial shop was one rebuild away from
+ * doing exactly that, and the fault it describes is the one the client caught
+ * himself on Canada.
+ *
+ * A default that is empty is honest. A default that is another shop is a bug
+ * waiting for its first user.
+ */
+const DEFAULT_BUSINESS = {
+  banner: { slides: [] as never[], height: 450, intervalMs: 6000 },
+  categoryRows: { perRow: 4, viewAll: "Explore category" },
+} as const;
+
 function copy() {
   const shop = shopKey() as keyof typeof HOME_BY_SHOP;
-  return HOME_BY_SHOP[shop] ?? HOME_BY_SHOP.nz;
+  return HOME_BY_SHOP[shop] ?? DEFAULT_BUSINESS;
 }
 
 export function homePage(storeName: string): PageDefinition {
