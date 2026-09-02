@@ -2,6 +2,10 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { createWebhookHandler } from "@/lib/spree/webhooks";
 import {
+  CATALOGUE_EVENTS,
+  handleCatalogueChange,
+} from "@/lib/webhooks/catalogue-cache";
+import {
   handleOrderCanceled,
   handleOrderCompleted,
   handleOrderShipped,
@@ -25,6 +29,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       "order.canceled": handleOrderCanceled,
       "order.shipped": handleOrderShipped,
       "customer.password_reset_requested": handlePasswordReset,
+      // Every catalogue event maps to the same purge. Built from the list rather
+      // than written out eighteen times, so adding an event is one line there and
+      // cannot be half-registered here.
+      ...Object.fromEntries(
+        CATALOGUE_EVENTS.map((name) => [name, handleCatalogueChange]),
+      ),
     },
   });
 
