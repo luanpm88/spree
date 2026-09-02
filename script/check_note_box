@@ -200,18 +200,29 @@ while IFS='|' read -r shop _dir _db _port _sport tmp _store live _rest; do
   # opened Draft Orders, saw a column of "N/A" customers, and asked whether
   # something was broken. Nothing was broken. He was looking at our probe.
   #
-  # The order is found by the sentence the probe typed, and by nothing else.
+  # TWO shapes, because the probe leaves two.
   #
-  #   incomplete                a completed order is never touched, whatever it says
-  #   note is EXACTLY the marker no shopper types this sentence, and an equality test
-  #                             cannot spread the way a LIKE can. A cleanup here once
-  #                             matched a real customer order with `%Waze app%`
-  #                             because the pattern was a fragment
-  #   created minutes ago       bounded to this run
+  # 1. The order it typed into. Found by the exact sentence and nothing else:
+  #    an equality test cannot spread the way a LIKE can, and a cleanup here once
+  #    matched a real customer order with `%Waze app%` because the pattern was a
+  #    fragment. No guest condition on this one: on the closed shop the probe signs
+  #    in as the owner, so its order carries his user id and a guest-shaped guard
+  #    would skip the shop where rubbish in a cart matters most.
   #
-  # Deliberately NO guest condition. On the closed shop the probe signs in as the
-  # owner, so its order carries his user id; a guest-shaped guard would skip the one
-  # shop where leaving rubbish in a cart matters most, which is what it did.
+  # 2. The order it NEVER GOT TO TYPE INTO. This is the one that was missed, and
+  #    the client's Draft Orders screen is where it showed up. A run that reaches
+  #    the checkout and then fails, times out, or is interrupted has already moved
+  #    its order from `cart` to `address`, and it carries no marker because nothing
+  #    was ever typed. Seventeen of those were left across five shops on 1 Sep by
+  #    runs made before this cleanup existed, and the first sweep did not see them
+  #    because it looked only for shape 1.
+  #
+  #    Guarded by the fact a real shopper cannot be in that state: getting past
+  #    `cart` is what entering an email does. So no email AND not `cart` AND guest
+  #    AND minutes old is the probe and cannot be a customer.
+  #
+  # Both are bounded to the last 30 minutes, so a sweep can only ever remove what
+  # this run itself made.
   #
   # If the delete somehow leaves anything, the text is blanked as a fallback so a
   # failure here can never end with the probe's words sitting in a live cart.
@@ -219,8 +230,14 @@ while IFS='|' read -r shop _dir _db _port _sport tmp _store live _rest; do
   [[ "$CAN_CLEAN" == 1 ]] && cleaned=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
     "docker exec ${shop}_web bin/rails runner '
        marker = %q{check_note_box probe, please ignore}
-       scope = Spree::Order.where(completed_at: nil, special_instructions: marker)
-                           .where(%q{created_at > ?}, 30.minutes.ago)
+       recent = 30.minutes.ago
+       typed = Spree::Order.where(completed_at: nil, special_instructions: marker)
+                           .where(%q{created_at > ?}, recent)
+       # Reached the checkout and never got as far as the box.
+       untyped = Spree::Order.where(completed_at: nil, email: nil, user_id: nil)
+                             .where.not(state: %q{cart})
+                             .where(%q{created_at > ?}, recent)
+       scope = Spree::Order.where(id: typed.select(:id)).or(Spree::Order.where(id: untyped.select(:id)))
        gone = 0
        scope.to_a.each do |o|
          id = o.id
