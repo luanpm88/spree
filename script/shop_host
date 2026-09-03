@@ -1866,7 +1866,21 @@ cmd_storefront() {
   [[ -n "$key" ]] || die "no publishable API key on ${S_NAME}_shop. Run bin/rails backfill:all first."
   name=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c \"SELECT name FROM spree_stores ORDER BY id LIMIT 1\"" | tr -d '\r')
   [[ -n "$name" ]] || die "no store row on ${S_NAME}_shop"
-  info "key ${key:0:8}…, store \"$name\""
+
+  # The webhook secret Spree generated, if this shop has been provisioned.
+  #
+  # Read through the app rather than straight off the column, because the column
+  # is encrypted when Active Record encryption is configured and a psql SELECT
+  # would hand back ciphertext that verifies nothing. A shop with no endpoint
+  # yields empty, which is a valid state: the storefront then answers 503 to
+  # anything unsigned instead of trusting it.
+  local webhook_secret
+  webhook_secret=$(rsh "docker exec ${S_NAME}_web bin/rails runner '
+    e = Spree::WebhookEndpoint.where(deleted_at: nil).order(:id).first
+    print %q{<<W:} + (e ? e.secret_key.to_s : %q{}) + %q{:W>>}
+  ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<W:\(.*\):W>>.*/\1/p')
+
+  info "key ${key:0:8}…, store \"$name\", webhook secret $([[ -n "$webhook_secret" ]] && echo "present" || echo "not provisioned yet")"
 
   step "Writing the override file"
   rput "/srv/$S_DIR/docker-compose.override.yml" <<YAML
@@ -1883,6 +1897,20 @@ services:
     environment:
       SPREE_API_URL: https://$api_host
       SPREE_PUBLISHABLE_KEY: $key
+      # The webhook secret, so the storefront can verify what Rails signs.
+      #
+      # RUNTIME, not a build arg. It is read inside the route handler on each
+      # request, so it belongs here rather than in the Dockerfile, and changing it
+      # needs a restart rather than a rebuild.
+      #
+      # Empty is a SAFE state and not a broken one: the endpoint answers 503 and
+      # refuses to act on anything unsigned. It is deliberately not `${VAR:?}`,
+      # because a shop that has not been provisioned yet must still be able to
+      # start and serve customers.
+      #
+      # Provisioned by script/provision_webhook, which reads the value Spree
+      # generated rather than inventing one, because Spree signs with its own.
+      SPREE_WEBHOOK_SECRET: ${webhook_secret:-}
     ports:
       - "127.0.0.1:$S_SPORT:3001"
     networks: [estate]

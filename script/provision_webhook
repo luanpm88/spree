@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+#
+# Make a shop tell its storefront when something changes.
+#
+#   script/provision_webhook            every shop in .estate
+#   script/provision_webhook nz         one shop
+#   script/provision_webhook --check    report only, change nothing
+#
+# ── the fault this exists for ───────────────────────────────────────────────
+#
+# Every catalogue read on the storefront is cached on the server, and nothing
+# ever cleared it. Products for ten minutes, the category tree for up to a day.
+# So an edit in the admin did not appear until the entry aged out.
+#
+# The shop owner hit both ends of it on 2 September:
+#
+#   "I was in Brave browser, logged into nz admin, then checked the front end in
+#    3 other browsers and all said out of stock"
+#
+#   "Lilian changed an image and then went to view it, but it never changed;
+#    about 10 min later it changed."
+#
+#   "As soon as we change the menu structure, all category pages become 404"
+#
+# Three browsers agreeing is the diagnosis: a browser cache would differ between
+# them, so it had to be a cache on the server. The third one is the same cache
+# with a longer life, and the 404s were the MENU still holding a tree he had
+# already replaced.
+#
+# ── the order of operations, which is the whole point of this script ────────
+#
+# Spree generates the signing secret when the endpoint row is created, and the
+# storefront rejects anything it cannot verify. So there is a window where Spree
+# would be delivering to a storefront that does not yet hold the secret, and
+# Spree::WebhookEndpoint#disable! switches an endpoint off after repeated
+# delivery failures. Provisioning in the obvious order would create the endpoint,
+# fail every delivery, and disable itself before anyone noticed.
+#
+# So:
+#
+#   1. create the endpoint INACTIVE, which generates the secret and sends nothing
+#   2. read the secret back through the app, not off the column, because the
+#      column is encrypted and psql would hand back ciphertext
+#   3. write it into the storefront's environment and restart that container
+#   4. only then activate
+#   5. send a test delivery and check it actually arrived
+#
+# Steps 4 and 5 are the ones that make this a provisioning script rather than a
+# note in a runbook.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+ONLY=""
+CHECK=0
+for arg in "$@"; do
+  case "$arg" in
+    --check) CHECK=1 ;;
+    -*) echo "unknown option: $arg" >&2; exit 2 ;;
+    *) ONLY="$arg" ;;
+  esac
+done
+
+# shellcheck source=/dev/null
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_HOST:?no SSH_HOST, source .estate.env}"
+: "${SSH_PORT:=22}"
+: "${SSH_KEY:?no SSH_KEY}"
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; YE=$'\033[33m'; R=$'\033[0m'
+else GR=''; RE=''; YE=''; R=''; fi
+
+ESTATE_FILE="${ESTATE_FILE:-.estate}"
+[[ -f "$ESTATE_FILE" ]] || { echo "  no .estate on this machine"; exit 0; }
+
+rsh() { ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" "$@"; }
+
+# Nine patterns rather than twenty seven names.
+#
+# Spree matches a subscription containing `*` as a regex, so `product.*` covers
+# created, updated and deleted, and covers anything they add later. An event we
+# do not handle is answered 200 with handled:false, so a wider subscription costs
+# one no-op rather than a retry storm.
+#
+# taxon, taxonomy and classification are in here only because
+# config/initializers/spree.rb switches their lifecycle events on. Spree ships
+# them with publish_events true and lifecycle_events_enabled FALSE, so before that
+# line they published nothing at all and subscribing would have been silent.
+SUBSCRIPTIONS='["product.*","variant.*","stock_item.*","image.*","asset.*","price.*","taxon.*","taxonomy.*","classification.*"]'
+
+bad=0
+done_count=0
+
+while IFS='|' read -r shop dir _db _port _sport _tmp _store live _rest; do
+  [[ -n "$shop" ]] || continue
+  case "$shop" in \#*) continue;; esac
+  [[ -z "$ONLY" || "$ONLY" == "$shop" ]] || continue
+
+  host="${live// /}"
+  [[ -n "$host" && "$host" != "-" ]] || { printf '  %-10s %s(no live host in .estate)%s\n' "$shop" "$YE" "$R"; continue; }
+  [[ "$host" == http* ]] || host="https://$host"
+  url="${host%/}/api/webhooks/spree"
+
+  # ── 1. what is there already ────────────────────────────────────────────
+  # `catalogue` is the field that matters and the one an existence check misses.
+  #
+  # One shop already had an endpoint here, active, with five successful
+  # deliveries behind it, subscribed to the four ORDER EMAIL events and nothing
+  # else. An earlier version of this check called that shop ok, because it asked
+  # whether a row existed rather than whether it carried the subscriptions the
+  # cache purge needs. That is the shape of a check that reports having verified
+  # something it never looked at.
+  state=$(rsh "docker exec ${shop}_web bin/rails runner '
+    e = Spree::WebhookEndpoint.where(deleted_at: nil).order(:id).first
+    if e.nil?
+      print %q{<<S:none||||:S>>}
+    else
+      subs = e.subscriptions.to_a
+      catalogue = %w[product.* taxon.* stock_item.* image.*].all? { |w| subs.include?(w) }
+      print %q{<<S:} + e.id.to_s + %q{|} + e.url.to_s + %q{|} + e.active.to_s +
+            %q{|} + e.secret_key.to_s + %q{|} + catalogue.to_s + %q{:S>>}
+    end
+  ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<S:\(.*\):S>>.*/\1/p')
+
+  IFS='|' read -r eid eurl eactive esecret ecatalogue <<< "$state"
+
+  if [[ "$CHECK" == 1 ]]; then
+    # The secret is read from the STOREFRONT, not from Spree. Spree holding one
+    # proves nothing: the container that has to verify the signature is the other
+    # one, and on the shop above Spree had a secret while its storefront had none,
+    # so every future delivery would have answered 503 until Spree disabled it.
+    inside=$(rsh "docker exec ${shop}_storefront printenv SPREE_WEBHOOK_SECRET" 2>/dev/null | tr -d '\r')
+
+    if [[ "$eid" == "none" || -z "$eid" ]]; then
+      printf '  %-10s %sno endpoint at all%s\n' "$shop" "$RE" "$R"; bad=$((bad + 1))
+    elif [[ "$ecatalogue" != "true" ]]; then
+      printf '  %-10s %sendpoint exists but does not subscribe to catalogue events%s\n' "$shop" "$RE" "$R"; bad=$((bad + 1))
+    elif [[ "$eactive" != "true" ]]; then
+      printf '  %-10s %sendpoint is INACTIVE%s\n' "$shop" "$RE" "$R"; bad=$((bad + 1))
+    elif [[ -z "$inside" ]]; then
+      printf '  %-10s %sthe storefront holds no secret, so every delivery will 503%s\n' "$shop" "$RE" "$R"; bad=$((bad + 1))
+    elif [[ "$inside" != "$esecret" ]]; then
+      printf '  %-10s %sthe two halves hold DIFFERENT secrets%s\n' "$shop" "$RE" "$R"; bad=$((bad + 1))
+    else
+      printf '  %-10s ok   %s\n' "$shop" "$eurl"
+    fi
+    continue
+  fi
+
+  # ── 2. create it, inactive, if it is not there ──────────────────────────
+  if [[ "$eid" == "none" || -z "$eid" ]]; then
+    printf '  %-10s creating, inactive\n' "$shop"
+    state=$(rsh "docker exec ${shop}_web bin/rails runner '
+      e = Spree::WebhookEndpoint.new(
+        store: Spree::Store.default,
+        url: %q{$url},
+        name: %q{Storefront cache},
+        active: false,
+        subscriptions: JSON.parse(%q{$SUBSCRIPTIONS})
+      )
+      if e.save
+        print %q{<<S:} + e.id.to_s + %q{|} + e.url.to_s + %q{|false|} + e.secret_key.to_s + %q{:S>>}
+      else
+        print %q{<<S:ERR|} + e.errors.full_messages.join(%q{; }) + %q{||:S>>}
+      end
+    ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<S:\(.*\):S>>.*/\1/p')
+    IFS='|' read -r eid eurl eactive esecret <<< "$state"
+    if [[ "$eid" == "ERR" ]]; then
+      printf '  %-10s %scould not create: %s%s\n' "$shop" "$RE" "$eurl" "$R"; bad=$((bad + 1)); continue
+    fi
+  fi
+
+  if [[ "$ecatalogue" != "true" && "$eid" != "none" && -n "$eid" ]]; then
+    # An endpoint that already exists for the order emails keeps those and gains
+    # the catalogue patterns, rather than being replaced. Replacing it would mint
+    # a new secret and silently break whatever was already using the old one.
+    printf '  %-10s adding catalogue events to the endpoint it already has\n' "$shop"
+    rsh "docker exec ${shop}_web bin/rails runner '
+      e = Spree::WebhookEndpoint.find($eid)
+      e.update!(subscriptions: (e.subscriptions.to_a | JSON.parse(%q{$SUBSCRIPTIONS})))
+    ' >/dev/null 2>&1"
+  fi
+
+  if [[ -z "$esecret" ]]; then
+    printf '  %-10s %sendpoint has no secret, refusing to go further%s\n' "$shop" "$RE" "$R"
+    bad=$((bad + 1)); continue
+  fi
+
+  # ── 3. give the storefront the secret and restart it ────────────────────
+  #
+  # Patched in place rather than regenerating the whole override, because
+  # regenerating means a storefront rebuild and this value is read at runtime.
+  # script/shop_host writes the same line from the same source, so the two agree
+  # the next time that runs.
+  rsh "cd /srv/$dir && \
+    if grep -q 'SPREE_WEBHOOK_SECRET:' docker-compose.override.yml; then \
+      sed -i 's|SPREE_WEBHOOK_SECRET:.*|SPREE_WEBHOOK_SECRET: $esecret|' docker-compose.override.yml; \
+    else \
+      sed -i 's|^\(      SPREE_PUBLISHABLE_KEY: .*\)$|\1\n      SPREE_WEBHOOK_SECRET: $esecret|' docker-compose.override.yml; \
+    fi && \
+    docker compose up -d --force-recreate storefront" >/dev/null 2>&1
+
+  # Proved, not assumed. A sed that matched nothing leaves the container without
+  # the secret, the endpoint answers 503 for ever, and Spree disables it.
+  inside=$(rsh "docker exec ${shop}_storefront printenv SPREE_WEBHOOK_SECRET" 2>/dev/null | tr -d '\r')
+  if [[ "$inside" != "$esecret" ]]; then
+    printf '  %-10s %sthe storefront did not pick up the secret, leaving the endpoint inactive%s\n' "$shop" "$RE" "$R"
+    bad=$((bad + 1)); continue
+  fi
+
+  # ── 4. now it is safe to switch on ──────────────────────────────────────
+  rsh "docker exec ${shop}_web bin/rails runner '
+    e = Spree::WebhookEndpoint.find($eid)
+    e.update!(active: true, subscriptions: JSON.parse(%q{$SUBSCRIPTIONS}))
+  ' >/dev/null 2>&1"
+
+  # ── 5. and prove a delivery actually lands ──────────────────────────────
+  result=$(rsh "docker exec ${shop}_web bin/rails runner '
+    e = Spree::WebhookEndpoint.find($eid)
+    e.send_test! rescue nil
+    sleep 4
+    d = Spree::WebhookDelivery.where(webhook_endpoint_id: e.id).order(:id).last
+    print %q{<<D:} + (d ? d.response_code.to_s : %q{no delivery row}) + %q{:D>>}
+  ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<D:\(.*\):D>>.*/\1/p')
+
+  case "$result" in
+    2*) printf '  %-10s %sok%s   endpoint %s, test delivery %s\n' "$shop" "$GR" "$R" "$eid" "$result"; done_count=$((done_count + 1)) ;;
+    *)  printf '  %-10s %sactive, but the test delivery said: %s%s\n' "$shop" "$RE" "${result:-nothing}" "$R"; bad=$((bad + 1)) ;;
+  esac
+done < <(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+
+echo
+if [[ $bad -gt 0 ]]; then
+  cat >&2 <<EOF
+${RE}FAILED${R}: $bad shop(s) are not delivering catalogue changes to their storefront.
+
+Until they are, an edit in the admin takes up to ten minutes to reach the shop,
+and a category change up to a day. That is the fault the client reported twice.
+
+Run script/provision_webhook <shop> to retry one, and check the storefront holds
+the secret:
+
+  docker exec <shop>_storefront printenv SPREE_WEBHOOK_SECRET
+EOF
+  exit 1
+fi
+
+[[ "$CHECK" == 1 ]] && echo "  ${GR}ok${R} — every shop delivers catalogue changes to its storefront" \
+                    || echo "  ${GR}ok${R} — $done_count shop(s) provisioned and proved with a test delivery"
