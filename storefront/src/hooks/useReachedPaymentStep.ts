@@ -76,28 +76,35 @@ import { type RefObject, useEffect, useState } from "react";
  * callback fires, correctly, on a layout that lasts a moment. Then the rest of
  * the page arrives and pushes the box down to where it really sits.
  *
- * So an intersection schedules a re-measurement rather than deciding. If the
- * box is still within reach when the layout has stopped moving, the customer is
- * really looking at it. If it has been pushed away, that callback described a
+ * So an intersection asks the document where the box sits until it stops
+ * moving, and only then decides. Still within reach once settled means the
+ * customer is really looking at it. Pushed away means that callback described a
  * page that no longer exists.
  *
+ * A fixed delay was tried first and is not enough. 600ms shipped, and the shop
+ * was measured leaking again, 32 sessions to 33: the checkout was still filling
+ * in when the re-measurement ran, so it found the box exactly where the first
+ * callback had. The page does not finish on a schedule, so the question cannot
+ * be asked of a clock. offsetTop is measured from the document, unaffected by
+ * scrolling and changed only by the page growing above, which makes two equal
+ * readings mean the streaming has landed.
+ *
  * This is the same class of error as the mailer probe that set the locale it was
- * about to measure: a true observation of a state nobody was ever in. It was
- * only found by counting rows on a real shop, which is why the probe counts rows
- * rather than watching the browser.
+ * about to measure: a true observation of a state nobody was ever in. Both
+ * versions of this passed every unit test, because a test renders the component
+ * alone and nothing ever arrives late above it. Only counting rows on the
+ * running shop found either one.
  */
 
 /**
- * How far outside the viewport still counts as reach, and how long to wait
- * before believing it.
+ * How far outside the viewport still counts as reach, and how often to re-ask
+ * while the page is still moving.
  *
  * The margin matches InfiniteProductList so the work is done before the thing
- * is looked at. The settle delay is the streaming window: long enough that the
- * forms above have landed, short enough that a customer scrolling down does not
- * notice it, since they are still 200px away when it starts.
+ * is looked at.
  */
 const REACH_MARGIN = 200;
-const SETTLE_MS = 600;
+const STABLE_POLL_MS = 300;
 export function useReachedPaymentStep(
   ref: RefObject<HTMLElement | null>,
   enabled: boolean,
@@ -122,23 +129,52 @@ export function useReachedPaymentStep(
     // that is still moving.
     const arrive = () => setReached(true);
 
-    let settle: ReturnType<typeof setTimeout> | undefined;
+    let poll: ReturnType<typeof setTimeout> | undefined;
+    let lastTop = Number.NaN;
+
     const withinReach = () => {
       const r = node.getBoundingClientRect();
       return (
         r.top < window.innerHeight + REACH_MARGIN && r.bottom > -REACH_MARGIN
       );
     };
-    const arriveIfStillHere = () => {
-      if (settle !== undefined) clearTimeout(settle);
-      settle = setTimeout(() => {
-        if (withinReach()) arrive();
-      }, SETTLE_MS);
+
+    // Decides only once the box has STOPPED MOVING, and asks the document where
+    // it sits rather than a clock how long it has been.
+    //
+    // offsetTop is measured from the document, so scrolling does not change it
+    // and only the page growing above does. Two equal readings therefore mean
+    // the streaming has landed. A fixed delay cannot do this job: 600ms was
+    // tried and the checkout was still filling in, so the re-measurement found
+    // the box exactly where the first callback had, near the top of a page that
+    // was not finished, and let it through. The shop was measured leaking again
+    // with the delay in place, 32 sessions to 33.
+    //
+    // Stable and out of reach ends the poll rather than continuing it. The
+    // observer is still attached and will say so again when the customer
+    // scrolls, which is the only thing that can bring the box back into reach.
+    const confirm = () => {
+      const top = node.offsetTop;
+      const settled = top === lastTop;
+      lastTop = top;
+
+      if (!settled) {
+        poll = setTimeout(confirm, STABLE_POLL_MS);
+        return;
+      }
+      if (withinReach()) arrive();
+      poll = undefined;
+    };
+
+    const confirmSoon = () => {
+      if (poll !== undefined) return;
+      lastTop = Number.NaN;
+      poll = setTimeout(confirm, STABLE_POLL_MS);
     };
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) arriveIfStillHere();
+        if (entries.some((entry) => entry.isIntersecting)) confirmSoon();
       },
       { threshold: 0.01, rootMargin: `${REACH_MARGIN}px` },
     );
@@ -148,7 +184,7 @@ export function useReachedPaymentStep(
     node.addEventListener("focusin", arrive);
 
     return () => {
-      if (settle !== undefined) clearTimeout(settle);
+      if (poll !== undefined) clearTimeout(poll);
       observer.disconnect();
       node.removeEventListener("pointerdown", arrive);
       node.removeEventListener("focusin", arrive);

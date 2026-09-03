@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useReachedPaymentStep } from "@/hooks/useReachedPaymentStep";
 
-/** Must stay ahead of SETTLE_MS in the hook. */
-const PAST_SETTLE = 1000;
+/** Must match STABLE_POLL_MS in the hook. */
+const POLL = 300;
 
 /**
  * jsdom ships no IntersectionObserver, so the real one is stood in for here.
@@ -46,11 +46,21 @@ class FakeIntersectionObserver {
   }
 }
 
-/** Let the hook's settle timer run out. */
+/** Run one poll of the hook's stability check. */
+function tick(times = 1) {
+  for (let i = 0; i < times; i++) {
+    act(() => {
+      vi.advanceTimersByTime(POLL);
+    });
+  }
+}
+
+/**
+ * Two equal readings are what "settled" means, so a box that never moves needs
+ * two polls to be believed. Anything scripting a moving layout ticks by hand.
+ */
 function settle() {
-  act(() => {
-    vi.advanceTimersByTime(PAST_SETTLE);
-  });
+  tick(2);
 }
 
 function setup(enabled = true) {
@@ -58,14 +68,20 @@ function setup(enabled = true) {
   document.body.appendChild(node);
   const ref = { current: node };
 
-  // jsdom lays nothing out, so every rect is zero and every box would look
-  // on screen. Positioning it explicitly is what makes the streaming test
-  // below mean anything.
+  // jsdom lays nothing out, so every rect is zero, every box would look on
+  // screen, and offsetTop would never move. Positioning it explicitly is what
+  // makes the streaming test below mean anything.
   let rect = { top: 100, bottom: 900 };
+  let offsetTop = 100;
   node.getBoundingClientRect = () =>
     ({ ...rect, left: 0, right: 0, height: 0, width: 0 }) as DOMRect;
+  Object.defineProperty(node, "offsetTop", {
+    get: () => offsetTop,
+    configurable: true,
+  });
   const moveTo = (top: number, bottom: number) => {
     rect = { top, bottom };
+    offsetTop = top;
   };
 
   const view = renderHook(
@@ -125,10 +141,32 @@ describe("useReachedPaymentStep", () => {
     const { view, observer, moveTo } = setup();
 
     observer().emit(true);
+    tick();
     // The rest of the checkout arrives and pushes payment down where it lives.
     moveTo(1133, 3000);
-    settle();
+    tick();
+    // Now it has stopped, and where it stopped is out of reach.
+    tick();
 
+    expect(view.result.current).toBe(false);
+  });
+
+  it("keeps waiting while the page is still growing, however long that takes", async () => {
+    // The reason a fixed delay was not enough. 600ms shipped and the shop leaked
+    // again, 32 sessions to 33, because the checkout was still filling in when
+    // the re-measurement ran and found the box where the first callback had.
+    // This page does not finish on a schedule, so it is asked where the box is,
+    // not how long it has been.
+    const { view, observer, moveTo } = setup();
+
+    observer().emit(true);
+    for (let grown = 200; grown < 1400; grown += 200) {
+      moveTo(grown, grown + 800);
+      tick();
+      expect(view.result.current).toBe(false);
+    }
+    // Only once it stops moving is the answer given, and by then it is far down.
+    tick(2);
     expect(view.result.current).toBe(false);
   });
 
@@ -140,6 +178,24 @@ describe("useReachedPaymentStep", () => {
 
     observer().emit(true);
     moveTo(300, 1100);
+    settle();
+
+    expect(view.result.current).toBe(true);
+  });
+
+  it("arrives when the customer scrolls a settled page into reach", async () => {
+    // The ordinary case. The box stopped moving long ago and out of reach, the
+    // poll ended, and the observer is what says the customer has come to it.
+    const { view, observer, moveTo } = setup();
+
+    moveTo(1133, 3000);
+    observer().emit(true);
+    tick(3);
+    expect(view.result.current).toBe(false);
+
+    // They scroll. The box is now on screen, and the observer says so again.
+    moveTo(120, 1000);
+    observer().emit(true);
     settle();
 
     expect(view.result.current).toBe(true);
