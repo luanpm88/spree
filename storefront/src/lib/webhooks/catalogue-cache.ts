@@ -68,6 +68,24 @@ const CATALOGUE_TAGS = [
 ] as const;
 
 /**
+ * The category tree, which is cached far longer than the products are.
+ *
+ * `categories` and `category` sit on Next's `hours` profile: revalidate after an
+ * hour, hold an idle entry for a day. So this is the SLOWEST thing on the shop to
+ * update and it was the one left out of the first version of this file, on the
+ * reasoning that taxon content is not product content.
+ *
+ * That reasoning was wrong, and the client proved it within a day. He restructured
+ * a category tree, 37 of 42 taxons in an hour, and reported "category pages become
+ * 404 error pages". The pages were fine. The cached MENU was a day old and every
+ * link in it pointed at a permalink he had just replaced.
+ *
+ * `category-banner` is included because it is keyed on the same taxon and would
+ * otherwise keep drawing the old heading over a renamed category.
+ */
+const CATEGORY_TAGS = ["categories", "category", "category-banner"] as const;
+
+/**
  * Deliberately not idempotency-guarded, unlike the email handlers beside it.
  *
  * A duplicate email is a customer receiving the same message twice. A duplicate
@@ -78,7 +96,16 @@ const CATALOGUE_TAGS = [
  * safe direction here, and it is the opposite direction from an email.
  */
 export const handleCatalogueChange: WebhookHandler = async (event) => {
-  for (const tag of CATALOGUE_TAGS) {
+  // A taxon event clears the tree as well as the catalogue, because moving a
+  // product between categories changes both. A product event leaves the tree
+  // alone: it has an hours-long life and a stock change is no reason to throw it.
+  const tags = event.name.startsWith("taxon")
+    ? [...CATALOGUE_TAGS, ...CATEGORY_TAGS]
+    : event.name.startsWith("classification")
+      ? [...CATALOGUE_TAGS, ...CATEGORY_TAGS]
+      : CATALOGUE_TAGS;
+
+  for (const tag of tags) {
     // Two arguments, and the second is not optional in Next 16.
     //
     // revalidateTag(tag, profile) is the route-handler form. updateTag(tag) is
@@ -97,9 +124,7 @@ export const handleCatalogueChange: WebhookHandler = async (event) => {
   // and reports nothing, so a tag renamed in lib/data would keep answering 200
   // here while the shop stayed stale. This line is what makes that visible in the
   // container log, and script/check_cache_purge asserts the behaviour end to end.
-  console.log(
-    `[webhooks] ${event.name} purged ${CATALOGUE_TAGS.length} catalogue tags`,
-  );
+  console.log(`[webhooks] ${event.name} purged ${tags.length} cache tags`);
 };
 
 /**
@@ -144,4 +169,18 @@ export const CATALOGUE_EVENTS = [
   "price.created",
   "price.updated",
   "price.deleted",
+  // Taxons publish NOTHING until config/initializers/spree.rb switches lifecycle
+  // events on for them, which it now does. Spree ships them with publish_events
+  // true and lifecycle_events_enabled false, so subscribing to these names before
+  // that line existed would have been eighteen events that never arrive and a fix
+  // that looked complete.
+  "taxon.created",
+  "taxon.updated",
+  "taxon.deleted",
+  "taxonomy.created",
+  "taxonomy.updated",
+  "taxonomy.deleted",
+  "classification.created",
+  "classification.updated",
+  "classification.deleted",
 ] as const;

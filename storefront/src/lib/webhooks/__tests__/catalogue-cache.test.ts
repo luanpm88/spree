@@ -68,8 +68,16 @@ describe("handleCatalogueChange", () => {
   it("covers deletions as well as changes", () => {
     // A removed photo or a discontinued product has to leave the shop as
     // promptly as a new one arrives.
-    const deletions = CATALOGUE_EVENTS.filter((n) => n.endsWith(".deleted"));
-    expect(deletions).toHaveLength(6);
+    // Asserted as a pair per subject rather than a bare count, so adding a
+    // subject does not fail this for the wrong reason. It failed once on exactly
+    // that: the number moved from 6 to 9 when taxons were added, and the count
+    // told me nothing about whether the new ones were complete.
+    const subjects = [...new Set(CATALOGUE_EVENTS.map((n) => n.split(".")[0]))];
+    for (const subject of subjects) {
+      for (const verb of ["created", "updated", "deleted"]) {
+        expect(CATALOGUE_EVENTS).toContain(`${subject}.${verb}`);
+      }
+    }
   });
 
   it("purges again on a repeat delivery rather than skipping it", async () => {
@@ -79,5 +87,40 @@ describe("handleCatalogueChange", () => {
     await handleCatalogueChange(event("product.updated"));
     await handleCatalogueChange(event("product.updated"));
     expect(vi.mocked(revalidateTag).mock.calls).toHaveLength(8);
+  });
+
+  it("clears the category tree on a taxon change, and not on a stock change", async () => {
+    // The category tree sits on Next's `hours` profile: an hour to revalidate, a
+    // day to expire. It is the slowest thing on the shop and it was left out of
+    // the first version of this file. The client restructured a tree, 37 of 42
+    // taxons in an hour, and reported "category pages become 404 error pages".
+    // The pages were fine; the cached menu was a day old and linked at permalinks
+    // he had just replaced.
+    await handleCatalogueChange(event("taxon.updated"));
+    const onTaxon = vi.mocked(revalidateTag).mock.calls.map(([t]) => t);
+    expect(onTaxon).toContain("categories");
+    expect(onTaxon).toContain("category");
+    expect(onTaxon).toContain("category-banner");
+
+    vi.mocked(revalidateTag).mockClear();
+
+    // And not the other way round. A stock change has no business throwing away
+    // a cache with an hours-long life.
+    await handleCatalogueChange(event("stock_item.updated"));
+    const onStock = vi.mocked(revalidateTag).mock.calls.map(([t]) => t);
+    expect(onStock).not.toContain("categories");
+  });
+
+  it("subscribes to taxon events, which publish nothing until Rails enables them", () => {
+    // Spree ships Taxon with publish_events true and lifecycle_events_enabled
+    // FALSE, so these names arrive only because config/initializers/spree.rb
+    // switches them on. Listed here so the two halves cannot drift apart quietly.
+    for (const name of [
+      "taxon.updated",
+      "taxonomy.updated",
+      "classification.created",
+    ]) {
+      expect(CATALOGUE_EVENTS).toContain(name);
+    }
   });
 });

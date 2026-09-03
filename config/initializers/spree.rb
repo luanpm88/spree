@@ -373,3 +373,44 @@ end
 Rails.application.config.to_prepare do
   Spree::CustomerGroupUser.publishes_lifecycle_events only: [:create]
 end
+
+# Make editing a category publish an event, for the same reason and by the same
+# mechanism.
+#
+# The storefront caches its category tree under Next's `hours` profile, which
+# revalidates after an hour and holds an idle entry for a day. Nothing cleared it,
+# so a category change took between one hour and a day to reach the shop. The
+# client hit both ends of that on 2 September. First:
+#
+#   "category pages become 404 error pages"
+#
+# He had just restructured the tree: 37 of 42 taxons on that shop were modified
+# within the hour. The cached MENU still held the old tree, so every link in it
+# pointed at a permalink that no longer existed. The 404s were real and the pages
+# were fine; the menu pointing at them was a day old.
+#
+# Then the next morning:
+#
+#   "All the menu changes on [that shop] are now live. Is this due to the cache?"
+#
+# Yes. The entry had aged out overnight. Measured after he asked: 0 of 40 menu
+# links 404 by then.
+#
+# Products already publish and the storefront already purges on them. Taxons do
+# not: Spree::Taxon, Taxonomy and Classification all carry publish_events true and
+# lifecycle_events_enabled FALSE, so the change with the LONGEST cache life was the
+# one nothing could see. That asymmetry is worth stating plainly, because a fix
+# that covered products and missed categories would have looked complete and would
+# have left his slowest case exactly as it was.
+#
+# All three, and all events on each:
+#
+#   Taxon           a category renamed, moved, added or removed
+#   Taxonomy        a whole tree added or renamed
+#   Classification  a product joining or leaving a category, and reordering within
+#                   one, which changes what the category page shows
+Rails.application.config.to_prepare do
+  Spree::Taxon.publishes_lifecycle_events
+  Spree::Taxonomy.publishes_lifecycle_events
+  Spree::Classification.publishes_lifecycle_events
+end
