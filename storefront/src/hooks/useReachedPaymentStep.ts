@@ -110,13 +110,33 @@ import { type RefObject, useEffect, useState } from "react";
  */
 
 /**
- * How far outside the viewport still counts as reach, and how often to re-ask
- * while the page is still moving.
+ * How far outside the viewport still counts as arriving, and how often to
+ * re-ask while the page is still moving.
  *
- * The margin matches InfiniteProductList so the work is done before the thing
- * is looked at.
+ * ZERO, and that is the whole answer to why three earlier attempts leaked.
+ *
+ * It was 200px, borrowed from InfiniteProductList, on the reasoning that
+ * starting early keeps the card field feeling instant. Then the gate was made
+ * to say why it opened, and it said:
+ *
+ *   [payment-step] session allowed, reached via view at 1041px
+ *
+ * The payment box settles 1041px down the document. On a 1440x900 laptop that
+ * is 141px below the fold, so a 200px margin reaches it on every single page
+ * load without anybody scrolling. Every theory before this one was about the
+ * gate opening wrongly. The gate was opening correctly, and the margin was
+ * wider than the gap it was guarding.
+ *
+ * At zero the box has to actually enter the window. On that laptop the customer
+ * scrolls 141px and the session begins as the box appears, which is what the
+ * shop owner asked for: created when they reach the payment step. The box is
+ * tall, so its top edge arriving is still well before the card field is
+ * anywhere near the middle of the screen.
+ *
+ * A shorter checkout, or a taller monitor, can put the box on screen at load.
+ * Then a session on load is correct and nothing here is wrong.
  */
-const REACH_MARGIN = 200;
+const REACH_MARGIN = 0;
 const STABLE_POLL_MS = 300;
 export function useReachedPaymentStep(
   ref: RefObject<HTMLElement | null>,

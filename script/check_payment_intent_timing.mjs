@@ -339,9 +339,8 @@ await page
 // `attached`, never `visible`, and certainly not scrollIntoView.
 //
 // The checkout page streams, so the payment section arrives well after
-// domcontentloaded and a fixed wait read an empty page as a shop with no
-// payment step. But waiting for it must not BRING it into view: scrolling is
-// the gesture that opens the gate this probe exists to time. `attached` asks
+// domcontentloaded. But waiting for it must not BRING it into view: scrolling
+// is the gesture that opens the gate this probe exists to time. `attached` asks
 // only whether the element is in the document, which is what is wanted and
 // nothing more.
 await page
@@ -350,9 +349,40 @@ await page
     timeout: 90000,
   })
   .catch(() => {});
-// Then long enough that a session created on mount has certainly landed. Too
-// short a wait here would read as a pass for the wrong reason.
-await page.waitForTimeout(15000);
+
+// Then wait for the box to STOP MOVING, and record where it went.
+//
+// A fixed wait was used here and it is what made this probe report the wrong
+// number three times. It measured the box at 1133px and called that outside
+// reach, when the box goes on to settle at 1041px, which is inside a 900px
+// window once anything at all is allowed for. The verdict was drawn from a
+// position the page was passing through.
+//
+// What moves it: the express checkout button sits above the payment section and
+// hides itself once Stripe reports no wallet available, which shortens
+// everything above. That happens seconds in, and on a loaded box it has been
+// seen past thirty seconds.
+settleTrace = await page
+  .evaluate(async () => {
+    const seen = [];
+    let stable = 0;
+    let last = null;
+    for (let i = 0; i < 160 && stable < 6; i++) {
+      const box = document.getElementById("checkout-section-payment");
+      if (box) {
+        const top = Math.round(box.getBoundingClientRect().top + window.scrollY);
+        if (top === last) stable += 1;
+        else {
+          stable = 0;
+          seen.push({ at: i * 250, top });
+        }
+        last = top;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return seen;
+  })
+  .catch(() => []);
 
 // Is there a session-based method on this shop at all? Several of these shops
 // run on bank transfer, which never touches a gateway, and on those there is
@@ -397,25 +427,6 @@ if (geometry.scrollY !== 0)
     `the page was already scrolled to ${geometry.scrollY}px, so this run arranged what it measures`,
   );
 
-// How long the layout actually takes to stop moving, sampled rather than
-// assumed. Printed on failure, because "the page had not finished settling" is
-// a claim and this is the number behind it.
-settleTrace = await page
-  .evaluate(async () => {
-    const seen = [];
-    for (let i = 0; i < 48; i++) {
-      const box = document.getElementById("checkout-section-payment");
-      if (box) {
-        const top = Math.round(box.getBoundingClientRect().top + window.scrollY);
-        const last = seen[seen.length - 1];
-        if (!last || last.top !== top) seen.push({ at: i * 250, top });
-      }
-      await new Promise((r) => setTimeout(r, 250));
-    }
-    return seen;
-  })
-  .catch(() => []);
-
 const afterOpen = countSessions();
 
 // The honest third outcome. If the box is within reach at load then the
@@ -423,12 +434,14 @@ const afterOpen = countSessions();
 // correct, and this run proves nothing either way rather than passing or
 // failing.
 //
-// The threshold is the window PLUS the observer's 200px rootMargin, not the
-// window. Getting this wrong is how the probe would fail a shop that is working:
-// a box 950px down a 900px window is below the fold and still inside the margin,
-// so it opens the gate, correctly, and a bare `top < viewport` test would call
-// that a leak.
-const REACH = geometry.viewport + 200;
+// The window itself, because the hook's rootMargin is now zero.
+//
+// It was `viewport + 200` here to match a 200px margin in the hook, and that
+// margin was the entire fault: Canada's payment box settles 141px below the
+// fold on a 1440x900 laptop, so a 200px reach opened the gate on every page
+// load with nobody scrolling. Both numbers are the same decision and they have
+// to be changed together, which is why this comment names the other one.
+const REACH = geometry.viewport;
 if (geometry.top < REACH) {
   console.log(
     `    inconclusive — the payment box is within reach (${geometry.top}px < ${REACH}px) at load on`,

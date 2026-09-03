@@ -229,12 +229,50 @@ describe("useReachedPaymentStep", () => {
     expect(view.result.current).toBe(true);
   });
 
-  it("starts watching 200px early, so the card field is no slower than before", () => {
-    // The customer must not be able to tell this changed. If the margin were
-    // dropped the session would begin only once the box was already on screen
-    // and the spinner would become visible where it never used to be.
+  it("leaves the box alone where the real shop settles it, 1041px on a 900px window", () => {
+    // The measured case, kept as numbers rather than as a description.
+    //
+    // Canada's payment box settles 1041px down the document. On a 1440x900
+    // laptop that is 141px below the fold. With the old 200px margin the gate
+    // opened on every page load with nobody scrolling, which is exactly what
+    // the shop owner was seeing, and three rounds of theory went past it because
+    // the gate was working correctly and the margin was the fault.
+    Object.defineProperty(window, "innerHeight", {
+      value: 900,
+      configurable: true,
+    });
+
+    const { view, observer, moveTo } = setup();
+    moveTo(1041, 2600);
+    observer().emit(true);
+    tick(3);
+
+    expect(view.result.current).toBe(false);
+  });
+
+  it("opens as soon as any of the box is really in the window", () => {
+    // And the boundary from the other side, so the margin cannot quietly become
+    // a delay. One pixel inside the window is arriving.
+    Object.defineProperty(window, "innerHeight", {
+      value: 900,
+      configurable: true,
+    });
+
+    const { view, observer, moveTo } = setup();
+    moveTo(899, 2400);
+    observer().emit(true);
+    settle();
+
+    expect(view.result.current).toBe(true);
+  });
+
+  it("requires the box to actually enter the window, with no margin", () => {
+    // This was 200px and it was the whole leak. The payment box settles 1041px
+    // down the document, which on a 1440x900 laptop is 141px below the fold, so
+    // a 200px margin reached it on every page load with nobody scrolling. The
+    // gate was opening correctly; the margin was wider than the gap.
     const { observer } = setup();
-    expect(observer().options?.rootMargin).toBe("200px");
+    expect(observer().options?.rootMargin).toBe("0px");
   });
 
   it("reports arrival on a click at once, with no settling delay", () => {
