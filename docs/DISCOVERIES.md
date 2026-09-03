@@ -5057,3 +5057,51 @@ và ngưỡng viết thiếu 200 sẽ đánh trượt một shop đang chạy t�
 Test wiring của component đã được kiểm bằng cách **gỡ dòng chặn ra xem nó có đỏ
 không** — đỏ đúng một test. Một test xanh cả khi bug còn nguyên thì tệ hơn không có
 test.
+
+### Bản sửa đầu tiên vẫn rò, và chỉ đếm dòng trên shop thật mới thấy
+
+Đây là phần đáng giá nhất của cả mục này. Sửa xong, deploy lên Canada, probe đo ra:
+
+```
+31 phiên trước khi mở checkout
+32 phiên sau khi mở checkout
+hộp payment ở 1133px, cửa sổ 900px, tầm với 1100px
+```
+
+Ngoài lề 200px mà **vẫn tạo phiên**. Mã đã có trên server (đã ssh vào kiểm từng
+byte), image build sau đó. Nên lỗi là của bản sửa.
+
+Nguyên nhân: **trang checkout stream**. Lúc `PaymentSection` mount, form contact và
+delivery phía trên **chưa render**, nên hộp payment nằm gần đỉnh một trang gần như
+rỗng — và nó **thật sự đang trên màn hình**. Observer nổ callback đầu tiên, hoàn
+toàn đúng, về một bố cục chỉ tồn tại trong khoảnh khắc. Rồi phần còn lại render và
+đẩy nó xuống 1133px.
+
+Cách chữa: một lần intersect **hẹn đo lại** chứ không tự quyết. Còn trong tầm sau
+600ms thì khách đang xem thật; bị đẩy đi rồi thì callback đó nói về một trang không
+còn nữa. Chạm vào hộp thì không bao giờ hoãn, vì chạm là không phải bàn.
+
+Cùng họ với con probe mailer 19/08 tự set locale trước khi đo: **một quan sát đúng
+về một trạng thái không ai từng ở trong đó**. Và điều duy nhất tìm ra nó là đếm dòng
+trên shop thật.
+
+### Ba phép kiểm nói nhiều hơn thứ chúng đo được, tìm ra dọc đường
+
+**`check_card_field.mjs` hỏi `/checkout` trần từ ngày viết ra, và đó là 404 ở mọi
+shop.** Route là `(checkout)/checkout/[id]`, nên trang checkout duy nhất là
+`/checkout/<cart id>`. Nó đo một trang 404, không thấy ô thẻ, mà **vẫn báo "checkout
+loads Stripe"** — vì `reachesStripe` chỉ cần một response 200 nào từ `stripe.com`,
+và script Stripe có tải ở các trang xung quanh. Nó nói đã kiểm chứng, và chưa kiểm
+chứng gì.
+
+**Cả hai probe đều click add-to-cart đúng một lần.** Nút render từ server nên click
+được trước khi React gắn handler, và `check_storefront_e2e.mjs` đã đo: 1 lần thành
+công trong 6. Lần chạy đầu của probe mới rơi đúng vào đó và báo "checkout 404" trên
+một shop hoàn toàn bình thường.
+
+**Cả hai chờ cứng 6 giây cho trang products.** Storefront vừa build là nguội, trang
+đầu đáp trong 7–9 giây, nên nó báo "no products to test with" trên một catalogue đầy.
+
+Và **baseline của probe lấy sai chỗ**: đếm từ đầu lần chạy, tức nhét một phút duyệt
+web vào cửa sổ mà nó rồi quy cho việc mở checkout. Phải đếm ngay trước cú điều hướng
+vào checkout, không sớm hơn.
