@@ -44,6 +44,24 @@ await page.waitForTimeout(8000);
 
 // Straight to checkout. The cart drawer differs per theme; the route does not.
 await page.goto(`${host}/checkout`, { waitUntil: "domcontentloaded", timeout: 90000 }).catch(() => {});
+await page.waitForTimeout(8000);
+
+// Then scroll to payment, which is now REQUIRED rather than tidy.
+//
+// A Stripe intent is no longer created when the checkout page opens, only when
+// the customer reaches the payment step, because creating one per page load put
+// 549 rows in the shop owner's dashboard for orders that never existed. See
+// src/hooks/useReachedPaymentStep.ts.
+//
+// So a run that does not scroll now finds no card field, correctly, and would
+// report a working shop as one that never draws a card. This scroll is the
+// customer's own gesture and nothing more: it opens the gate the same way their
+// thumb does, and it is done before anything is measured rather than in place of
+// measuring. check_payment_intent_timing.mjs is the probe that asserts the
+// timing itself, and it deliberately does not scroll.
+await page.evaluate(() => {
+  document.getElementById("checkout-section-payment")?.scrollIntoView({ block: "center" });
+}).catch(() => {});
 await page.waitForTimeout(12000);
 
 const seen = await page.evaluate(() => {

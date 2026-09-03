@@ -37,6 +37,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useCountryStates } from "@/hooks/useCountryStates";
+import { useReachedPaymentStep } from "@/hooks/useReachedPaymentStep";
 import { getCreditCards } from "@/lib/data/credit-cards";
 import {
   createCheckoutPaymentSession,
@@ -184,6 +185,15 @@ export function PaymentSection({
     onSessionMethodChangeRef.current?.(isSessionBased);
   }, [isSessionBased]);
 
+  // ── Has the customer actually got here? ─────────────────────────────
+  // Nothing is asked of the payment provider until they have. This whole
+  // section mounts with the page, so without this gate every visit to the
+  // checkout opened a Stripe PaymentIntent, whether or not anyone ever
+  // intended to pay. See useReachedPaymentStep for the fault and for why
+  // this cannot delay a session past the point it is needed.
+  const sectionRef = useRef<HTMLDivElement>(null);
+  const reachedPaymentStep = useReachedPaymentStep(sectionRef, isSessionBased);
+
   // ── Billing address ─────────────────────────────────────────────────
   const shipAddressData = useMemo(
     () => addressToFormData(cart.shipping_address),
@@ -305,12 +315,18 @@ export function PaymentSection({
   const lastTotalRef = useRef<string | null>(null);
   const selectedCardRef = useRef<string | null>(null);
 
-  // On mount: load saved cards (if authenticated + session method), then create initial session
+  // On arrival at the payment step — NOT on mount — load saved cards (if
+  // authenticated + session method), then create the initial session.
+  //
+  // This used to run on mount, which is what put a Stripe PaymentIntent behind
+  // every checkout page load. The gate below is the whole fix; everything under
+  // it is unchanged.
   useEffect(() => {
     if (initRef.current) return;
     if (!selectedMethod) return;
     if (isZeroAmount) return;
     if (!isSessionBased) return;
+    if (!reachedPaymentStep) return;
 
     initRef.current = true;
 
@@ -352,6 +368,7 @@ export function PaymentSection({
     createSession,
     cart.total,
     isZeroAmount,
+    reachedPaymentStep,
   ]);
 
   // When the cart total changes, sync the live payment session with the
@@ -776,7 +793,11 @@ export function PaymentSection({
 
   // ── Render ──────────────────────────────────────────────────────────
   return (
-    <div>
+    // sectionRef is what useReachedPaymentStep watches, and it is on the
+    // outermost element on purpose: the card field, the method radios and the
+    // billing address are all inside it, so any of them coming into view or
+    // being touched counts as arriving at the payment step.
+    <div ref={sectionRef}>
       {/* Section Header */}
       <h2 className="text-lg font-bold text-gray-900">{t("paymentMethod")}</h2>
       <p className="text-sm text-gray-500 mt-0.5">{t("secureTransactions")}</p>
@@ -930,8 +951,15 @@ export function PaymentSection({
                         </>
                       )}
 
-                      {/* Shared: loading spinner */}
-                      {loading && (
+                      {/* Shared: loading spinner.
+                          Also shown before the customer has reached this step,
+                          so the box never renders as an empty panel while the
+                          session is deliberately not being created yet. In
+                          practice it is not seen: the observer starts the
+                          session 200px before the box is on screen, so by the
+                          time anyone looks at it this is the real loading
+                          state it has always been. */}
+                      {(loading || !reachedPaymentStep) && (
                         <div className="flex items-center justify-center py-10">
                           <Loader2 className="animate-spin h-5 w-5 text-gray-400" />
                           <span className="ml-2 text-sm text-gray-500">
