@@ -28,7 +28,10 @@ page.on("response", (r) => {
 });
 
 await page.goto(`${host}/products`, { waitUntil: "domcontentloaded", timeout: 90000 }).catch(() => {});
-await page.waitForTimeout(6000);
+// Waits for the products, not for six seconds. A freshly rebuilt storefront is
+// cold and the first pages here answer in seven to nine seconds, which read as
+// "no products to test with" on a shop whose catalogue was fine.
+await page.waitForSelector('a[href*="/products/"]', { timeout: 90000 }).catch(() => {});
 const links = await page
   .evaluate(() => [...new Set([...document.querySelectorAll('a[href*="/products/"]')].map((a) => a.getAttribute("href")))])
   .catch(() => []);
@@ -39,12 +42,43 @@ await page.waitForTimeout(6000);
 const add = page.getByRole("button", { name: /add to (cart|basket)|add to bag/i }).first();
 if (!(await add.count())) { console.log("    no add to cart button"); await browser.close(); process.exit(1); }
 await add.scrollIntoViewIfNeeded().catch(() => {});
-await add.click({ timeout: 20000 }).catch(() => {});
-await page.waitForTimeout(8000);
+// Retried until the cart token cookie exists. The button is server rendered, so
+// it is clickable before React attaches its handler, and a click in that window
+// does nothing at all: no request, no error, no change on the page. One click
+// put the item in the cart 1 time in 6 when check_storefront_e2e.mjs measured
+// it. An empty cart here reads as a shop that cannot take a card.
+const hasToken = async () =>
+  (await page.context().cookies()).some((c) => c.name.startsWith("_spree_cart_token"));
+let attempts = 0;
+while (!(await hasToken()) && attempts < 4) {
+  attempts += 1;
+  await add.click({ timeout: 10000 }).catch(() => {});
+  for (let i = 0; i < 12 && !(await hasToken()); i++) await page.waitForTimeout(250);
+}
+if (!(await hasToken())) { console.log(`    clicked add to cart ${attempts}x and no cart token was ever set`); await browser.close(); process.exit(1); }
+await page.waitForTimeout(4000);
 
-// Straight to checkout. The cart drawer differs per theme; the route does not.
-await page.goto(`${host}/checkout`, { waitUntil: "domcontentloaded", timeout: 90000 }).catch(() => {});
-await page.waitForTimeout(8000);
+// Through the cart, because there is no bare /checkout to go to.
+//
+// This asked for `${host}/checkout` from the day it was written, and that is a
+// 404 on every shop here: the route is `(checkout)/checkout/[id]`, so the only
+// checkout page is /checkout/<cart id>. So this probe has been measuring a 404
+// page, finding no card field on it, and still reporting "checkout loads Stripe"
+// — because Stripe's script loads on the pages around it and `reachesStripe` was
+// satisfied by any 200 from stripe.com. It said it had verified something and
+// had verified nothing.
+//
+// Found on 3 Sep by check_payment_intent_timing.mjs, which needed the real page
+// and could not get to it either.
+await page.goto(`${host}/cart`, { waitUntil: "domcontentloaded", timeout: 90000 }).catch(() => {});
+await page.waitForSelector('a[href*="/checkout/"]', { timeout: 60000 }).catch(() => {});
+const checkoutHref = await page
+  .evaluate(() => document.querySelector('a[href*="/checkout/"]')?.getAttribute("href") ?? null)
+  .catch(() => null);
+if (!checkoutHref) { console.log("    the cart offered no checkout link, so the item never landed in it"); await browser.close(); process.exit(1); }
+await page.goto(checkoutHref.startsWith("http") ? checkoutHref : host + checkoutHref,
+  { waitUntil: "domcontentloaded", timeout: 90000 }).catch(() => {});
+await page.waitForSelector("#checkout-section-payment", { state: "attached", timeout: 90000 }).catch(() => {});
 
 // Then scroll to payment, which is now REQUIRED rather than tidy.
 //

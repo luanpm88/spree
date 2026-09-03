@@ -73,6 +73,21 @@ class FakeIntersectionObserver {
   }
 }
 
+/**
+ * An intersection is confirmed after the layout settles rather than believed at
+ * once, because the checkout streams and this section is briefly near the top
+ * of a nearly empty page. Real timers on purpose: these tests also await the
+ * server action, and a fake clock plus real promises is a combination that
+ * passes for reasons nobody can see.
+ */
+const SETTLE_WAIT = 900;
+async function arriveAtPayment() {
+  FakeIntersectionObserver.scrollIntoView();
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_WAIT));
+  });
+}
+
 function cartWith(sessionRequired: boolean): Cart {
   return {
     id: "cart_1",
@@ -140,8 +155,10 @@ describe("PaymentSection payment session timing", () => {
     // with Stripe". Mounting is not arriving.
     renderSection(cartWith(true));
 
+    // Waits past the settle window rather than checking instantly. "Not yet" and
+    // "not at all" are different claims and only the second one is the promise.
     await act(async () => {
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, SETTLE_WAIT));
     });
 
     expect(mocks.createCheckoutPaymentSession).not.toHaveBeenCalled();
@@ -152,10 +169,7 @@ describe("PaymentSection payment session timing", () => {
     // still get a card field. A gate that never opens is a shop that cannot sell.
     renderSection(cartWith(true));
 
-    FakeIntersectionObserver.scrollIntoView();
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await arriveAtPayment();
 
     expect(mocks.createCheckoutPaymentSession).toHaveBeenCalledTimes(1);
     expect(mocks.createCheckoutPaymentSession).toHaveBeenCalledWith(
@@ -171,14 +185,8 @@ describe("PaymentSection payment session timing", () => {
     // a second way to be re-entered that it did not have before.
     renderSection(cartWith(true));
 
-    FakeIntersectionObserver.scrollIntoView();
-    await act(async () => {
-      await Promise.resolve();
-    });
-    FakeIntersectionObserver.scrollIntoView();
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await arriveAtPayment();
+    await arriveAtPayment();
 
     expect(mocks.createCheckoutPaymentSession).toHaveBeenCalledTimes(1);
   });
@@ -188,10 +196,7 @@ describe("PaymentSection payment session timing", () => {
     // gateway at all, and arriving at the payment step must not invent one.
     renderSection(cartWith(false));
 
-    FakeIntersectionObserver.scrollIntoView();
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await arriveAtPayment();
 
     expect(mocks.createCheckoutPaymentSession).not.toHaveBeenCalled();
   });

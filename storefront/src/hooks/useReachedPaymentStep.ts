@@ -62,7 +62,42 @@ import { type RefObject, useEffect, useState } from "react";
  * a nuisance; a shop that cannot draw a card field is a shop that cannot sell.
  * The failure direction is chosen deliberately, and it is the opposite of the
  * one the cache purge chose.
+ *
+ * ── why an intersection is confirmed instead of believed ───────────────────
+ *
+ * Because the first version of this shipped and still leaked, and the probe
+ * caught it on the live Canada shop: 31 sessions before opening the checkout,
+ * 32 after, with the payment box measured at 1133px down a 900px window. Well
+ * outside the 200px margin, and a session was created anyway.
+ *
+ * The checkout page STREAMS. When this section mounts, the contact and delivery
+ * forms above it have not rendered yet, so the payment box is briefly near the
+ * top of a nearly empty page and genuinely on screen. The observer's first
+ * callback fires, correctly, on a layout that lasts a moment. Then the rest of
+ * the page arrives and pushes the box down to where it really sits.
+ *
+ * So an intersection schedules a re-measurement rather than deciding. If the
+ * box is still within reach when the layout has stopped moving, the customer is
+ * really looking at it. If it has been pushed away, that callback described a
+ * page that no longer exists.
+ *
+ * This is the same class of error as the mailer probe that set the locale it was
+ * about to measure: a true observation of a state nobody was ever in. It was
+ * only found by counting rows on a real shop, which is why the probe counts rows
+ * rather than watching the browser.
  */
+
+/**
+ * How far outside the viewport still counts as reach, and how long to wait
+ * before believing it.
+ *
+ * The margin matches InfiniteProductList so the work is done before the thing
+ * is looked at. The settle delay is the streaming window: long enough that the
+ * forms above have landed, short enough that a customer scrolling down does not
+ * notice it, since they are still 200px away when it starts.
+ */
+const REACH_MARGIN = 200;
+const SETTLE_MS = 600;
 export function useReachedPaymentStep(
   ref: RefObject<HTMLElement | null>,
   enabled: boolean,
@@ -82,15 +117,30 @@ export function useReachedPaymentStep(
       return;
     }
 
+    // Touching it is not in doubt and is never deferred. Only what the observer
+    // reports needs confirming, because only the observer can describe a layout
+    // that is still moving.
     const arrive = () => setReached(true);
+
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const withinReach = () => {
+      const r = node.getBoundingClientRect();
+      return (
+        r.top < window.innerHeight + REACH_MARGIN && r.bottom > -REACH_MARGIN
+      );
+    };
+    const arriveIfStillHere = () => {
+      if (settle !== undefined) clearTimeout(settle);
+      settle = setTimeout(() => {
+        if (withinReach()) arrive();
+      }, SETTLE_MS);
+    };
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) arrive();
+        if (entries.some((entry) => entry.isIntersecting)) arriveIfStillHere();
       },
-      // Matches InfiniteProductList: begin 200px early so the work is done by
-      // the time the thing is looked at.
-      { threshold: 0.01, rootMargin: "200px" },
+      { threshold: 0.01, rootMargin: `${REACH_MARGIN}px` },
     );
     observer.observe(node);
 
@@ -98,6 +148,7 @@ export function useReachedPaymentStep(
     node.addEventListener("focusin", arrive);
 
     return () => {
+      if (settle !== undefined) clearTimeout(settle);
       observer.disconnect();
       node.removeEventListener("pointerdown", arrive);
       node.removeEventListener("focusin", arrive);

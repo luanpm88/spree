@@ -71,11 +71,21 @@ if (!shop) {
 }
 
 // ── the estate files, which name his shops and are gitignored ──────────────
+// The env file is written to be SOURCED, so its values can hold $HOME. Expanding
+// them here rather than passing them on literally, because ssh given a literal
+// "$HOME/.ssh/key" reports "Identity file $HOME/... not accessible", which reads
+// like a missing key and sent this probe looking for the wrong fault once.
+// script/check_shop_runtime carries the same note for the same reason.
+const expand = (v) =>
+  v
+    .replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (_, n) => process.env[n] ?? "")
+    .replace(/^~(?=\/|$)/, process.env.HOME ?? "~");
+
 const env = {};
 if (existsSync(".estate.env")) {
   for (const line of readFileSync(".estate.env", "utf8").split("\n")) {
     const m = line.match(/^\s*(?:export\s+)?([A-Z_]+)=(.*)$/);
-    if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
+    if (m) env[m[1]] = expand(m[2].trim().replace(/^["']|["']$/g, ""));
   }
 }
 const { SSH_HOST, SSH_KEY, SSH_PORT = "22" } = env;
@@ -120,15 +130,17 @@ const countSessions = () => {
   return Number.isFinite(n) ? n : null;
 };
 
-let before;
+// Read once up front only to prove the count is readable at all, so a broken
+// ssh or a missing table is reported as that rather than as a payment fault.
+// The number this probe actually compares against is taken later, immediately
+// before the checkout page is opened.
 try {
-  before = countSessions();
+  if (countSessions() === null) {
+    console.log("    skipped — payment session count came back unreadable");
+    process.exit(0);
+  }
 } catch {
   console.log(`    skipped — could not read ${shop}'s payment sessions`);
-  process.exit(0);
-}
-if (before === null) {
-  console.log("    skipped — payment session count came back unreadable");
   process.exit(0);
 }
 
@@ -152,7 +164,13 @@ const skip = async (msg) => {
 await page
   .goto(`${host}/products`, { waitUntil: "domcontentloaded", timeout: 90000 })
   .catch(() => {});
-await page.waitForTimeout(6000);
+// Waits for the thing it needs, not for a number of seconds. A storefront that
+// has just been rebuilt is cold: the first pages on this estate answer in seven
+// to nine seconds, and a fixed six second wait reported "no products to test
+// with" on a shop whose catalogue was fine.
+await page
+  .waitForSelector('a[href*="/products/"]', { timeout: 90000 })
+  .catch(() => {});
 const links = await page
   .evaluate(() => [
     ...new Set(
@@ -167,20 +185,100 @@ if (!links.length) await skip("no products to test with");
 await page
   .goto(host + links[0], { waitUntil: "domcontentloaded", timeout: 90000 })
   .catch(() => {});
-await page.waitForTimeout(6000);
 const add = page
   .getByRole("button", { name: /add to (cart|basket)|add to bag/i })
   .first();
+await add.waitFor({ state: "visible", timeout: 30000 }).catch(() => {});
 if (!(await add.count())) await skip("no add to cart button");
 await add.scrollIntoViewIfNeeded().catch(() => {});
-await add.click({ timeout: 20000 }).catch(() => {});
-await page.waitForTimeout(8000);
+
+// Retried until the cart token cookie exists, not clicked once.
+//
+// Borrowed from check_storefront_e2e.mjs, which spent a day on this. The button
+// is server rendered, so it is visible and enabled well before React attaches
+// its handler, and a click landing in that window does nothing at all: no
+// request, no error, no change on the page. One click put the item in the cart
+// 1 time in 6 there.
+//
+// The first version of this probe clicked once, reached an empty cart, and
+// /checkout answered 404 because there was nothing to check out. Which reads
+// exactly like a broken shop. The shop was fine.
+const hasToken = async () =>
+  (await page.context().cookies()).some((c) =>
+    c.name.startsWith("_spree_cart_token"),
+  );
+let attempts = 0;
+while (!(await hasToken()) && attempts < 4) {
+  attempts += 1;
+  await add.click({ timeout: 10000 }).catch(() => {});
+  for (let i = 0; i < 12 && !(await hasToken()); i++)
+    await page.waitForTimeout(250);
+}
+if (!(await hasToken()))
+  await skip(`clicked add to cart ${attempts}x and no cart token was ever set`);
+await page.waitForTimeout(4000);
+
+// Through the cart, because there is no bare /checkout to go to.
+//
+// The route is `(checkout)/checkout/[id]`, so the checkout page is
+// /checkout/<cart id> and nothing else. `${host}/checkout` is a 404 on every
+// shop in this estate, and check_card_field.mjs has been asking for it since it
+// was written: it measured a 404 page, found no card field, and still reported
+// "checkout loads Stripe" because Stripe's script loads on the pages around it.
+// A check that says it verified something and verified nothing is the failure
+// this project keeps having, and this is the third time.
+//
+// The cart page carries the real link, which is how a customer gets there too.
+await page
+  .goto(`${host}/cart`, { waitUntil: "domcontentloaded", timeout: 90000 })
+  .catch(() => {});
+await page
+  .waitForSelector('a[href*="/checkout/"]', { timeout: 60000 })
+  .catch(() => {});
+const checkoutHref = await page
+  .evaluate(
+    () =>
+      document.querySelector('a[href*="/checkout/"]')?.getAttribute("href") ??
+      null,
+  )
+  .catch(() => null);
+if (!checkoutHref)
+  await skip(
+    "the cart offered no checkout link, so the item never landed in it",
+  );
+
+// The baseline, taken HERE and not at the start of the run.
+//
+// The first version counted before the browser launched, which put a minute of
+// browsing — a product list, a product page, an add to cart, the cart page —
+// inside the window it then attributed to opening the checkout. That reported a
+// working shop as leaking one session, and on a live shop it could equally have
+// been a real customer arriving mid-run. The window has to be the navigation
+// and nothing else.
+const before = countSessions();
 
 await page
-  .goto(`${host}/checkout`, { waitUntil: "domcontentloaded", timeout: 90000 })
+  .goto(checkoutHref.startsWith("http") ? checkoutHref : host + checkoutHref, {
+    waitUntil: "domcontentloaded",
+    timeout: 90000,
+  })
   .catch(() => {});
-// Long enough that a session created on mount has certainly landed. Too short a
-// wait here would read as a pass for the wrong reason.
+// `attached`, never `visible`, and certainly not scrollIntoView.
+//
+// The checkout page streams, so the payment section arrives well after
+// domcontentloaded and a fixed wait read an empty page as a shop with no
+// payment step. But waiting for it must not BRING it into view: scrolling is
+// the gesture that opens the gate this probe exists to time. `attached` asks
+// only whether the element is in the document, which is what is wanted and
+// nothing more.
+await page
+  .waitForSelector("#checkout-section-payment", {
+    state: "attached",
+    timeout: 90000,
+  })
+  .catch(() => {});
+// Then long enough that a session created on mount has certainly landed. Too
+// short a wait here would read as a pass for the wrong reason.
 await page.waitForTimeout(15000);
 
 // Is there a session-based method on this shop at all? Several of these shops
@@ -189,20 +287,36 @@ await page.waitForTimeout(15000);
 const geometry = await page
   .evaluate(() => {
     const box = document.getElementById("checkout-section-payment");
-    if (!box) return { present: false };
+    const where = {
+      path: location.pathname,
+      sections: [...document.querySelectorAll('[id^="checkout-section-"]')].map(
+        (n) => n.id.replace("checkout-section-", ""),
+      ),
+      heading: document.querySelector("h1, h2")?.textContent?.trim() ?? "",
+    };
+    if (!box) return { present: false, ...where };
     const r = box.getBoundingClientRect();
     return {
       present: true,
+      ...where,
       top: Math.round(r.top),
       viewport: window.innerHeight,
       scrollY: Math.round(window.scrollY),
-      text: box.innerText.slice(0, 400),
     };
   })
   .catch(() => null);
 
-if (!geometry?.present)
-  await skip("no payment section on this checkout, nothing to time");
+// Says WHERE it ended up, not just that it did not find the box. The first run
+// of this printed only "no payment section" and that could equally have meant a
+// cart that never took the item, a redirect to sign in, or a renamed id. Three
+// different faults behind one sentence is a sentence that costs a round trip.
+if (!geometry?.present) {
+  await skip(
+    `no payment section to time. landed on ${geometry?.path ?? "?"}` +
+      `, sections [${(geometry?.sections ?? []).join(", ") || "none"}]` +
+      `, heading "${geometry?.heading ?? ""}"`,
+  );
+}
 
 console.log(`    payment box starts ${geometry.top}px down a ${geometry.viewport}px window`);
 if (geometry.scrollY !== 0)

@@ -1,7 +1,10 @@
 import { act, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useReachedPaymentStep } from "@/hooks/useReachedPaymentStep";
+
+/** Must stay ahead of SETTLE_MS in the hook. */
+const PAST_SETTLE = 1000;
 
 /**
  * jsdom ships no IntersectionObserver, so the real one is stood in for here.
@@ -43,10 +46,11 @@ class FakeIntersectionObserver {
   }
 }
 
-function installObserver() {
-  FakeIntersectionObserver.instances = [];
-  globalThis.IntersectionObserver =
-    FakeIntersectionObserver as unknown as typeof IntersectionObserver;
+/** Let the hook's settle timer run out. */
+function settle() {
+  act(() => {
+    vi.advanceTimersByTime(PAST_SETTLE);
+  });
 }
 
 function setup(enabled = true) {
@@ -54,16 +58,37 @@ function setup(enabled = true) {
   document.body.appendChild(node);
   const ref = { current: node };
 
+  // jsdom lays nothing out, so every rect is zero and every box would look
+  // on screen. Positioning it explicitly is what makes the streaming test
+  // below mean anything.
+  let rect = { top: 100, bottom: 900 };
+  node.getBoundingClientRect = () =>
+    ({ ...rect, left: 0, right: 0, height: 0, width: 0 }) as DOMRect;
+  const moveTo = (top: number, bottom: number) => {
+    rect = { top, bottom };
+  };
+
   const view = renderHook(
     ({ on }: { on: boolean }) => useReachedPaymentStep(ref, on),
     { initialProps: { on: enabled } },
   );
 
-  return { node, view, observer: () => FakeIntersectionObserver.instances[0] };
+  return {
+    node,
+    view,
+    moveTo,
+    observer: () => FakeIntersectionObserver.instances[0],
+  };
 }
 
-beforeEach(installObserver);
+beforeEach(() => {
+  vi.useFakeTimers();
+  FakeIntersectionObserver.instances = [];
+  globalThis.IntersectionObserver =
+    FakeIntersectionObserver as unknown as typeof IntersectionObserver;
+});
 afterEach(() => {
+  vi.useRealTimers();
   document.body.innerHTML = "";
 });
 
@@ -80,9 +105,43 @@ describe("useReachedPaymentStep", () => {
     expect(view.result.current).toBe(false);
   });
 
-  it("reports arrival when the box scrolls into view", () => {
+  it("reports arrival when the box scrolls into view and stays there", () => {
     const { view, observer } = setup();
     observer().emit(true);
+    settle();
+    expect(view.result.current).toBe(true);
+  });
+
+  it("ignores an intersection on a page that is still streaming", () => {
+    // THE BUG THIS FILE EXISTS FOR, and it shipped once before being caught by
+    // counting rows on the live shop: 31 payment sessions before opening the
+    // checkout, 32 after, with the payment box measured at 1133px down a 900px
+    // window. Well outside the margin, and a session was created anyway.
+    //
+    // The checkout streams. When this section mounts the contact and delivery
+    // forms above it do not exist yet, so the payment box is briefly near the
+    // top of a nearly empty page and really is on screen. The observer fires,
+    // correctly, about a layout that lasts a moment.
+    const { view, observer, moveTo } = setup();
+
+    observer().emit(true);
+    // The rest of the checkout arrives and pushes payment down where it lives.
+    moveTo(1133, 3000);
+    settle();
+
+    expect(view.result.current).toBe(false);
+  });
+
+  it("still arrives if the box is genuinely on screen once things settle", () => {
+    // The other side of the same coin: a tall window or a short cart, where the
+    // box is on screen at load and the customer never scrolls. They must still
+    // get a card field, so a confirmed intersection has to be believed.
+    const { view, observer, moveTo } = setup();
+
+    observer().emit(true);
+    moveTo(300, 1100);
+    settle();
+
     expect(view.result.current).toBe(true);
   });
 
@@ -94,9 +153,9 @@ describe("useReachedPaymentStep", () => {
     expect(observer().options?.rootMargin).toBe("200px");
   });
 
-  it("reports arrival on a click even if the observer never fires", () => {
-    // The observer covers scrolling, which is how nearly everyone arrives.
-    // This is the safety net: a click means they are here regardless.
+  it("reports arrival on a click at once, with no settling delay", () => {
+    // Touching the box is not in doubt, so it is never deferred. Only what the
+    // observer reports can describe a layout that has already gone.
     const { node, view } = setup();
     expect(view.result.current).toBe(false);
 
@@ -149,6 +208,7 @@ describe("useReachedPaymentStep", () => {
 
     expect(observer()).toBeDefined();
     observer().emit(true);
+    settle();
     expect(view.result.current).toBe(true);
   });
 
@@ -157,9 +217,11 @@ describe("useReachedPaymentStep", () => {
     // customer has already been given a card field for.
     const { view, observer } = setup();
     observer().emit(true);
+    settle();
     expect(view.result.current).toBe(true);
 
     observer().emit(false);
+    settle();
     expect(view.result.current).toBe(true);
   });
 
@@ -168,6 +230,18 @@ describe("useReachedPaymentStep", () => {
     // every scroll for the rest of the checkout.
     const { observer } = setup();
     observer().emit(true);
+    settle();
     expect(observer().disconnected).toBe(true);
+  });
+
+  it("does not leave a pending timer behind when it unmounts", () => {
+    // A page left mid-stream must not set state on a gone component. The timer
+    // is cleared in the effect teardown; this is what proves the teardown runs.
+    const { view, observer } = setup();
+    observer().emit(true);
+    act(() => {
+      view.unmount();
+    });
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
