@@ -130,17 +130,29 @@ export function useReachedPaymentStep(
     const node = ref.current;
     if (!node) return;
 
-    // Fail towards selling. See the note above: no observer means eager, not
-    // never.
-    if (typeof IntersectionObserver === "undefined") {
-      setReached(true);
-      return;
-    }
-
     // Touching it is not in doubt and is never deferred. Only what the observer
     // reports needs confirming, because only the observer can describe a layout
     // that is still moving.
-    const arrive = () => setReached(true);
+    //
+    // Says WHY it opened, and this line is not debris.
+    //
+    // Three wrong causes were reasoned out and shipped before this existed: a
+    // fixed settle delay, offsetTop, and a streaming layout that measurement
+    // then showed does not move at all. Each round cost a build and a live
+    // measurement to disprove. A gate that decides silently can only be
+    // investigated by guessing at it, and ExpressCheckoutButton beside this
+    // already logs what it found for the same reason.
+    const arrive = (why: string) => {
+      setReached(true);
+      console.log(`[payment-step] session allowed, reached via ${why}`);
+    };
+
+    // Fail towards selling. See the note above: no observer means eager, not
+    // never.
+    if (typeof IntersectionObserver === "undefined") {
+      arrive("no IntersectionObserver in this browser");
+      return;
+    }
 
     let poll: ReturnType<typeof setTimeout> | undefined;
     let lastTop = Number.NaN;
@@ -189,7 +201,7 @@ export function useReachedPaymentStep(
         poll = setTimeout(confirm, STABLE_POLL_MS);
         return;
       }
-      if (visible) arrive();
+      if (visible) arrive(`view at ${inDocument}px`);
       poll = undefined;
     };
 
@@ -207,14 +219,19 @@ export function useReachedPaymentStep(
     );
     observer.observe(node);
 
-    node.addEventListener("pointerdown", arrive);
-    node.addEventListener("focusin", arrive);
+    const onPointer = () => arrive("pointerdown");
+    const onFocus = (e: Event) => {
+      const el = e.target as HTMLElement | null;
+      arrive(`focusin on ${el?.tagName ?? "?"}${el?.id ? `#${el.id}` : ""}`);
+    };
+    node.addEventListener("pointerdown", onPointer);
+    node.addEventListener("focusin", onFocus);
 
     return () => {
       if (poll !== undefined) clearTimeout(poll);
       observer.disconnect();
-      node.removeEventListener("pointerdown", arrive);
-      node.removeEventListener("focusin", arrive);
+      node.removeEventListener("pointerdown", onPointer);
+      node.removeEventListener("focusin", onFocus);
     };
   }, [ref, enabled, reached]);
 

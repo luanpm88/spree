@@ -151,6 +151,7 @@ const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 
 const posts = [];
+let settleTrace = [];
 let landedAt = 0;
 page.on("request", (r) => {
   // Only what happened AFTER landing on the checkout, and only server actions.
@@ -184,6 +185,10 @@ const fail = async (msg) => {
   if (posts.length) {
     console.log("    server actions the checkout page called, and when:");
     for (const line of posts) console.log(`      ${line}`);
+  }
+  if (settleTrace.length) {
+    console.log("    where the payment box sat in the document, as it settled:");
+    for (const s of settleTrace) console.log(`      +${s.at}ms  ${s.top}px`);
   }
   await browser.close();
   process.exit(1);
@@ -391,6 +396,25 @@ if (geometry.scrollY !== 0)
   await fail(
     `the page was already scrolled to ${geometry.scrollY}px, so this run arranged what it measures`,
   );
+
+// How long the layout actually takes to stop moving, sampled rather than
+// assumed. Printed on failure, because "the page had not finished settling" is
+// a claim and this is the number behind it.
+settleTrace = await page
+  .evaluate(async () => {
+    const seen = [];
+    for (let i = 0; i < 48; i++) {
+      const box = document.getElementById("checkout-section-payment");
+      if (box) {
+        const top = Math.round(box.getBoundingClientRect().top + window.scrollY);
+        const last = seen[seen.length - 1];
+        if (!last || last.top !== top) seen.push({ at: i * 250, top });
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return seen;
+  })
+  .catch(() => []);
 
 const afterOpen = countSessions();
 
