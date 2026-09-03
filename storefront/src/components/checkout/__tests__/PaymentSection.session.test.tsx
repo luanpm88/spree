@@ -126,6 +126,28 @@ function renderSection(cart: Cart) {
 }
 
 beforeEach(() => {
+  // jsdom lays nothing out, so every getBoundingClientRect is all zeros. Under
+  // the hook's zero margin a rect with bottom === 0 means the box sits entirely
+  // above the window — scrolled past — which is the correct reading of those
+  // numbers and a useless fixture. Both of these tests failed on exactly that
+  // when the margin went from 200 to 0, and the component was right.
+  //
+  // So the section is given a plausible on-screen rect. Where the box sits is
+  // useReachedPaymentStep's own concern and its tests script it precisely; this
+  // file is about whether PaymentSection asks for a session at all.
+  Element.prototype.getBoundingClientRect = () =>
+    ({
+      top: 100,
+      bottom: 900,
+      left: 0,
+      right: 0,
+      width: 0,
+      height: 800,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect;
+
   vi.clearAllMocks();
   mocks.createCheckoutPaymentSession.mockResolvedValue({
     success: true,
