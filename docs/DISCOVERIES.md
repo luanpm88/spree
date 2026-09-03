@@ -5058,32 +5058,54 @@ Test wiring của component đã được kiểm bằng cách **gỡ dòng chặ
 không** — đỏ đúng một test. Một test xanh cả khi bug còn nguyên thì tệ hơn không có
 test.
 
-### Bản sửa đầu tiên vẫn rò, và chỉ đếm dòng trên shop thật mới thấy
+### Ba lần sửa sai liên tiếp, và cái chữa được là bắt nó tự nói ra lý do
 
-Đây là phần đáng giá nhất của cả mục này. Sửa xong, deploy lên Canada, probe đo ra:
+Đây là phần đáng giá nhất của cả mục này, và nó không nói về Stripe.
+
+Sửa xong, deploy lên Canada, probe đo: **vẫn rò**. Rồi ba lần nữa. Mỗi lần tôi
+suy ra một nguyên nhân, viết mã, build, đo, và sai:
+
+| Lần | Suy luận | Đo ra |
+|---|---|---|
+| 1 | Trang checkout stream, hộp payment thoáng ở gần đỉnh nên observer nổ đúng về một bố cục chỉ sống một khoảnh khắc | 31 → 32 |
+| 2 | Vậy hoãn 600ms rồi đo lại | 32 → 33. Trang không xong theo lịch, 600ms còn quá sớm |
+| 3 | Vậy chờ `offsetTop` đứng yên | 36 → 37. `offsetTop` đo từ **ancestor có position**, và wrapper checkout có class `relative` trong khi express checkout nằm **ngoài** wrapper. Nó đẩy cả trang xuống mà offsetTop không đổi một pixel |
+
+Ba vòng, ba build, ba lần đo trên shop thật để phủ định ba giả thuyết. Điểm chung:
+**cái cổng ra quyết định trong im lặng**, nên cách duy nhất để điều tra nó là đoán.
+
+Thứ chấm dứt chuyện đó là một dòng `console.log` nói cổng mở **vì lý do gì**:
 
 ```
-31 phiên trước khi mở checkout
-32 phiên sau khi mở checkout
-hộp payment ở 1133px, cửa sổ 900px, tầm với 1100px
+[payment-step] session allowed, reached via view at 1041px
 ```
 
-Ngoài lề 200px mà **vẫn tạo phiên**. Mã đã có trên server (đã ssh vào kiểm từng
-byte), image build sau đó. Nên lỗi là của bản sửa.
+Hộp payment **dừng ở 1041px**, không phải 1133px như tôi đo trước đó. Trên laptop
+1440x900, nó chỉ nằm **141px dưới màn hình**. Mà `rootMargin` là **200px**.
 
-Nguyên nhân: **trang checkout stream**. Lúc `PaymentSection` mount, form contact và
-delivery phía trên **chưa render**, nên hộp payment nằm gần đỉnh một trang gần như
-rỗng — và nó **thật sự đang trên màn hình**. Observer nổ callback đầu tiên, hoàn
-toàn đúng, về một bố cục chỉ tồn tại trong khoảnh khắc. Rồi phần còn lại render và
-đẩy nó xuống 1133px.
+Nên cổng **vẫn luôn mở đúng theo thiết kế**. Cả ba giả thuyết trước đều đi tìm chỗ
+cổng mở *sai*. Không có chỗ nào sai. **Cái lề rộng hơn cái khe nó canh.**
 
-Cách chữa: một lần intersect **hẹn đo lại** chứ không tự quyết. Còn trong tầm sau
-600ms thì khách đang xem thật; bị đẩy đi rồi thì callback đó nói về một trang không
-còn nữa. Chạm vào hộp thì không bao giờ hoãn, vì chạm là không phải bàn.
+Đổi lề về **0**: hộp phải thật sự vào trong cửa sổ. Khách cuộn 141px và phiên bắt
+đầu đúng lúc hộp hiện ra. Hộp lại cao, nên mép trên vào màn hình vẫn sớm hơn nhiều
+so với lúc ô thẻ nằm giữa tầm mắt.
 
-Cùng họ với con probe mailer 19/08 tự set locale trước khi đo: **một quan sát đúng
-về một trạng thái không ai từng ở trong đó**. Và điều duy nhất tìm ra nó là đếm dòng
-trên shop thật.
+```
+mở checkout:        39 → 39   không tạo gì
+cuộn tới payment:   39 → 40   đúng một phiên, 9 iframe Stripe
+```
+
+### Bài học, và nó không phải "cẩn thận hơn"
+
+**Một cơ chế quyết định trong im lặng chỉ có thể điều tra bằng cách đoán.** Ba vòng
+suy luận sạch sẽ, mỗi vòng một build và một phép đo trên shop đang bán, để rồi câu
+trả lời nằm trong một dòng log lẽ ra nên có từ đầu. `ExpressCheckoutButton` ngay
+bên cạnh đã log thứ nó tìm thấy, vì cùng lý do đó. Chỗ nào đưa ra quyết định mà
+không ai thấy được, chỗ đó phải tự nói.
+
+Và **cả ba bản sai đều xanh hết unit test**, vì test render component một mình, nơi
+không có gì tới muộn phía trên nó và không có bố cục nào cả. Một bản sửa thay đổi
+**thời điểm** một việc xảy ra thì phải đo trên trang render giống trang của khách.
 
 ### Ba phép kiểm nói nhiều hơn thứ chúng đo được, tìm ra dọc đường
 
@@ -5102,6 +5124,25 @@ một shop hoàn toàn bình thường.
 **Cả hai chờ cứng 6 giây cho trang products.** Storefront vừa build là nguội, trang
 đầu đáp trong 7–9 giây, nên nó báo "no products to test with" trên một catalogue đầy.
 
-Và **baseline của probe lấy sai chỗ**: đếm từ đầu lần chạy, tức nhét một phút duyệt
-web vào cửa sổ mà nó rồi quy cho việc mở checkout. Phải đếm ngay trước cú điều hướng
-vào checkout, không sớm hơn.
+### Và chính phần chẩn đoán của tôi cũng bị cắt mà đọc như đủ
+
+Probe ghi mọi POST của cả lần chạy rồi in **25 dòng đầu**. Mười bảy dòng đầu là
+trang products, trang sản phẩm và giỏ hàng, nên đúng cái request cần thiết rơi ra
+khỏi cuối danh sách. Tôi đọc danh sách đó và kết luận **"trang checkout không gọi
+server action nào"**. Nó gọi đúng một cái, và Rails có ghi suốt:
+
+```
+POST /api/v3/store/carts/<id>/payment_sessions 201
+```
+
+Cùng một họ với lỗi `if fallback` là chuỗi con của `elsif fallback`: **một danh sách
+bị cắt đọc như một danh sách đầy đủ**. Và tôi mắc nó bên trong chính công cụ dựng ra
+để tránh nó.
+
+Baseline của probe cũng lấy sai chỗ: đếm từ đầu lần chạy, tức nhét một phút duyệt
+web vào cửa sổ mà nó rồi quy cho việc mở checkout. Phải đếm ngay trước cú điều
+hướng vào checkout.
+
+Và ngưỡng "dưới màn hình" của probe phải **bằng đúng lề trong hook**. Hai con số ấy
+là cùng một quyết định; lệch nhau là probe đánh trượt một shop đang chạy tốt, hoặc
+cho qua một shop đang rò.
