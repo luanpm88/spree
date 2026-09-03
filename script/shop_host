@@ -2143,6 +2143,24 @@ YAML
   rsh "curl -sf -o /dev/null http://127.0.0.1:$S_SPORT/" \
     || die "the storefront is not answering on 127.0.0.1:$S_SPORT"
   ok "answering on 127.0.0.1:$S_SPORT"
+
+  # Tell Spree where to send changes, now that there is somewhere to send them.
+  #
+  # Here rather than in cmd_up, because the endpoint being provisioned IS this
+  # storefront: provisioning before it exists would point Spree at a container
+  # that is not running and Spree would disable the endpoint after the failures.
+  #
+  # A default for every shop rather than a step to remember, at the client's
+  # request: "This is now another default setting to add to the list for all new
+  # shop installs." A list is a thing people work from until they are busy. This
+  # runs whether or not anyone remembers it.
+  #
+  # Idempotent, so re-running this command on a shop that already has one merges
+  # rather than replaces, and never mints a new secret over a working one.
+  if [ -x script/provision_webhook ]; then
+    step "Telling Spree to notify this storefront when the catalogue changes"
+    script/provision_webhook "$S_NAME" || warn "webhook not provisioned; edits will wait for the cache to age out"
+  fi
 }
 
 # The Store API's public id for a taxon, by permalink.
