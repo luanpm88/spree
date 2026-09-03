@@ -4839,7 +4839,7 @@ thứ.** Chúng chỉ chưa khác nhau. Chỗ để phát hiện là trường h
 trùng khớp, và ở đó thứ đắt nhất không phải là lỗi — mà là bản sửa nửa vời trông như
 đã xong.
 
-## 30. `spree_page_builder` cài được trên 5.6.1, và nó dựng cho một storefront mà hệ này không có (1 Sep)
+## 31. `spree_page_builder` cài được trên 5.6.1, và nó dựng cho một storefront mà hệ này không có (1 Sep)
 
 Chủ shop hỏi: gem `spree_page_builder` có tồn tại không, cài lên được không, và
 editor có hiện trong admin không. Đo trên **site thử cục bộ**, không đụng shop nào
@@ -4961,3 +4961,99 @@ trống", báo cáo vẫn đúng chữ mà chưa chứng minh được gì.
 Việc thử để lại rác phải dọn: bộ cài ghi **5 file migration** vào `db/migrate/` và
 sửa `db/schema.rb`. Để nguyên thì lần deploy sau sẽ tạo bảng page builder trên mọi
 shop. Đã gỡ gem, xoá migration, trả `schema.rb`, và xác nhận shop thật còn 0 dòng.
+
+---
+
+## 32. Mở trang checkout là tạo một PaymentIntent, và trình duyệt không phân biệt được (3 Sep)
+
+Chủ shop tự phát hiện, và câu của ông là chẩn đoán:
+
+> "Something is not right with Strip, every cart is making a connection with
+> Stripe. Take a look."
+
+Dashboard của ông **549 dòng**, gần hết là `Incomplete`, không có phương thức thanh
+toán nào. Không đồng nào bị trừ. Cái mất là chính cái dashboard: intent của khách
+thật nằm lẫn giữa hàng trăm intent không thuộc về ai.
+
+### Nguyên nhân
+
+Checkout là **một trang liền**: contact → delivery → lời nhắn → payment → nút trả
+tiền. Không có bước nào cả. Nên `PaymentSection` mount ngay khi mở trang, và effect
+khởi tạo của nó gọi `createCheckoutPaymentSession` luôn — trước khi khách bấm một
+phím. Với Stripe thì đó là một PaymentIntent mỗi lần tải trang, và **bỏ giỏ giữa
+đường là trường hợp bình thường**, không phải ngoại lệ.
+
+### Số đo
+
+```
+spree_payment_sessions, tổng cả bảy shop:  315
+  thấp nhất  0    (shop phải đăng nhập mới vào được)
+  cao nhất   102  (shop mở bán gần nhất, chỉ bốn ngày trước)
+```
+
+Shop mở bán 30/08, bốn ngày sau đã 102 dòng. Theo giờ, hai ngày 31/08–01/09:
+
+```
+02h→10  03h→4  04h→36  05h→3  06h→31  07h→3  09h→2  10h→2  11h→1  13h→1
+```
+
+**36 dòng trong một giờ** trên shop bán ~1 đơn/ngày là máy, không phải khách. Máy đó
+là của mình: `check_note_box` đi tới `/checkout` trên cả bảy shop mỗi lần chạy. Hai
+nửa cùng một lỗi, và nửa của khách mới là nửa đáng sửa.
+
+Shop duy nhất bằng 0 là shop phải đăng nhập mới vào được — con số 0 ấy là bằng chứng
+phụ rằng nguồn sinh dòng là *lượt mở trang*, không phải đơn hàng.
+
+### Cái bẫy: đừng đo bằng trình duyệt
+
+Đây là phần dễ báo cáo sai nhất. **Trình duyệt không phân biệt được hai trạng thái**:
+
+- `ExpressCheckoutButton` nằm ở **đầu** trang checkout, mount Stripe Elements với
+  `mode`/`amount` chứ **không** có `client_secret`. Nên `js.stripe.com` vẫn tải, và
+  iframe Stripe vẫn có, trên một trang **chưa tạo intent nào**.
+- Phép kiểm nào rình lưu lượng mạng tới Stripe cũng sẽ báo "đã sửa" trong khi vẫn hỏng.
+
+Thứ đo được là `spree_payment_sessions`: **một dòng một intent**, và đó đúng là dòng
+sinh ra intent. Đếm trước và sau chính là con số chủ shop đang nhìn.
+
+`ExpressCheckoutButton` gọi `expressCheckoutCreateSession` **bên trong**
+`handleConfirm`, nên nó sạch: chỉ tạo intent khi khách đã bấm Apple Pay / Google Pay.
+`PaymentSection` là nguồn duy nhất — đã grep toàn bộ `createCheckoutPaymentSession`
+để xác nhận, chứ không đoán.
+
+### Cách sửa, và hướng hỏng được chọn có chủ ý
+
+Chỉ tạo phiên khi khách **tới thật**: hộp payment vào trong 200px của viewport
+(`IntersectionObserver`, `rootMargin: "200px"`), hoặc có `pointerdown`/`focusin` bất
+kỳ trong hộp đó.
+
+Lề 200px là lý do **khách không nhận ra gì đổi**: phiên bắt đầu trước khi hộp lên
+màn hình, nên ô thẻ hiện đúng nhanh như cũ.
+
+Ba tình huống biên, cả ba đều đã nghĩ tới:
+
+| | |
+|---|---|
+| Hộp payment **đã** trên màn hình lúc tải (màn cao, giỏ ngắn) | Callback đầu tiên của observer nổ ngay. Đó là hành vi cũ, và **đúng** |
+| Trình duyệt **không có** `IntersectionObserver` | Báo "đã tới" ngay lập tức |
+| Khách dùng bàn phím / trình đọc màn hình | `focusin` bắt, vì họ tới mà không cuộn |
+
+Hướng hỏng ở dòng thứ hai là chọn **ngược** với cache purge: một dòng cũ trong
+dashboard là chuyện phiền, một checkout không vẽ nổi ô thẻ là đơn hàng mất.
+
+### Bài học về phép kiểm
+
+`check_card_field.mjs` mở `/checkout` rồi tìm ô thẻ mà **không cuộn**. Sau bản sửa
+nó sẽ báo "không có ô thẻ" ở cả bảy shop — tức báo shop đang chạy tốt là shop hỏng.
+Đã thêm cuộn vào nó.
+
+Và phép kiểm mới `check_payment_intent_timing.mjs` thì **cố tình không cuộn**, vì
+cuộn chính là cái mở cổng: một probe có cuộn là probe tự dựng ra thứ nó sắp đo. Nó
+còn từ chối kết luận khi hộp payment nằm trong tầm 200px ngay lúc tải, thay vì
+pass hay fail bừa. Ngưỡng phải là `viewport + 200`, không phải `viewport`: hộp ở
+950px trong cửa sổ 900px là dưới màn hình mà **vẫn** trong lề, nên mở cổng là đúng,
+và ngưỡng viết thiếu 200 sẽ đánh trượt một shop đang chạy tốt.
+
+Test wiring của component đã được kiểm bằng cách **gỡ dòng chặn ra xem nó có đỏ
+không** — đỏ đúng một test. Một test xanh cả khi bug còn nguyên thì tệ hơn không có
+test.
