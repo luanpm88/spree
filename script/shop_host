@@ -1930,9 +1930,9 @@ services:
       # needs a restart rather than a rebuild.
       #
       # Empty is a SAFE state and not a broken one: the endpoint answers 503 and
-      # refuses to act on anything unsigned. It is deliberately not `${VAR:?}`,
-      # because a shop that has not been provisioned yet must still be able to
-      # start and serve customers.
+      # refuses to act on anything unsigned. Deliberately NOT written as a compose
+      # required-variable, because a shop that has not been provisioned yet must
+      # still start and still serve customers.
       #
       # Provisioned by script/provision_webhook, which reads the value Spree
       # generated rather than inventing one, because Spree signs with its own.
