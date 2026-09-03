@@ -150,8 +150,41 @@ try {
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 
+const posts = [];
+let landedAt = 0;
+page.on("request", (r) => {
+  // Only what happened AFTER landing on the checkout, and only server actions.
+  //
+  // The first version of this recorded every POST from the whole run and then
+  // printed the first 25 of them. Seventeen of those were the product list, the
+  // product page and the cart, so the one request that mattered was cut off the
+  // end, and reading that list led to the flat conclusion that the checkout page
+  // made no server action call at all. It makes exactly one. Rails had it in its
+  // log the whole time: POST /api/v3/store/carts/<id>/payment_sessions 201.
+  //
+  // A truncated list read as a complete one. That is the same mistake as the
+  // branch-order check that was green because `if fallback` is a substring of
+  // `elsif fallback`, and it was made here inside the tool built to avoid it.
+  if (!landedAt) return;
+  if (r.method() !== "POST") return;
+  if (!r.headers()["next-action"]) return;
+  posts.push(
+    `+${String(Date.now() - landedAt).padStart(6)}ms  ${r.url().replace(/^https?:\/\/[^/]+/, "")}`,
+  );
+});
+page.on("console", (m) => {
+  const t = m.text();
+  if (landedAt && /session|stripe|payment/i.test(t))
+    posts.push(`+${String(Date.now() - landedAt).padStart(6)}ms  console: ${t.slice(0, 120)}`);
+});
+
+
 const fail = async (msg) => {
   console.log(`    FAIL  ${msg}`);
+  if (posts.length) {
+    console.log("    server actions the checkout page called, and when:");
+    for (const line of posts) console.log(`      ${line}`);
+  }
   await browser.close();
   process.exit(1);
 };
@@ -247,6 +280,35 @@ if (!checkoutHref)
     "the cart offered no checkout link, so the item never landed in it",
   );
 
+const checkoutUrl = checkoutHref.startsWith("http")
+  ? checkoutHref
+  : host + checkoutHref;
+
+// ── first, whose fault is it: the server render or the browser? ────────────
+//
+// Fetches the checkout page as PLAIN HTTP, carrying the same cookies and running
+// no JavaScript at all. If a payment session appears from that, nothing in
+// PaymentSection can be responsible and the row is being created while the page
+// renders on the server.
+//
+// Worth the extra request because three rounds here were spent reasoning about
+// which browser gesture opened the gate, and the captured requests then showed
+// no server action POST on the checkout page at all. At that point the question
+// stops being "which gesture" and becomes "is it the browser".
+const beforeHtmlOnly = countSessions();
+await page.request.get(checkoutUrl, { timeout: 90000 }).catch(() => {});
+const afterHtmlOnly = countSessions();
+if (afterHtmlOnly > beforeHtmlOnly) {
+  console.log(
+    `    the HTML alone created ${afterHtmlOnly - beforeHtmlOnly} session(s), with no JavaScript run`,
+  );
+  console.log(
+    "          so this is the server render and not PaymentSection. Look in Rails.",
+  );
+} else {
+  console.log("    fetching the checkout HTML alone created nothing");
+}
+
 // The baseline, taken HERE and not at the start of the run.
 //
 // The first version counted before the browser launched, which put a minute of
@@ -257,11 +319,17 @@ if (!checkoutHref)
 // and nothing else.
 const before = countSessions();
 
+// What the page asked for, and how long after landing.
+//
+// Printed only when this fails, and it exists because three rounds of this were
+// spent reasoning about which gesture opened the gate when the answer was one
+// request away. A server action is a POST to the same URL carrying a
+// next-action header, so the timing of these says whether a session was created
+// on mount, some seconds later after a layout settled, or by something that is
+// not this component at all.
+landedAt = Date.now();
 await page
-  .goto(checkoutHref.startsWith("http") ? checkoutHref : host + checkoutHref, {
-    waitUntil: "domcontentloaded",
-    timeout: 90000,
-  })
+  .goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 90000 })
   .catch(() => {});
 // `attached`, never `visible`, and certainly not scrollIntoView.
 //

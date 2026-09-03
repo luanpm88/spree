@@ -68,21 +68,25 @@ function setup(enabled = true) {
   document.body.appendChild(node);
   const ref = { current: node };
 
-  // jsdom lays nothing out, so every rect is zero, every box would look on
-  // screen, and offsetTop would never move. Positioning it explicitly is what
-  // makes the streaming test below mean anything.
+  // jsdom lays nothing out, so every rect is zero and every box would look on
+  // screen. Positioning it explicitly is what makes the streaming tests below
+  // mean anything.
+  //
+  // The hook reads top + scrollY for "where in the document" and top alone for
+  // "can it be seen", so a test that moves the page must move the rect and a
+  // test that scrolls must move scrollY. offsetTop is deliberately NOT stubbed:
+  // a version of the hook that went back to it would read jsdom's constant zero
+  // and pass these while leaking on the shop, which is exactly what happened.
   let rect = { top: 100, bottom: 900 };
-  let offsetTop = 100;
   node.getBoundingClientRect = () =>
     ({ ...rect, left: 0, right: 0, height: 0, width: 0 }) as DOMRect;
-  Object.defineProperty(node, "offsetTop", {
-    get: () => offsetTop,
-    configurable: true,
-  });
   const moveTo = (top: number, bottom: number) => {
     rect = { top, bottom };
-    offsetTop = top;
   };
+  const scrollTo = (y: number) => {
+    Object.defineProperty(window, "scrollY", { value: y, configurable: true });
+  };
+  scrollTo(0);
 
   const view = renderHook(
     ({ on }: { on: boolean }) => useReachedPaymentStep(ref, on),
@@ -93,6 +97,7 @@ function setup(enabled = true) {
     node,
     view,
     moveTo,
+    scrollTo,
     observer: () => FakeIntersectionObserver.instances[0],
   };
 }
@@ -195,6 +200,29 @@ describe("useReachedPaymentStep", () => {
 
     // They scroll. The box is now on screen, and the observer says so again.
     moveTo(120, 1000);
+    observer().emit(true);
+    settle();
+
+    expect(view.result.current).toBe(true);
+  });
+
+  it("does not mistake the customer scrolling for the page still moving", () => {
+    // The other half of the instrument. Where the box sits in the DOCUMENT must
+    // not change when the window scrolls, or every scroll would read as the
+    // layout still settling and the gate would never open for the one person it
+    // is meant to open for.
+    const { view, observer, moveTo, scrollTo } = setup();
+
+    // Settled, far down, nobody looking at it.
+    moveTo(1133, 3000);
+    observer().emit(true);
+    tick(3);
+    expect(view.result.current).toBe(false);
+
+    // They scroll 1000px. The box has not moved in the document — 133 + 1000 is
+    // the same 1133 — it has only come into the window.
+    scrollTo(1000);
+    moveTo(133, 2000);
     observer().emit(true);
     settle();
 

@@ -81,13 +81,26 @@ import { type RefObject, useEffect, useState } from "react";
  * customer is really looking at it. Pushed away means that callback described a
  * page that no longer exists.
  *
- * A fixed delay was tried first and is not enough. 600ms shipped, and the shop
- * was measured leaking again, 32 sessions to 33: the checkout was still filling
- * in when the re-measurement ran, so it found the box exactly where the first
- * callback had. The page does not finish on a schedule, so the question cannot
- * be asked of a clock. offsetTop is measured from the document, unaffected by
- * scrolling and changed only by the page growing above, which makes two equal
- * readings mean the streaming has landed.
+ * Two earlier versions of this shipped and both were caught by counting rows on
+ * the live shop, and each was wrong in a way no test could see.
+ *
+ * A fixed 600ms delay was first: the checkout was still filling in when the
+ * re-measurement ran, so it found the box exactly where the first callback had.
+ * 32 sessions to 33. The page does not finish on a schedule, so the question
+ * cannot be asked of a clock.
+ *
+ * Then `offsetTop`, which was the right idea with the wrong instrument.
+ * offsetTop is measured from the nearest POSITIONED ancestor, and this checkout
+ * wraps its sections in a `relative` div while the express checkout button sits
+ * outside that wrapper. So the button loading pushed the entire page down
+ * without changing this box's offsetTop by one pixel: the reading was stable on
+ * its first two polls, and the gate opened on a page that had not finished.
+ * 36 sessions to 37.
+ *
+ * `getBoundingClientRect().top + window.scrollY` is where the box sits in the
+ * document with no offsetParent to be relative to. Scrolling does not change it
+ * and only content arriving above does, so two equal readings really do mean
+ * the streaming has landed.
  *
  * This is the same class of error as the mailer probe that set the locale it was
  * about to measure: a true observation of a state nobody was ever in. Both
@@ -132,11 +145,25 @@ export function useReachedPaymentStep(
     let poll: ReturnType<typeof setTimeout> | undefined;
     let lastTop = Number.NaN;
 
-    const withinReach = () => {
+    // Both answers come from one measurement: where the box sits in the
+    // DOCUMENT, which only the page growing above can change, and where it sits
+    // in the WINDOW, which is what the customer can see.
+    //
+    // `offsetTop` was used for the first of these and it was the wrong
+    // instrument. It is measured from the nearest positioned ancestor, and the
+    // checkout wraps its sections in a `relative` div while the express checkout
+    // button sits OUTSIDE that wrapper. So the button loading pushed the whole
+    // page down without changing this box's offsetTop by a single pixel, the
+    // stability check passed on its first two readings, and the shop leaked
+    // again: 36 sessions to 37. `top + scrollY` has no offsetParent to be
+    // relative to.
+    const measure = () => {
       const r = node.getBoundingClientRect();
-      return (
-        r.top < window.innerHeight + REACH_MARGIN && r.bottom > -REACH_MARGIN
-      );
+      return {
+        inDocument: Math.round(r.top + window.scrollY),
+        visible:
+          r.top < window.innerHeight + REACH_MARGIN && r.bottom > -REACH_MARGIN,
+      };
     };
 
     // Decides only once the box has STOPPED MOVING, and asks the document where
@@ -154,15 +181,15 @@ export function useReachedPaymentStep(
     // observer is still attached and will say so again when the customer
     // scrolls, which is the only thing that can bring the box back into reach.
     const confirm = () => {
-      const top = node.offsetTop;
-      const settled = top === lastTop;
-      lastTop = top;
+      const { inDocument, visible } = measure();
+      const settled = inDocument === lastTop;
+      lastTop = inDocument;
 
       if (!settled) {
         poll = setTimeout(confirm, STABLE_POLL_MS);
         return;
       }
-      if (withinReach()) arrive();
+      if (visible) arrive();
       poll = undefined;
     };
 
