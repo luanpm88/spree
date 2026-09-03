@@ -1862,7 +1862,33 @@ cmd_storefront() {
 
   step "Reading $S_NAME from its own database"
   local key name
-  key=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c \"SELECT token FROM spree_api_keys WHERE key_type='publishable' AND revoked_at IS NULL ORDER BY id DESC LIMIT 1\"" | tr -d '\r')
+  # The key for the shop's OWN channel, not simply the newest one.
+  #
+  # This read `ORDER BY id DESC LIMIT 1` and that was fine while a shop had one
+  # key. On 2 September the client added a second one on one shop, bound to a new
+  # Unlisted channel he was testing. Newest-first then picked the Unlisted key,
+  # and the Unlisted channel holds almost nothing, so every home page row resolved
+  # to nothing.
+  #
+  # The build refused, which is the only reason this is a note rather than an
+  # outage: without that guard the live storefront would have been rebuilt against
+  # a channel with no products in it.
+  #
+  # Preference order, and the fallback matters as much as the first choice:
+  #   1. the key bound to this store's DEFAULT channel
+  #   2. a store-wide key, bound to no channel
+  #   3. the oldest remaining, which is what the running storefront already holds
+  #
+  # Asked in two steps rather than one join, because `default` is a reserved word
+  # in Postgres and quoting it through ssh and a shell heredoc is three layers of
+  # escaping for no gain.
+  local default_channel
+  default_channel=$(rsh "docker exec ${S_NAME}_web bin/rails runner '
+    c = Spree::Channel.find_by(default: true) || Spree::Channel.order(:id).first
+    print %q{<<C:} + c&.id.to_s + %q{:C>>}
+  ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<C:\(.*\):C>>.*/\1/p')
+
+  key=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c \"SELECT token FROM spree_api_keys WHERE key_type='publishable' AND revoked_at IS NULL ORDER BY (channel_id = ${default_channel:-0}) DESC NULLS LAST, (channel_id IS NULL) DESC, id ASC LIMIT 1\"" | tr -d '\r')
   [[ -n "$key" ]] || die "no publishable API key on ${S_NAME}_shop. Run bin/rails backfill:all first."
   name=$(rsh "docker exec estate-postgres psql -U postgres -At -d ${S_NAME}_shop -c \"SELECT name FROM spree_stores ORDER BY id LIMIT 1\"" | tr -d '\r')
   [[ -n "$name" ]] || die "no store row on ${S_NAME}_shop"

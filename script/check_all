@@ -180,6 +180,21 @@ if [ -f script/check_email_logo ]; then
   run "every shop mails its own logo, none shared" script/check_email_logo
 fi
 
+# An edit in the admin has to reach the shop. Without the webhook it waits for a
+# cache entry to age out: ten minutes for a product, up to a day for the category
+# tree. The client reported both ends of that on 2 September, including category
+# pages 404ing because the cached MENU still held a tree he had replaced.
+#
+# A gate rather than a runbook note, at his request: "this needs to be fixed and
+# also needs to be part of our default settings for all shops going forward".
+#
+# It checks the subscriptions and both halves of the secret, not merely that a row
+# exists. One shop had an active endpoint with five successful deliveries that was
+# subscribed to order emails only, and an existence check called it fine.
+if [ -f script/provision_webhook ]; then
+  run "every shop tells its storefront when the catalogue changes" script/provision_webhook --check
+fi
+
 # Markdown for a caller that asks for it.
 #
 # The rule was Rack middleware and only rewrote text/html responses. On 5.6 Rails
