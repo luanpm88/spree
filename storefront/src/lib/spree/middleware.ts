@@ -5,7 +5,11 @@ import {
   negotiateAcceptLanguage,
   negotiateLocale,
 } from "@/i18n/normalize";
-import { REQUEST_PATHNAME_HEADER, REQUEST_SEARCH_HEADER } from "@/i18n/routing";
+import {
+  REQUEST_CLEAN_URLS_HEADER,
+  REQUEST_PATHNAME_HEADER,
+  REQUEST_SEARCH_HEADER,
+} from "@/i18n/routing";
 import { buildAccountLoginHref } from "@/lib/utils/account-redirect";
 
 const COUNTRY_COOKIE = "spree_country";
@@ -217,6 +221,17 @@ function rewriteWithLocaleContext(
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set(REQUEST_PATHNAME_HEADER, request.nextUrl.pathname);
   requestHeaders.set(REQUEST_SEARCH_HEADER, request.nextUrl.search);
+  // This function is reached only from the clean-URL branch, so the pathname
+  // above is already the path WITHIN the market and carries no /{country}/
+  // {locale} in front of it. Saying so here is what stops the layout guessing.
+  //
+  // It guessed wrong, and the shape of the loss is why this header exists: a
+  // visitor whose country has no Market is rewritten into it by cf-ipcountry,
+  // the layout redirects them to the default market, and with the path guessed
+  // away that redirect went to /ca/en, which clean URLs send on to /. Every
+  // link from outside the shop's own country landed on the home page. Measured
+  // on the live shop, with JavaScript off, which is how a crawler sees it.
+  requestHeaders.set(REQUEST_CLEAN_URLS_HEADER, "1");
 
   const response = NextResponse.rewrite(target, {
     request: { headers: requestHeaders },

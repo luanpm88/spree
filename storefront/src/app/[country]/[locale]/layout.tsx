@@ -24,6 +24,7 @@ import {
 } from "@/i18n/markets";
 import {
   buildLocalizedRedirectPath,
+  REQUEST_CLEAN_URLS_HEADER,
   REQUEST_PATHNAME_HEADER,
   REQUEST_SEARCH_HEADER,
 } from "@/i18n/routing";
@@ -51,6 +52,10 @@ async function redirectToLocalizedRoute(
       locale,
       pathname: requestHeaders.get(REQUEST_PATHNAME_HEADER),
       search: requestHeaders.get(REQUEST_SEARCH_HEADER),
+      // Told by the middleware, never inferred. Without it this redirect drops
+      // the page the visitor asked for and lands them on the market root, which
+      // on a clean-URL shop is the home page.
+      cleanUrls: requestHeaders.get(REQUEST_CLEAN_URLS_HEADER) === "1",
     }),
   );
 }
