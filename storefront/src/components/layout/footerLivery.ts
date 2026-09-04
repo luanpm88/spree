@@ -115,6 +115,33 @@ export const LIVERY = {
     showOnSale: false,
     showSubscribe: false,
   },
+  // His seventh, and the first whose colours arrived as numbers rather than as
+  // a picture to sample.
+  //
+  // The design he sent on 4 Sep labels the panel #4D5538 and the strip under it
+  // #313F22, written on the artwork itself. Nothing here was eyedropped, which
+  // is worth saying because every other livery in this file was, and two of them
+  // record a disagreement between what he wrote and what the JPEG contained.
+  // There is no disagreement to record this time.
+  //
+  // Sentence case, like the retail and green-blue liveries and unlike the
+  // wholesale one: his column headings are SHOP, ACCOUNT, COMPANY, SUPPORT,
+  // POLICIES in capitals, but the links beneath them are in sentence case.
+  business: {
+    surface: { backgroundColor: "#4D5538", color: "#FFFFFF" },
+    // Bold 14pt with a rule under it at 35% opacity, both from his annotations.
+    // The rule is drawn by the heading's own border so it cannot drift away
+    // from the text it belongs to.
+    heading:
+      "text-sm font-bold uppercase tracking-wide text-white border-b border-white/35 pb-2",
+    link: "text-sm text-white hover:text-white/70 transition-colors",
+    wordmark: "text-xl font-bold text-white",
+    bar: { backgroundColor: "#313F22", color: "#FFFFFF" },
+    // No sale collection on this shop, the same as the wholesale and green-blue
+    // ones. His SHOP column opens with "All Products", not with a sale.
+    showOnSale: false,
+    showSubscribe: false,
+  },
 } as const;
 
 export type Livery = (typeof LIVERY)[keyof typeof LIVERY];
@@ -135,5 +162,9 @@ export type Livery = (typeof LIVERY)[keyof typeof LIVERY];
  */
 export function livery(): Livery {
   if (shopTheme() === "green-blue") return LIVERY.greenBlue;
+  // Matched on its own theme name, not on the shop key, for the same reason the
+  // green blue one is: the map from shop to theme lives in the gitignored
+  // content file because its keys are his shop names, and this file is public.
+  if (shopTheme() === "business-green") return LIVERY.business;
   return isAccountRequired() ? LIVERY.wholesale : LIVERY.retail;
 }

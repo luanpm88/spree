@@ -5,6 +5,7 @@ import { cache, Suspense } from "react";
 import { AnnouncementBar } from "@/components/layout/AnnouncementBar";
 import { Footer, FooterCategoryLinks } from "@/components/layout/Footer";
 import { Header, HeaderMobileMenu } from "@/components/layout/Header";
+import { UtilityBar } from "@/components/layout/UtilityBar";
 import { getCategories } from "@/lib/data/categories";
 import { basePathFor } from "@/lib/routing";
 import { enforceShopGate } from "@/lib/spree/shop-gate";
@@ -174,7 +175,12 @@ export default async function StorefrontLayout({
 
   return (
     <>
-      {/* Above the header, which is where his current shop puts it. */}
+      {/* Above the header, which is where his current shop puts it.
+          The business shop has a three part utility strip there instead of a
+          sentence, so it draws that and nothing else. UtilityBar renders null
+          for every shop with no entry in the map, so the other six are
+          unaffected by its presence here. */}
+      <UtilityBar basePath={basePath} />
       <AnnouncementBar locale={locale as Locale} />
       <Header
         basePath={basePath}

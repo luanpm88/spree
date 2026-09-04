@@ -20,6 +20,9 @@ vi.mock("@/components/layout/Footer", () => ({
 vi.mock("@/components/layout/AnnouncementBar", () => ({
   AnnouncementBar: () => null,
 }));
+vi.mock("@/components/layout/UtilityBar", () => ({
+  UtilityBar: () => null,
+}));
 
 // The gate is the one thing that decides which of the two trees below renders,
 // so the tests drive it directly rather than standing up a store config.
@@ -31,6 +34,7 @@ vi.mock("@/lib/spree/shop-gate", () => ({
 import { AnnouncementBar } from "@/components/layout/AnnouncementBar";
 import { Footer } from "@/components/layout/Footer";
 import { Header } from "@/components/layout/Header";
+import { UtilityBar } from "@/components/layout/UtilityBar";
 import StorefrontLayout from "./layout";
 
 interface LayoutElementProps {
@@ -54,13 +58,16 @@ describe("StorefrontLayout", () => {
 
     expect(layout.type).toBe(Fragment);
 
-    // The announcement bar sits above the header, which is where his current
-    // shop puts it. It is first in this list for that reason, not by accident.
-    const [announcement, header, hiddenNavigation, main, footer] =
+    // Both bars sit above the header, which is where his current shop puts
+    // them, and they are first in this list for that reason rather than by
+    // accident. The utility strip leads because the business design draws it
+    // as the topmost thing on the page; it renders null on every other shop.
+    const [utility, announcement, header, hiddenNavigation, main, footer] =
       Children.toArray(
         layout.props.children,
       ) as ReactElement<LayoutElementProps>[];
 
+    expect(utility.type).toBe(UtilityBar);
     expect(announcement.type).toBe(AnnouncementBar);
     expect(header.type).toBe(Header);
     expect(hiddenNavigation.type).toBe(Suspense);
