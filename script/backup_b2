@@ -50,7 +50,7 @@ C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_OFF=$'\e[0m
 set -a; . ./.b2.env; set +a
 set -a; . ./.estate.env; set +a
 eval SSH_KEY_E="$SSH_KEY"; SSH_PORT_E=$(echo "$SSH_PORT" | tr -d '"')
-rsh() { ssh -i "$SSH_KEY_E" -p "$SSH_PORT_E" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" "$@"; }
+rsh() { ssh -i "$SSH_KEY_E" -p "$SSH_PORT_E" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" "$@"; }
 
 BUCKET="${B2_ESTATE_BUCKET:?}"
 PG=estate-postgres

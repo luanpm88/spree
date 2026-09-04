@@ -34,7 +34,7 @@ SHOP="${1:-}"; MODE="${2:-post}"
 [[ -f .estate.env ]] || die ".estate.env is not here"
 set -a; . ./.estate.env; set +a
 eval NK="$SSH_KEY"; NP=$(printf '%s' "$SSH_PORT" | tr -d '"')
-rsh() { ssh -i "$NK" -p "$NP" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 -o ConnectTimeout=30 "$SSH_HOST" "$@" </dev/null; }
+rsh() { ssh -i "$NK" -p "$NP" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 -o ConnectTimeout=30 "$SSH_HOST" "$@" </dev/null; }
 
 read -r _ DIR _ PORT SPORT DOM STORE LIVE PREFIX < <(awk -F'|' -v s="$SHOP" '$1==s {print $1,$2,$3,$4,$5,$6,$7,$8,$9}' .estate)
 [[ -n "${DIR:-}" ]] || die "$SHOP is not in .estate"

@@ -303,7 +303,7 @@ while IFS='|' read -r shop _dir _db _port _sport tmp _store live _rest; do
   # A gate that can hang without limit is a gate that stops being run, which is
   # worse than a gate that fails.
   [[ "$CAN_CLEAN" == 1 ]] && cleaned=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes \
-    -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+    -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
     "docker exec ${shop}_web bin/rails runner '
        marker = %q{check_note_box probe, please ignore}
        recent = 30.minutes.ago

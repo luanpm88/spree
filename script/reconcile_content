@@ -58,7 +58,7 @@ trap 'rm -rf "$WORK"' EXIT
 # One row per line, natural key first, so `join` can pair the two sides up.
 pull() {
   local db="$1" name="$2" sql="$3"
-  ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+  ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
     "docker exec estate-postgres psql -U postgres -At -F'|' -d $db -c \"$sql\"" 2>/dev/null \
     | tr -d '\r' | grep -v '^$' | sort > "$WORK/$name.$db"
 }

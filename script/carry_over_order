@@ -78,7 +78,7 @@ warn() { printf '  %s!%s    %s\n' "$C_YEL" "$C_OFF" "$*"; }
 info() { printf '  %s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
 die()  { printf '\n%sFAILED%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
 
-psq() { ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+psq() { ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
           "docker exec estate-postgres psql -U postgres -At -F'|' -d $DB -c \"$1\"" 2>/dev/null | tr -d '\r'; }
 
 # The tables an order owns, in the order they must be written: a row is only
@@ -122,12 +122,12 @@ if [[ "$MODE" == "--capture" ]]; then
   ok "$(grep -c . "$VAULT/anchors.txt") outside reference(s) recorded by name"
 
   # The addresses and the user first: the order points at them.
-  ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+  ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
     "docker exec estate-postgres psql -U postgres -d $DB -c \"\\copy (SELECT * FROM spree_addresses WHERE id IN (SELECT bill_address_id FROM spree_orders WHERE id=$oid UNION SELECT ship_address_id FROM spree_orders WHERE id=$oid)) TO STDOUT\"" \
     2>/dev/null > "$VAULT/spree_addresses.tsv"
   ok "$(grep -c . "$VAULT/spree_addresses.tsv" || echo 0) address row(s)"
 
-  ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+  ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
     "docker exec estate-postgres psql -U postgres -d $DB -c \"\\copy (SELECT * FROM spree_orders WHERE id=$oid) TO STDOUT\"" \
     2>/dev/null > "$VAULT/spree_orders.tsv"
   [[ -s "$VAULT/spree_orders.tsv" ]] || die "the order row did not come out"
@@ -145,7 +145,7 @@ if [[ "$MODE" == "--capture" ]]; then
       *)
         where="${find_col}=$oid" ;;
     esac
-    ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+    ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
       "docker exec estate-postgres psql -U postgres -d $DB -c \"\\copy (SELECT * FROM $table WHERE $where) TO STDOUT\"" \
       2>/dev/null > "$VAULT/$table.tsv"
     # Not `grep -c . || echo 0`.
@@ -236,7 +236,7 @@ done < "$VAULT/anchors.txt"
 
 step "Writing, in one transaction"
 REMOTE_DIR="/root/carried-${SHOP}-${NUMBER}"
-ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR" || die "could not make $REMOTE_DIR"
+ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR" || die "could not make $REMOTE_DIR"
 scp -q -i "$K" -P "$P" "$VAULT"/*.tsv "$VAULT"/*.columns "$SSH_HOST:$REMOTE_DIR/" || die "could not send the captured rows"
 
 OLD_OID=$(cat "$VAULT/original_order_id")
@@ -307,11 +307,11 @@ scp -q -i "$K" -P "$P" "$VAULT/restore.sql" "$SSH_HOST:$REMOTE_DIR/restore.sql" 
 # in the container's filesystem. Landing the files on the host looks right, gets
 # as far as the transaction, and fails with "No such file or directory" pointing
 # at a path that plainly exists when you ssh in and look.
-ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
   "docker exec estate-postgres rm -rf $REMOTE_DIR && docker cp $REMOTE_DIR estate-postgres:$REMOTE_DIR" \
   >/dev/null 2>&1 || die "could not put the captured rows inside the database container"
 
-out=$(ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+out=$(ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
   "docker exec -i estate-postgres psql -U postgres -v ON_ERROR_STOP=1 -d $DB -f $REMOTE_DIR/restore.sql" 2>&1 | tr -d '\r')
 printf '%s\n' "$out" | grep -iE 'error|rollback' && die "the write failed, and the transaction rolled back. $DB is untouched."
 
@@ -353,7 +353,7 @@ if [[ -s "$VAULT/stock_movements.txt" ]]; then
       continue
     fi
     [[ "$otype" == "Spree::Shipment" ]] && ref="$new_ship" || ref="$new_ship"
-    ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+    ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
       "docker exec estate-postgres psql -U postgres -q -v ON_ERROR_STOP=1 -d $DB -c \"
          BEGIN;
          INSERT INTO spree_stock_movements (stock_item_id, quantity, originator_type, originator_id, created_at, updated_at)
@@ -367,7 +367,7 @@ if [[ -s "$VAULT/stock_movements.txt" ]]; then
   ok "$moved stock movement(s) carried"
 fi
 
-ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
   "rm -rf $REMOTE_DIR; docker exec estate-postgres rm -rf $REMOTE_DIR" >/dev/null 2>&1
 step "Done"
 ok "$NUMBER carried across the reload, with new ids, nothing of his overwritten"

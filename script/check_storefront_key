@@ -53,12 +53,12 @@ while IFS='|' read -r shop _rest; do
   [[ -n "$shop" ]] || continue
   case "$shop" in \#*) continue;; esac
 
-  db_key=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+  db_key=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
     "docker exec estate-postgres psql -U postgres -At -d ${shop}_shop -c \"
        SELECT token FROM spree_api_keys
        WHERE key_type='publishable' AND revoked_at IS NULL ORDER BY id LIMIT 1\"" 2>/dev/null | tr -d '\r')
 
-  sf_key=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+  sf_key=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
     "docker exec ${shop}_storefront printenv SPREE_PUBLISHABLE_KEY" 2>/dev/null | tr -d '\r')
 
   if [[ -z "$db_key" && -z "$sf_key" ]]; then

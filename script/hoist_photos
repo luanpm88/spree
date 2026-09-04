@@ -105,7 +105,7 @@ else GR=''; RE=''; YE=''; R=''; fi
 
 rsh() {
   ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes \
-    -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 \
+    -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 \
     "$SSH_HOST" "$@"
 }
 
@@ -232,7 +232,7 @@ printf '  %-9s ' "$SHOP"
 # it runs a DIFFERENT program. `docker exec -i` plus `runner -` means the bytes
 # that arrive are the bytes that were written.
 OUT=$(printf '%s' "$RUBY" | ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes \
-        -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+        -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
         "docker exec -i -e HOIST_APPLY=$APPLY ${SHOP}_web bin/rails runner - 2>/dev/null" | tr -d '\r')
 LINE=$(printf '%s' "$OUT" | sed -n 's/.*<<H:\(.*\):H>>.*/\1/p')
 

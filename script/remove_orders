@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 DB="${SHOP}_shop"
-rsh() { ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" "$@"; }
+rsh() { ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" "$@"; }
 runner() { rsh "docker exec ${SHOP}_web bin/rails runner '$1'" 2>/dev/null | tr -d '\r' | grep -viE 'spree events|jwt secret'; }
 
 # ── a backup from today, or nothing happens ─────────────────────────────────

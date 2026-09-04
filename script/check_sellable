@@ -55,7 +55,7 @@ while IFS='|' read -r shop _rest; do
 
   # A category is servable when at least one live shipping method lists it.
   # Asked of the join table Spree itself reads, not of a name.
-  out=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+  out=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
     "docker exec estate-postgres psql -U postgres -At -F'|' -d ${shop}_shop -c \"
        SELECT coalesce(sc.name,'(no category at all)'),
               count(p.id),

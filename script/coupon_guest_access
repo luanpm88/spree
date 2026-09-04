@@ -59,7 +59,7 @@ else GR=''; RE=''; YE=''; DIM=''; R=''; fi
 ESTATE_FILE="${ESTATE_FILE:-.estate}"
 [[ -f "$ESTATE_FILE" ]] || { echo "  no .estate on this machine"; exit 0; }
 
-rsh() { ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" "$@"; }
+rsh() { ssh -n -i "$K" -p "$P" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" "$@"; }
 
 RULE='Spree::Promotion::Rules::OneUsePerUser'
 total=0
