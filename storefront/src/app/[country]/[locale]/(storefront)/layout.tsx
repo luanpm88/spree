@@ -3,9 +3,11 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { cache, Suspense } from "react";
 import { AnnouncementBar } from "@/components/layout/AnnouncementBar";
+import { BusinessFooter } from "@/components/layout/BusinessFooter";
 import { Footer, FooterCategoryLinks } from "@/components/layout/Footer";
 import { Header, HeaderMobileMenu } from "@/components/layout/Header";
 import { UtilityBar } from "@/components/layout/UtilityBar";
+import { shopTheme } from "@/lib/blocks/theme";
 import { getCategories } from "@/lib/data/categories";
 import { basePathFor } from "@/lib/routing";
 import { enforceShopGate } from "@/lib/spree/shop-gate";
@@ -140,6 +142,10 @@ export default async function StorefrontLayout({
   params,
 }: StorefrontLayoutProps) {
   const { country, locale } = await params;
+  // Which footer this build wears. Asked of the theme, not the shop key, for
+  // the same reason footerLivery asks the theme: the shop-to-theme map lives in
+  // the gitignored content file because its keys are his shop names.
+  const businessFooter = shopTheme() === "business-green";
   const basePath = basePathFor(country, locale);
 
   // A shop that may not be browsed without an account checks that here, where
@@ -203,19 +209,44 @@ export default async function StorefrontLayout({
         />
       </Suspense>
       <main className="flex-1">{children}</main>
-      <Footer
-        basePath={basePath}
-        locale={locale as Locale}
-        categoryLinks={
-          <Suspense fallback={<FooterCategoryLinksFallback />}>
-            <StorefrontFooterCategoryLinks
-              basePath={basePath}
-              country={country}
-              locale={locale}
-            />
-          </Suspense>
-        }
-      />
+      {/* Two footers, one shop each way.
+          The business design is a different SHAPE, not a different palette:
+          five columns where the shared one has four, the follow-us block moved
+          out from among them, and a brand block with a tagline, a paragraph and
+          a button. Threading that through the shared component as conditionals
+          would leave six shops one typo away from a layout none of them asked
+          for, and Footer.tsx already carries the scar of a change made in one
+          place and missed in another. The palette still lives in exactly one
+          file, footerLivery, which both of them read. */}
+      {businessFooter ? (
+        <BusinessFooter
+          basePath={basePath}
+          locale={locale as Locale}
+          categoryLinks={
+            <Suspense fallback={<FooterCategoryLinksFallback />}>
+              <StorefrontFooterCategoryLinks
+                basePath={basePath}
+                country={country}
+                locale={locale}
+              />
+            </Suspense>
+          }
+        />
+      ) : (
+        <Footer
+          basePath={basePath}
+          locale={locale as Locale}
+          categoryLinks={
+            <Suspense fallback={<FooterCategoryLinksFallback />}>
+              <StorefrontFooterCategoryLinks
+                basePath={basePath}
+                country={country}
+                locale={locale}
+              />
+            </Suspense>
+          }
+        />
+      )}
     </>
   );
 }

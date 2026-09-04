@@ -5,7 +5,7 @@ import {
   type ReactNode,
   Suspense,
 } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/server", () => ({ connection: vi.fn() }));
 vi.mock("@/lib/data/categories", () => ({ getCategories: vi.fn() }));
@@ -23,6 +23,16 @@ vi.mock("@/components/layout/AnnouncementBar", () => ({
 vi.mock("@/components/layout/UtilityBar", () => ({
   UtilityBar: () => null,
 }));
+vi.mock("@/components/layout/BusinessFooter", () => ({
+  BusinessFooter: () => null,
+}));
+
+// The footer is chosen by theme, so the tests drive the theme directly rather
+// than standing up a shop key and a content map to reach it.
+let themeState: string | undefined;
+vi.mock("@/lib/blocks/theme", () => ({
+  shopTheme: () => themeState,
+}));
 
 // The gate is the one thing that decides which of the two trees below renders,
 // so the tests drive it directly rather than standing up a store config.
@@ -32,6 +42,7 @@ vi.mock("@/lib/spree/shop-gate", () => ({
 }));
 
 import { AnnouncementBar } from "@/components/layout/AnnouncementBar";
+import { BusinessFooter } from "@/components/layout/BusinessFooter";
 import { Footer } from "@/components/layout/Footer";
 import { Header } from "@/components/layout/Header";
 import { UtilityBar } from "@/components/layout/UtilityBar";
@@ -128,5 +139,43 @@ describe("StorefrontLayout", () => {
 
     expect(types).toContain(Footer);
     expect(types).toContain(Header);
+  });
+});
+
+/**
+ * Which footer a shop wears.
+ *
+ * The business design is a different shape from the shared footer, so it is a
+ * component of its own. That makes the choice between them a thing that can be
+ * got wrong silently: the six shops would keep rendering and simply wear the
+ * wrong footer, which is exactly how five shops once got a sixth shop's
+ * wording. These two assertions are the only thing standing between that and a
+ * deploy.
+ */
+describe("footer selection", () => {
+  afterEach(() => {
+    themeState = undefined;
+  });
+
+  const render = async () =>
+    Children.toArray(
+      (
+        (await StorefrontLayout({
+          children: <section />,
+          params: Promise.resolve({ country: "nz", locale: "en" }),
+        })) as ReactElement<LayoutElementProps>
+      ).props.children,
+    ) as ReactElement<LayoutElementProps>[];
+
+  it("gives the business theme its own footer", async () => {
+    themeState = "business-green";
+    const parts = await render();
+    expect(parts[parts.length - 1].type).toBe(BusinessFooter);
+  });
+
+  it("leaves every other shop on the shared one", async () => {
+    themeState = undefined;
+    const parts = await render();
+    expect(parts[parts.length - 1].type).toBe(Footer);
   });
 });
