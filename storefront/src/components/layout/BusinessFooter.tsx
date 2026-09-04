@@ -73,8 +73,12 @@ export async function BusinessFooter({
   return (
     <footer style={l.surface}>
       <div className="container mx-auto px-4 py-14 sm:px-6 lg:px-8">
-        {/* Six columns: the brand block takes two, then his five. */}
-        <div className="grid grid-cols-1 gap-10 md:grid-cols-6">
+        {/* SEVEN columns: the brand block takes two, then his five.
+            It was six, which left four places for five columns and wrapped
+            POLICIES onto a row of its own under the brand block. Caught by
+            screenshotting the deployed footer and looking at it, not by any
+            test: every assertion still passed and the page still rendered. */}
+        <div className="grid grid-cols-1 gap-10 md:grid-cols-7">
           <div className="md:col-span-2">
             <Image
               src="/brand/logo-footer-business.svg"
@@ -82,8 +86,10 @@ export async function BusinessFooter({
               width={186}
               height={152}
               // 185.30px wide on his artwork. Height follows the file's own
-              // aspect so the mark is never squashed to hit a round number.
-              className="h-auto w-[185px]"
+              // aspect so the mark is never squashed to hit a round number,
+              // and max-w-full so a narrow column shrinks it rather than
+              // cutting the word off, which is what it was doing.
+              className="h-auto w-[185px] max-w-full"
             />
             {/* Bold 16pt over 23pt leading. Two lines, and they are two lines on
                 his artwork rather than one that happens to wrap, so they are
@@ -187,7 +193,11 @@ export async function BusinessFooter({
                     alt=""
                     width={37}
                     height={37}
-                    className="h-[37px] w-[37px]"
+                    // His files are dark artwork, and his design draws them
+                    // white on the green. Inverted here rather than by editing
+                    // twelve of his SVGs: the files stay exactly as he sent
+                    // them, which matters when he sends a revision.
+                    className="h-[37px] w-[37px] brightness-0 invert"
                   />
                 </Link>
               </li>
