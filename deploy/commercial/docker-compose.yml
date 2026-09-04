@@ -187,6 +187,19 @@ services:
       NEXT_PUBLIC_STORE_NAME: ${SHOP_NAME:-Shop}
       NEXT_PUBLIC_DEFAULT_COUNTRY: ${STORE_COUNTRY:-nz}
       NEXT_PUBLIC_DEFAULT_LOCALE: ${STORE_LOCALE:-en}
+      # What lets Spree tell this storefront that the catalogue changed.
+      #
+      # Runtime, not a build arg, so rotating it is a restart rather than a
+      # rebuild. Without it /api/webhooks/spree answers 503 and every delivery
+      # is refused, which is what this shop was doing: the owner renamed a
+      # category and struck out another, both saved correctly, and the footer
+      # went on showing the old menu because nothing told the storefront. For
+      # the category tree that wait is up to a day.
+      #
+      # Empty by default and the route refuses rather than accepting unsigned
+      # posts, which is the safe direction: an unsigned webhook endpoint is an
+      # open door for anyone who guesses the address.
+      SPREE_WEBHOOK_SECRET: ${SPREE_WEBHOOK_SECRET:-}
     ports:
       - "127.0.0.1:${STOREFRONT_PORT:?set STOREFRONT_PORT in .env, one per shop}:3001"
     healthcheck:
