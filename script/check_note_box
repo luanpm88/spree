@@ -150,10 +150,44 @@ try {
   if (!bb || bb.height < 20) { out("FAIL", "the box is on the page but not visible"); await b.close(); process.exit(0); }
 
   // It has to SAVE. Typed, blurred, reloaded, read back.
-  await box.scrollIntoViewIfNeeded();
+  //
+  // Scrolled so the message box sits at the BOTTOM of the window, not the
+  // middle, which keeps the payment section below the fold.
+  //
+  // Since 3 Sep a Stripe payment intent is created when the payment box enters
+  // the window, and the payment section sits directly under this one. Centring
+  // this box brought it into view, so this gate was minting an intent on every
+  // shop on every run. Measured on Canada right after the change: 45 sessions
+  // before, 47 after. Two, because the browser restores the scroll position on
+  // reload and the read-back pass did it again.
+  //
+  // The shop owner's complaint was 549 rows in his dashboard, a good share of
+  // them ours. Fixing the shop and leaving this would have handed him back a
+  // quieter version of the same thing.
+  // `end` alone was not enough: it leaves the payment box 24px below the fold,
+  // and the express checkout button above hides itself once Stripe reports no
+  // wallet, which shortens the page and pulls payment up into view. Measured
+  // that way round, 2 intents per run became 1 after the reload was fixed and
+  // this one remained. The extra 180px is headroom for that shift.
+  await box.evaluate((el) => {
+    el.scrollIntoView({ block: "end" });
+    window.scrollBy(0, -180);
+  });
   await box.fill(MSG);
-  await p.locator("h2").first().click({ timeout: 10000 }).catch(() => {});
+  // Blurred in place and then straight back to the top, rather than blurred by
+  // clicking a heading. Playwright scrolls whatever it clicks into view, and
+  // every extra second spent parked beside the payment section is another
+  // chance for it to enter the window and mint a Stripe intent. Blur is what
+  // saves the note, so it still has to happen; it just does not have to be a
+  // click somewhere else on the page.
+  await box.evaluate((el) => el.blur());
+  await p.evaluate(() => window.scrollTo(0, 0));
   await p.waitForTimeout(6000);
+  // Back to the top before reloading, because the browser restores the scroll
+  // position and would land the reloaded page next to the payment box, which is
+  // a second Stripe intent for the same reason as the first.
+  await p.evaluate(() => window.scrollTo(0, 0));
+  await p.waitForTimeout(500);
   await p.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
   // Same again after the reload: the read-back has to wait for the field to come
   // back, or a slow shop reads as a shop that did not save.
