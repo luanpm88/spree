@@ -291,7 +291,19 @@ while IFS='|' read -r shop _dir _db _port _sport tmp _store live _rest; do
   # If the delete somehow leaves anything, the text is blanked as a fallback so a
   # failure here can never end with the probe's words sitting in a live cart.
   cleaned=0
-  [[ "$CAN_CLEAN" == 1 ]] && cleaned=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+  # Keepalive and connect timeouts, because this call hung for eighty five
+  # minutes on 4 Sep and took script/check_all down with it.
+  #
+  # The connection died mid-command with nothing to notice it: ssh with no
+  # ServerAliveInterval waits on a dead TCP socket forever. check_all sat on
+  # this one line, wrote nothing further, and the whole gate run had to be
+  # killed by hand. The shop was fine the entire time; a fresh connection with
+  # these options answered immediately.
+  #
+  # A gate that can hang without limit is a gate that stops being run, which is
+  # worse than a gate that fails.
+  [[ "$CAN_CLEAN" == 1 ]] && cleaned=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes \
+    -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
     "docker exec ${shop}_web bin/rails runner '
        marker = %q{check_note_box probe, please ignore}
        recent = 30.minutes.ago

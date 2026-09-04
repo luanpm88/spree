@@ -517,24 +517,45 @@ if (!bad && !(drew.stripeFrames > 0 || drew.cardWords)) {
 }
 
 // ── clean up after itself ──────────────────────────────────────────────────
-// Follows check_note_box: bounded to the last 30 minutes and to the shape a
-// real shopper cannot be in. Getting past `cart` is what entering an email
-// does, so guest AND no email AND not `cart` AND minutes old is this probe.
-try {
-  const gone = rsh(
-    `docker exec ${shop}_web bin/rails runner '` +
-      `orders = Spree::Order.where(completed_at: nil, email: nil, user_id: nil)` +
-      `.where.not(state: %q{cart}).where(%q{created_at > ?}, 30.minutes.ago); ` +
-      `n = 0; orders.to_a.each { |o| id = o.id; o.destroy; n += 1 unless Spree::Order.exists?(id: id) }; ` +
-      `print %q{<<C:} + n.to_s + %q{:C>>}' 2>/dev/null`,
-  );
-  const m = gone.match(/<<C:(\d+):C>>/);
-  if (m && Number(m[1]) > 0)
-    console.log(`    cleaned up ${m[1]} draft order(s) this run created`);
-} catch {
-  console.log(
-    "    note  could not clean up the draft order this run created; remove it by hand",
-  );
+//
+// By the EXACT id of the cart this run made, not by a shape.
+//
+// The shape it copied from check_note_box is `guest AND no email AND not cart
+// AND minutes old`, and that gate excludes `cart` deliberately, because a guest
+// cart with no email is what an ordinary shopper looks like before they type
+// anything. This probe's order never leaves `cart`, so the shape matched none of
+// its own litter and three of them were sitting on the US shop when this was
+// checked. The shop owner's complaint began with a Draft Orders panel.
+//
+// Widening the shape to include `cart` would have been the wrong fix: at that
+// point it removes real shoppers who are mid-browse. The id is known here, so
+// nothing has to be guessed at.
+//
+// The three guards are kept anyway. If that id ever resolved to something else,
+// a completed order, one with an email, or one belonging to a signed-in
+// customer, this leaves it alone.
+const cartId = checkoutUrl.split("/checkout/")[1]?.split(/[?#]/)[0] ?? "";
+if (!cartId) {
+  console.log("    note  no cart id to clean up with");
+} else {
+  try {
+    const gone = rsh(
+      `docker exec ${shop}_web bin/rails runner '` +
+        `o = (Spree::Order.find_by_prefix_id(%q{${cartId}}) rescue nil); ` +
+        `n = 0; ` +
+        `if o && o.completed_at.nil? && o.email.nil? && o.user_id.nil?; ` +
+        `  id = o.id; o.destroy; n = 1 unless Spree::Order.exists?(id: id); ` +
+        `end; ` +
+        `print %q{<<C:} + n.to_s + %q{:C>>}' 2>/dev/null`,
+    );
+    const m = gone.match(/<<C:(\d+):C>>/);
+    if (m && Number(m[1]) > 0) console.log(`    cleaned up the draft order this run created`);
+    else console.log(`    note  ${cartId} was not removed; check it by hand`);
+  } catch {
+    console.log(
+      `    note  could not clean up ${cartId}; remove it by hand`,
+    );
+  }
 }
 
 await browser.close();
