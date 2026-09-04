@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+#
+# Move a product's photographs off its variants and onto the product itself.
+#
+#   script/hoist_photos ca                 dry run, prints what would move
+#   APPLY=1 script/hoist_photos ca         moves them, then rebuilds the counters
+#
+# ── the fault this exists for ────────────────────────────────────────────────
+#
+# The photographs that came across in the upgrade are attached to VARIANTS.
+# Spree 5.6 attaches anything uploaded now to the PRODUCT, and both the admin and
+# the storefront show the product's images whenever the product has any.
+#
+# So the shop owner's own account of it, in the video he sent on 2 Sep, is the
+# whole bug: he opened a product that had photographs, added one more, and the
+# rest vanished. Nothing was deleted. His new image went to the product, the
+# product now "had media", and the ones on the variant stopped being looked at.
+#
+# Measured across the estate on 4 Sep: 1495 photographs on 446 products, and all
+# but twelve of them on variants.
+#
+#     photos  on variant  on product  products  variant only  both
+#        278         266          12        81            77     4   <- one shop
+#        269         269           0        84            84     0
+#        257         257           0        78            78     0
+#        257         257           0        78            78     0
+#        248         248           0        76            76     0
+#        136         136           0        41            41     0
+#         50          50           0         8             8     0
+#
+# Six of the seven are the simple case: every photograph on a variant, nothing on
+# the product, so everything moves. One shop has twelve already on products and
+# four products carrying both, and that is the only shop where the duplicate rule
+# below decides anything.
+#
+# ── what moves, and what is left exactly where it is ────────────────────────
+#
+# A variant's photograph moves up when the product does not already have that
+# same photograph. Same means same FILENAME AND same BYTE SIZE, both read from
+# Active Storage.
+#
+# That is the trap in this job. `spree_assets.attachment_file_name` is NULL on
+# every asset on every shop, 0 of 257 on Canada and 0 of 278 on the US, because
+# the files live in Active Storage. A duplicate check written against that column
+# finds nothing, says so cheerfully, and moves every duplicate up to sit beside
+# its own twin.
+#
+# Matching on size as well as name fails towards KEEPING photographs. Two files
+# that share a name and differ in size are two different pictures and both move.
+# Being wrong that way shows the same picture twice, which anyone can see and
+# fix. Being wrong the other way makes a picture quietly stop appearing, which is
+# the bug this exists to end.
+#
+# It DELETES NOTHING. A duplicate stays on its variant, unlooked at, exactly as
+# it is today. Nothing is destroyed to fix a display problem.
+#
+# ── the order that matters, and it is not optional ──────────────────────────
+#
+# Moving the rows is not enough. From DISCOVERIES 5.2 to 5.4, which cost a day:
+#
+#   Spree::Product#has_media? reads the media_count COLUMN, it does not count.
+#   That column is kept by an after_create callback on Spree::Asset, and an
+#   UPDATE never runs it. primary_media_id exists on BOTH spree_variants and
+#   spree_products, each with its own update_thumbnail!.
+#
+# So this finishes with backfill:counters and then backfill:thumbnails, in that
+# order and never reversed: update_thumbnail! reaches its image through
+# has_media?, which reads media_count, so thumbnails first fills zero rows and
+# reports success.
+#
+# Both of those tasks are already in the running image. This deliberately does
+# the dangerous arithmetic with code that is already deployed and already proven
+# rather than shipping a new one for the occasion.
+#
+# ── the product that looked like a question for the owner and was not ───────
+#
+# Australia has one product whose photographs sit on three different variants,
+# and it was set aside to ask him which he wanted. Measured instead: all three
+# are is_master, their SKUs are ECO-022/STCANCELED, COPY OF ECO-022/ST and COPY
+# OF COPY OF ECO-022/ST, and every one carries 600_mini_screwTOP.jpg at 38133
+# bytes. One photograph recorded three times by somebody duplicating a product.
+# Nothing to choose between, and the duplicate rule handles it unasked.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+SHOP="${1:-}"
+[[ -n "$SHOP" ]] || {
+  cat >&2 <<'USAGE'
+usage: script/hoist_photos <shop>
+
+  APPLY=1   actually move them. Without it this only prints what would move.
+USAGE
+  exit 2
+}
+
+# shellcheck source=/dev/null
+[[ -f .estate.env ]] && source .estate.env
+: "${SSH_HOST:?no SSH_HOST, source .estate.env}"
+: "${SSH_PORT:=22}"
+: "${SSH_KEY:?no SSH_KEY}"
+SSH_KEY=$(eval echo "$SSH_KEY")
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; YE=$'\033[33m'; R=$'\033[0m'
+else GR=''; RE=''; YE=''; R=''; fi
+
+rsh() {
+  ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes \
+    -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 \
+    "$SSH_HOST" "$@"
+}
+
+APPLY="${APPLY:-0}"
+
+# It names a backup, and refuses without one taken today.
+#
+# Same interlock as script/remove_orders. This edits the owner's own photographs
+# on a shop that is selling. A dump is the difference between a mistake and a
+# disaster, and "I took one earlier in the week" is not the same claim.
+if [[ "$APPLY" == 1 ]]; then
+  TODAY=$(date +%Y%m%d)
+  DUMP=$(rsh "ls -1 /srv/backups/${SHOP}_before_photos_${TODAY}-*.sql.gz 2>/dev/null | tail -1" </dev/null | tr -d '\r')
+  if [[ -z "$DUMP" ]]; then
+    printf '  %srefusing to move anything: no dump for %s taken today%s\n' "$RE" "$SHOP" "$R"
+    cat >&2 <<EOF
+
+  Take one, and check it opens:
+
+    ssh <box> "docker exec estate-postgres pg_dump -U postgres ${SHOP}_shop \\
+      | gzip > /srv/backups/${SHOP}_before_photos_\$(date +%Y%m%d-%H%M).sql.gz"
+    ssh <box> "gunzip -t /srv/backups/${SHOP}_before_photos_*.sql.gz"
+
+EOF
+    exit 1
+  fi
+  printf '  %sdump%s %s\n' "$GR" "$R" "${DUMP##*/}"
+fi
+
+# ── the work, run inside the shop's own container ───────────────────────────
+#
+# Written once, here. The dry run and the real run are the SAME code with a flag,
+# so what the dry run promises is what the real run does. Two implementations of
+# a rule this fiddly would eventually disagree, and the one you would find out
+# about is the one that moved 1495 photographs.
+RUBY=$(cat <<'RUBY_END'
+apply = ENV['HOIST_APPLY'] == '1'
+
+def photo_key(asset)
+  blob = asset.attachment.attached? ? asset.attachment.blob : nil
+  return nil unless blob
+  [blob.filename.to_s, blob.byte_size]
+end
+
+variant_product = Spree::Variant.unscoped.pluck(:id, :product_id).to_h
+grouped = Spree::Asset.where(viewable_type: 'Spree::Variant')
+                      .order(:viewable_id, :position, :id)
+                      .group_by { |a| variant_product[a.viewable_id] }
+
+# Counted and reported, never quietly skipped.
+#
+# These are assets marked as a variant's whose viewable_id resolves to no
+# variant at all, so there is no product to move them to. 37 of them across the
+# estate, every one with a real file behind it, and they were already invisible
+# to customers before this ran.
+#
+# The first version of this script left them out of the total without a word:
+# Canada has 257 photographs on variants and it offered to move 252. Five
+# unexplained is how a report stops being trusted, and this project has already
+# been bitten by a check that reported less than it measured.
+orphans = (grouped[nil] || []).size
+by_product = grouped.reject { |pid, _| pid.nil? }
+
+before_v = Spree::Asset.where(viewable_type: 'Spree::Variant').count
+before_p = Spree::Asset.where(viewable_type: 'Spree::Product').count
+total_before = Spree::Asset.count
+
+moved = 0
+dupes = 0
+touched = 0
+
+ActiveRecord::Base.transaction do
+  by_product.each do |product_id, assets|
+    next unless Spree::Product.unscoped.exists?(id: product_id)
+
+    existing = Spree::Asset.where(viewable_type: 'Spree::Product', viewable_id: product_id)
+                           .order(:position, :id).to_a
+    have = existing.map { |a| photo_key(a) }.compact.to_set
+    pos  = existing.map { |a| a.position.to_i }.max || 0
+
+    product_moved = 0
+    assets.each do |asset|
+      key = photo_key(asset)
+      if key && have.include?(key)
+        dupes += 1
+        next
+      end
+
+      pos += 1
+      if apply
+        # update_columns: no callback. media_count is rebuilt from scratch after
+        # this, and a callback incrementing it halfway through would leave a
+        # number that is neither the old one nor the right one.
+        asset.update_columns(
+          viewable_type: 'Spree::Product',
+          viewable_id: product_id,
+          position: pos,
+          updated_at: Time.current,
+        )
+      end
+      have << key if key
+      moved += 1
+      product_moved += 1
+    end
+    touched += 1 if product_moved.positive?
+  end
+
+  raise ActiveRecord::Rollback unless apply
+end
+
+after_v = Spree::Asset.where(viewable_type: 'Spree::Variant').count
+after_p = Spree::Asset.where(viewable_type: 'Spree::Product').count
+
+print "<<H:#{before_v}|#{before_p}|#{after_v}|#{after_p}|#{moved}|#{dupes}|#{touched}|#{total_before}|#{Spree::Asset.count}|#{orphans}:H>>"
+RUBY_END
+)
+
+printf '  %-9s ' "$SHOP"
+# Fed through stdin to `rails runner -`, not interpolated into a quoted argument.
+#
+# The script is a hundred lines of Ruby carrying regexes, hashes and quotes of
+# its own. Passing that as a shell word means escaping it correctly through bash,
+# ssh and docker exec in turn, and a single mistake there does not fail loudly:
+# it runs a DIFFERENT program. `docker exec -i` plus `runner -` means the bytes
+# that arrive are the bytes that were written.
+OUT=$(printf '%s' "$RUBY" | ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes \
+        -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
+        "docker exec -i -e HOIST_APPLY=$APPLY ${SHOP}_web bin/rails runner - 2>/dev/null" | tr -d '\r')
+LINE=$(printf '%s' "$OUT" | sed -n 's/.*<<H:\(.*\):H>>.*/\1/p')
+
+if [[ -z "$LINE" ]]; then
+  printf '%scould not be measured%s\n' "$RE" "$R"
+  printf '%s\n' "$OUT" | tail -5 | sed 's/^/      /'
+  exit 1
+fi
+
+IFS='|' read -r bv bp av ap moved dupes touched tb ta orphans <<< "$LINE"
+
+if [[ "$APPLY" == 1 ]]; then
+  printf '%son variants%s %s -> %s   %son products%s %s -> %s   moved %s, %s duplicate(s) left where they were\n' \
+    "$GR" "$R" "$bv" "$av" "$GR" "$R" "$bp" "$ap" "$moved" "$dupes"
+  [[ "$tb" == "$ta" ]] \
+    && printf '      %s%s photograph(s) in total, unchanged: nothing was deleted%s\n' "$GR" "$ta" "$R" \
+    || printf '      %sTOTAL CHANGED %s -> %s. Something was destroyed. Restore the dump.%s\n' "$RE" "$tb" "$ta" "$R"
+  [[ "${orphans:-0}" -gt 0 ]] && printf '      %s%s photograph(s) point at a variant that no longer exists, so there is nowhere to move them. Left alone.%s\n' "$YE" "$orphans" "$R"
+
+  # Counters BEFORE thumbnails, never the other way round. See the header.
+  printf '      rebuilding counters\n'
+  rsh "docker exec ${SHOP}_web bin/rails backfill:counters 2>&1 | tail -4" </dev/null | sed 's/^/        /'
+  printf '      rebuilding thumbnails\n'
+  rsh "docker exec ${SHOP}_web bin/rails backfill:thumbnails 2>&1 | tail -4" </dev/null | sed 's/^/        /'
+else
+  printf '%swould move %s photograph(s) on %s product(s), %s already on the product%s\n' \
+    "$YE" "$moved" "$touched" "$dupes" "$R"
+  [[ "${orphans:-0}" -gt 0 ]] && printf '      %s%s more point at a variant that no longer exists, so there is nowhere to move them%s\n' "$YE" "$orphans" "$R"
+  printf '      nothing changed. APPLY=1 %s %s does it.\n' "$0" "$SHOP"
+fi
