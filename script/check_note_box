@@ -86,11 +86,14 @@ try {
     await p.waitForTimeout(6000);
   }
   await p.goto(HOST, { waitUntil: "domcontentloaded", timeout: 60000 });
-  await p.waitForTimeout(3000);
+  // Waits for a product link rather than three seconds. One of these shops
+  // answers /products in sixteen seconds when the box is busy, and a fixed wait
+  // there reads as a shop with nothing to sell.
+  await p.waitForSelector('a[href*="/products/"]', { timeout: 90000 }).catch(() => {});
   const href = await p.locator('a[href*="/products/"]').first().getAttribute("href");
   if (!href) { out("SKIP", "no product to test with"); await b.close(); process.exit(0); }
   await p.goto(new URL(href, HOST).toString(), { waitUntil: "domcontentloaded", timeout: 60000 });
-  await p.waitForTimeout(2000);
+
   // Adding is allowed to fail, because a full cart is not a broken shop.
   //
   // On the wholesale shop the signed-in cart already holds every carton in
@@ -98,12 +101,29 @@ try {
   // The first version read that timeout as a missing message box and failed a
   // shop whose checkout was working perfectly. What this gate needs is A CART,
   // not one more item in it.
-  await p
-    .locator('button:has-text("Add to"), button:has-text("ADD TO")')
-    .first()
-    .click({ timeout: 20000 })
-    .catch(() => {});
-  await p.waitForTimeout(3500);
+  //
+  // But it is RETRIED first, which it was not. The button is server rendered, so
+  // it is visible and clickable well before React attaches its handler, and a
+  // click in that window does nothing at all: no request, no error, no change.
+  // check_storefront_e2e.mjs measured that as one success in six. On 3 Sep this
+  // gate failed Australia with "could not reach a checkout, stopped at
+  // /products/..." while that shop answered 200 everywhere and its checkout was
+  // fine — one click, on a page that had taken sixteen seconds to arrive.
+  //
+  // The retry stops at the cart token cookie, and then carries on either way.
+  // It must not become a hard failure: the signed-in wholesale cart is not a
+  // guest cart and may carry no such cookie at all.
+  const add = p.locator('button:has-text("Add to"), button:has-text("ADD TO")').first();
+  await add.waitFor({ state: "visible", timeout: 60000 }).catch(() => {});
+  const hasCart = async () =>
+    (await p.context().cookies()).some((c) => c.name.startsWith("_spree_cart_token"));
+  let tries = 0;
+  while (!(await hasCart()) && tries < 4) {
+    tries += 1;
+    await add.click({ timeout: 15000 }).catch(() => {});
+    for (let i = 0; i < 12 && !(await hasCart()); i++) await p.waitForTimeout(250);
+  }
+  await p.waitForTimeout(2000);
 
   const toCheckout = p.locator('a[href*="checkout"], button:has-text("Checkout"), a:has-text("Checkout")').first();
   if (await toCheckout.count()) {
@@ -113,8 +133,15 @@ try {
     await p.waitForTimeout(3000);
     await p.locator('a[href*="checkout"], button:has-text("Checkout")').first().click({ timeout: 20000 }).catch(() => {});
   }
-  await p.waitForTimeout(9000);
+  await p.waitForURL(/\/checkout\//, { timeout: 60000 }).catch(() => {});
   if (!p.url().includes("/checkout")) { out("FAIL", `could not reach a checkout, stopped at ${p.url().slice(0, 60)}`); await b.close(); process.exit(0); }
+
+  // Waits for the box rather than for a number of seconds, so a slow shop is not
+  // reported as a shop that has no message box. This gate failed Australia on
+  // 3 Sep with "no message box on this checkout" after a fixed nine second wait;
+  // that shop was answering /products in sixteen seconds and its box was there.
+  // A box that genuinely does not exist still fails, one line below.
+  await p.waitForSelector("#checkout-customer-note", { timeout: 90000 }).catch(() => {});
 
   const box = p.locator("#checkout-customer-note");
   if ((await box.count()) === 0) { out("FAIL", "no message box on this checkout"); await b.close(); process.exit(0); }
@@ -128,7 +155,10 @@ try {
   await p.locator("h2").first().click({ timeout: 10000 }).catch(() => {});
   await p.waitForTimeout(6000);
   await p.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
-  await p.waitForTimeout(8000);
+  // Same again after the reload: the read-back has to wait for the field to come
+  // back, or a slow shop reads as a shop that did not save.
+  await p.waitForSelector("#checkout-customer-note", { timeout: 90000 }).catch(() => {});
+  await p.waitForTimeout(2000);
   const kept = await p.locator("#checkout-customer-note").inputValue().catch(() => "");
   if (kept.trim() !== MSG) { out("FAIL", `typed but did not persist, read back "${kept.slice(0, 40)}"`); await b.close(); process.exit(0); }
   // The marker is LEFT IN PLACE on purpose. Do not add a clearing step here.
