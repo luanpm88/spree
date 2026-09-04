@@ -421,6 +421,21 @@ input[type="search"]::-webkit-search-cancel-button {
  * ME IN button, the About panel, the footer and the product title on hover.
  * #EAEEED is the announcement bar, the header and the shipping notice band.
  */
+/* His business shop, from the header and footer design of 4 Sep.
+ *
+ * Only the two numbers his artwork actually names for the header. The palette
+ * for that shop is the footer's, and the footer reads it from footerLivery in
+ * TypeScript rather than from here, because it needs to know which case its
+ * links are set in as well as which colours they are.
+ *
+ * 36.87px is his figure, written on the artwork. Left as he wrote it rather
+ * than rounded to 2.3rem: the number is his and the browser can subpixel it.
+ * Measured before changing anything, the logo was drawn at 32px.
+ */
+[data-theme="business-green"] {
+  --logo-h: 36.87px;
+}
+
 [data-theme="green-blue"] {
   --primary: #065146;
   --primary-foreground: #FFFFFF;
