@@ -5146,3 +5146,135 @@ hướng vào checkout.
 Và ngưỡng "dưới màn hình" của probe phải **bằng đúng lề trong hook**. Hai con số ấy
 là cùng một quyết định; lệch nhau là probe đánh trượt một shop đang chạy tốt, hoặc
 cho qua một shop đang rò.
+
+---
+
+## 33. Ảnh nằm trên variant, còn Spree 5.6 thì gắn ảnh mới vào product (4 Sep)
+
+Chủ shop quay video: mở một sản phẩm **đang có ảnh**, thêm một tấm nữa, và **những
+tấm cũ biến mất**. Không có tấm nào bị xoá.
+
+Ảnh nâng cấp từ 5.2 gắn vào **variant**. Spree 5.6 gắn ảnh mới vào **product**. Và
+cả admin lẫn storefront đều **ưu tiên ảnh của product khi product có ảnh**. Nên tấm
+ảnh mới của ông làm cho product "có media", và toàn bộ ảnh trên variant thôi được
+nhìn tới.
+
+```
+1495 ảnh trên 446 sản phẩm, toàn hệ. Tất cả trừ 12 tấm đều nằm ở variant.
+```
+
+### Cột tên file rỗng, và đó là cái bẫy
+
+Luật dọn trùng ban đầu của tôi là "so theo `attachment_file_name`". Đo trước khi
+viết:
+
+```
+ca   257 ảnh, 0 có attachment_file_name, 257 có Active Storage attachment
+us   278 ảnh, 0 có attachment_file_name, 278 có Active Storage attachment
+```
+
+**Rỗng ở toàn bộ.** File nằm trong Active Storage. Một phép so theo cột đó sẽ tìm ra
+**0 trùng**, báo cáo êm ru, và dời mọi bản trùng lên nằm cạnh chính bản gốc của nó.
+Phải join qua `active_storage_blobs`.
+
+So theo **tên file VÀ dung lượng**, và hướng sai được chọn có chủ ý: hai file trùng
+tên khác dung lượng là hai ảnh khác nhau nên dời cả hai. Sai kiểu đó thì hiện một
+ảnh hai lần, ai cũng thấy và sửa được. Sai kiểu ngược lại thì một tấm ảnh **lặng lẽ
+thôi hiện ra** — đúng cái bug đang phải chữa.
+
+### Sản phẩm tưởng phải hỏi khách, hoá ra không
+
+Một sản phẩm ở au có ảnh nằm trên **ba variant khác nhau**, và tôi đã hẹn sẽ hỏi ông
+ấy chọn tấm nào. Đo thay vì hỏi:
+
+```
+variant 6   ECO-022/STCANCELED           is_master  600_mini_screwTOP.jpg  38133 B
+variant 51  COPY OF ECO-022/ST           is_master  600_mini_screwTOP.jpg  38133 B
+variant 52  COPY OF COPY OF ECO-022/ST   is_master  600_mini_screwTOP.jpg  38133 B
+```
+
+**Cùng một file, cùng dung lượng, ba lần.** Không phải ba màu khác nhau — là ba
+master variant, di chứng của việc nhân bản sản phẩm. Không có gì để chọn. Đây là
+sản phẩm **duy nhất toàn hệ** có ảnh trên nhiều variant, và cũng là sản phẩm duy
+nhất có nhiều hơn một master.
+
+### Thứ tự bắt buộc, và 37 tấm không dời được
+
+Dời dòng thôi là chưa đủ: `media_count` là **cột** do callback `after_create` giữ,
+mà `UPDATE` không chạy callback. Và `update_thumbnail!` tìm ảnh qua `has_media?`,
+hàm này đọc `media_count`. Nên **counters trước, thumbnails sau**, không được đảo.
+
+Có **37 ảnh toàn hệ trỏ vào một variant không còn tồn tại**, tất cả đều có file
+thật, nên không có product nào để dời lên. Bản script đầu của tôi bỏ chúng ra khỏi
+tổng **mà không nói gì**: ca có 257 ảnh và nó chào "dời 252". Năm tấm không giải
+thích được là cách một báo cáo mất tin cậy.
+
+### Kết quả
+
+```
+shop   variant      product   dời   trùng để lại   mồ côi
+ca     257 -> 5     0 -> 252  252   0              5
+au     269 -> 9     0 -> 260  260   2              7
+us     266 -> 14   12 -> 264  252   7              7
+nz     248 -> 7     0 -> 241  241   0              7
+...    tổng 1437 tấm đã dời, tổng ảnh mỗi shop KHÔNG ĐỔI
+```
+
+Hai con số khớp đúng dự đoán trước khi chạy: au để lại **2** (sản phẩm ba master),
+us để lại **7** và dời đúng **2** ảnh riêng của 4 sản phẩm mang cả hai tầng.
+
+---
+
+## 34. Khách ở nước không có Market bị ném về trang chủ, và crawler cũng vậy (4 Sep)
+
+Tìm ra **do tình cờ**: chụp màn hình trang sản phẩm để kiểm tra ảnh, và ảnh chụp ra
+**trang chủ**.
+
+```
+200  /products/<slug>                                trang sản phẩm render bình thường
+<meta http-equiv="refresh" content="1;url=/ca/en">
+308  /ca/en                                          clean URLs đẩy tiếp
+200  /                                               khách ở trang chủ
+```
+
+Xảy ra ở **mọi điểm vào**: trang chủ, danh sách, chi tiết. Ở trang chủ thì vô hại
+nên không ai thấy suốt thời gian qua.
+
+### Cơ chế
+
+Middleware chọn market theo `cf-ipcountry`. Đo từ một edge Cloudflare ở Amsterdam:
+
+```
+x-middleware-rewrite: /nl/en/products/<slug>
+cf-ray: ...-AMS
+```
+
+Shop không có Market cho `nl`, nên layout `[country]/[locale]` chuyển hướng về
+market mặc định. Nó **có** cố giữ đường dẫn — nhưng `buildLocalizedRedirectPath`
+làm rơi mất:
+
+```ts
+const matchedPrefix = pathname?.match(LOCALIZED_PREFIX)?.[0];
+const suffix = matchedPrefix ? pathname?.slice(matchedPrefix.length) : "";
+```
+
+Trên shop dùng **clean URLs**, pathname là `/products/<slug>` — **không có tiền tố**.
+Regex không khớp, `suffix` thành `""`, hàm trả về đúng `/ca/en`.
+
+**Xảy ra cả khi tắt JavaScript**, tức là cách một crawler nhìn thấy trang.
+
+### Tại sao không thể đoán tiền tố
+
+Vá kiểu "không khớp thì giữ nguyên cả đường dẫn" vẫn sai: `LOCALIZED_PREFIX` là
+`/[a-z]{2,12}/[a-z]{2,3}`, và **`/pages/faq` khớp y hệt `/ca/en`**. Đoán thì giữ
+được đường dẫn này và nuốt mất đường dẫn kia.
+
+Middleware là thứ **duy nhất biết nó đã cắt gì**, nên bắt nó nói ra bằng một header.
+Shop dùng tiền tố vẫn đi nhánh regex như cũ.
+
+### Bài học về cách tìm ra nó
+
+Không phép kiểm nào bắt được, kể cả browser walk 31/31, vì walk đi **từ trang chủ
+vào** nên lúc đó đã có cookie. Thứ phát hiện ra nó là **mở một URL sâu bằng phiên
+sạch** — đúng cách khách từ Google vào. Và thứ khiến tôi nhìn thấy là **mở tấm ảnh
+chụp ra xem**, thay vì đọc dòng log báo "ok".
