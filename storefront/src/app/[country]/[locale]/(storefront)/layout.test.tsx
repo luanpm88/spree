@@ -69,16 +69,14 @@ describe("StorefrontLayout", () => {
 
     expect(layout.type).toBe(Fragment);
 
-    // Both bars sit above the header, which is where his current shop puts
-    // them, and they are first in this list for that reason rather than by
-    // accident. The utility strip leads because the business design draws it
-    // as the topmost thing on the page; it renders null on every other shop.
-    const [utility, announcement, header, hiddenNavigation, main, footer] =
+    // ONE strip above the header, which is where his current shop puts it, and
+    // it is first in this list for that reason rather than by accident. Which
+    // strip depends on the shop, and that is asserted separately below.
+    const [announcement, header, hiddenNavigation, main, footer] =
       Children.toArray(
         layout.props.children,
       ) as ReactElement<LayoutElementProps>[];
 
-    expect(utility.type).toBe(UtilityBar);
     expect(announcement.type).toBe(AnnouncementBar);
     expect(header.type).toBe(Header);
     expect(hiddenNavigation.type).toBe(Suspense);
@@ -177,5 +175,40 @@ describe("footer selection", () => {
     themeState = undefined;
     const parts = await render();
     expect(parts[parts.length - 1].type).toBe(Footer);
+  });
+});
+
+/**
+ * Which strip sits above the header.
+ *
+ * His design draws a single band there. Rendering both stacked two bars where
+ * he drew one, which is what the deployed page did until a screenshot showed
+ * it: both rendered, nothing errored, and every assertion in this file passed.
+ */
+describe("the strip above the header", () => {
+  afterEach(() => {
+    themeState = undefined;
+  });
+
+  const first = async () =>
+    (
+      Children.toArray(
+        (
+          (await StorefrontLayout({
+            children: <section />,
+            params: Promise.resolve({ country: "nz", locale: "en" }),
+          })) as ReactElement<LayoutElementProps>
+        ).props.children,
+      ) as ReactElement<LayoutElementProps>[]
+    )[0];
+
+  it("gives the business shop the utility bar and not the announcement", async () => {
+    themeState = "business-green";
+    expect((await first()).type).toBe(UtilityBar);
+  });
+
+  it("leaves every other shop with the announcement sentence", async () => {
+    themeState = undefined;
+    expect((await first()).type).toBe(AnnouncementBar);
   });
 });

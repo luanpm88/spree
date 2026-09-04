@@ -186,8 +186,17 @@ export default async function StorefrontLayout({
           sentence, so it draws that and nothing else. UtilityBar renders null
           for every shop with no entry in the map, so the other six are
           unaffected by its presence here. */}
-      <UtilityBar basePath={basePath} />
-      <AnnouncementBar locale={locale as Locale} />
+      {/* One strip, not two.
+          The utility bar REPLACES the announcement sentence on the shop that
+          has it, because his design draws a single band above the header and
+          rendering both stacked two bars where he drew one. Caught by
+          screenshotting the deployed page: both rendered, nothing errored, and
+          every test passed. */}
+      {businessFooter ? (
+        <UtilityBar basePath={basePath} />
+      ) : (
+        <AnnouncementBar locale={locale as Locale} />
+      )}
       <Header
         basePath={basePath}
         locale={locale as Locale}
