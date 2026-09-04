@@ -46,7 +46,7 @@ SSH_KEY="${SSH_KEY:-}"; SSH_HOST="${SSH_HOST:-}"; SSH_PORT="${SSH_PORT:-22}"
 SSH_KEY=$(eval echo "$SSH_KEY")
 [[ -n "$SSH_KEY" && -n "$SSH_HOST" ]] || { printf '      %sskipped — .estate.env names no host%s\n' "$C_DIM" "$C_OFF"; exit 0; }
 
-rsh() { ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" "$@"; }
+rsh() { ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" "$@"; }
 
 # A while-read loop, not mapfile. This box runs bash 3.2, where mapfile does not
 # exist, and the failure was two lines of "command not found" followed by

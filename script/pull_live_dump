@@ -53,8 +53,8 @@ set -a; . ./.estate.env; set +a
 eval OLDK="$OLD_SSH_KEY"; OLDP=$(printf '%s' "$OLD_SSH_PORT" | tr -d '"')
 eval NEWK="$SSH_KEY";     NEWP=$(printf '%s' "$SSH_PORT"     | tr -d '"')
 
-old() { ssh -i "$OLDK" -p "$OLDP" -o BatchMode=yes -o ConnectTimeout=30 "$OLD_SSH_HOST" "$@"; }
-new() { ssh -i "$NEWK" -p "$NEWP" -o BatchMode=yes -o ConnectTimeout=30 "$SSH_HOST" "$@"; }
+old() { ssh -i "$OLDK" -p "$OLDP" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 -o ConnectTimeout=30 "$OLD_SSH_HOST" "$@"; }
+new() { ssh -i "$NEWK" -p "$NEWP" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 -o ConnectTimeout=30 "$SSH_HOST" "$@"; }
 
 # ── which database ───────────────────────────────────────────────────────────
 #

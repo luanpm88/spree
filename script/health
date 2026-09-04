@@ -111,7 +111,7 @@ if [[ -t 1 ]]; then
   GR=$'\033[32m'; YE=$'\033[33m'; RE=$'\033[31m'; CY=$'\033[36m'
 else B=''; DIM=''; R=''; GR=''; YE=''; RE=''; CY=''; fi
 
-rsh() { ssh -n -i "${SSH_KEY:-}" -p "${SSH_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 "${SSH_HOST:-}" "$@" 2>/dev/null; }
+rsh() { ssh -n -i "${SSH_KEY:-}" -p "${SSH_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "${SSH_HOST:-}" "$@" 2>/dev/null; }
 
 FAILS=0
 WARNS=0

@@ -67,7 +67,7 @@ trap 'rm -f "$seen_file"' EXIT
 # argument ends the argument, and the command dies with no output, which reads
 # here as "the shop could not be measured" rather than as a broken probe.
 build_probe() {
-  ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+  ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
     "docker exec ${1}_web bin/rails runner '
        order = Spree::Order.complete.order(:id).last || Spree::Order.order(:id).last
        if order.nil?

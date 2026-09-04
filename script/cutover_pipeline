@@ -62,7 +62,7 @@ step() { STEP=$((STEP+1)); say ""; say "${CY}==>${R} ${B}${STEP}. $*${R}"; }
 ok()   { say "    ${GR}ok${R}   $*"; }
 warn() { say "    ${YE}!${R}    $*"; }
 die()  { say ""; say "${RE}STOPPED at step ${STEP}:${R} $*"; say ""; say "Nothing after this ran. The shop is where it was before this step."; exit 1; }
-rsh()  { ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=25 "$SSH_HOST" "$@"; }
+rsh()  { ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 -o ConnectTimeout=25 "$SSH_HOST" "$@"; }
 
 DRY=1
 VERIFY_ONLY=0

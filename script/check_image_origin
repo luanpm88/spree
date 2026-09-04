@@ -80,7 +80,7 @@ echo "  $COUNT distinct image URL(s)"
 # ── ask the server ───────────────────────────────────────────────────────────
 scp -q -i "$SSH_KEY" -P "$SSH_PORT" "$LIST" "$SSH_HOST:/tmp/imgcheck_$SHOP.txt" || { echo "  could not copy the list to the server" >&2; exit 1; }
 
-RESULT=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+RESULT=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
   "docker cp /tmp/imgcheck_$SHOP.txt ${SHOP}_storefront:/tmp/imgcheck.txt >/dev/null 2>&1 && docker exec ${SHOP}_storefront node -e \"
 const fs=require('fs');
 (async () => {

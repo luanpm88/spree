@@ -48,7 +48,7 @@ fi
 : "${SSH_HOST:?SSH_HOST is not set}"
 
 IMAGE="${IMAGE:-spree-estate:latest}"
-rsh() { ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" "$@"; }
+rsh() { ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" "$@"; }
 
 if ! current=$(rsh "docker image inspect $IMAGE --format '{{.Id}}'" 2>/dev/null | tr -d '\r'); then
   echo "check_containers_current: cannot reach the server, skipping" >&2

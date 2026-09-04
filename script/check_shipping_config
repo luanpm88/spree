@@ -62,7 +62,7 @@ while IFS='|' read -r shop _rest; do
   case "$shop" in \#*) continue;; esac
   [[ -z "$ONLY" || "$ONLY" == "$shop" ]] || continue
 
-  out=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes "$SSH_HOST" \
+  out=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" \
     "docker exec ${shop}_web bin/rails runner '
        Spree::ShippingMethod.where(deleted_at: nil).order(:name).each do |sm|
          c = sm.calculator

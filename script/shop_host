@@ -115,7 +115,7 @@ ok()   { printf '    %s✓%s %s\n' "$GR" "$R" "$*"; }
 warn() { printf '    %s!%s %s\n' "$YE" "$R" "$*"; }
 die()  { printf '\n%sFAILED:%s %s\n\n' "$RE" "$R" "$*" >&2; exit 1; }
 
-rsh()  { ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" "$@"; }
+rsh()  { ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$SSH_HOST" "$@"; }
 # Feed a heredoc to a remote file without quoting games.
 rput() { rsh "cat > $1"; }
 
