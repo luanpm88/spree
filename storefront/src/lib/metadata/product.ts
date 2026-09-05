@@ -24,7 +24,7 @@ export async function generateProductMetadata({
   try {
     product = await getCachedProduct(slug, PRODUCT_METADATA_EXPAND);
   } catch {
-    return { title: "Product Not Found" };
+    return productNotFoundMetadata();
   }
 
   const title = product.meta_title || product.name;
@@ -122,4 +122,34 @@ function productTranslationFingerprint(product: {
     product.meta_description,
     product.meta_keywords,
   );
+}
+
+/**
+ * What a product that does not exist says for itself.
+ *
+ * Exported so it can be asserted on. The robots directive is the whole point
+ * and it is one line, which is exactly the sort of line a later tidy-up removes
+ * as noise. See __tests__/not-found-robots.test.ts for what it is for.
+ */
+export function productNotFoundMetadata(): Metadata {
+  return {
+    title: "Product Not Found",
+    // Tell crawlers not to index it, because the status line cannot.
+    //
+    // The storefront runs with cacheComponents, so the static shell goes out
+    // with a 200 before notFound() runs and a missing record renders under a
+    // 200. That is written up in the pages route and was accepted: a real 404
+    // costs turning cacheComponents off for the whole site.
+    //
+    // What was NOT accepted, because nobody had measured it, is that the same
+    // page also carried no robots directive. Checked on the live shops on
+    // 5 Sep: /pages, /products, /c and /policies all answer 200 for a slug that
+    // cannot exist, and none of them said noindex, while Next's own 404 page
+    // does. So a search engine could index an unlimited number of empty
+    // addresses, and on /pages they came with the shop's real title.
+    //
+    // This does not make the status correct. It removes the harm the wrong
+    // status was doing.
+    robots: { index: false, follow: false },
+  };
 }

@@ -27,7 +27,7 @@ export async function generateCategoryMetadata({
       "children",
     ]);
   } catch {
-    return { title: "Category Not Found" };
+    return categoryNotFoundMetadata();
   }
 
   const title = category.meta_title || category.name;
@@ -106,4 +106,12 @@ function categoryTranslationFingerprint(category: {
     category.meta_description,
     category.meta_keywords,
   );
+}
+
+/** As productNotFoundMetadata, for a category. See the note there. */
+export function categoryNotFoundMetadata(): Metadata {
+  return {
+    title: "Category Not Found",
+    robots: { index: false, follow: false },
+  };
 }

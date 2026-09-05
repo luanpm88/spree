@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Renderer } from "@/components/blocks/Renderer";
 import { contentPage, pageSeo, pageSlugs } from "@/lib/blocks/pages";
-import { getStoreName } from "@/lib/store";
 import { basePathFor } from "@/lib/routing";
+import { getStoreName } from "@/lib/store";
 
 interface ContentPageProps {
   params: Promise<{ country: string; locale: string; slug: string }>;
@@ -44,7 +44,11 @@ export async function generateMetadata({
 }: ContentPageProps): Promise<Metadata> {
   const { slug } = await params;
   const page = contentPage(slug);
-  if (!page) return {};
+  // Not `return {}`. That inherited the layout's title template, so a slug
+  // that cannot exist answered 200 under the shop's own real title with no
+  // robots directive: the most indexable shape of the four. See the note
+  // above for why the status itself cannot be fixed here.
+  if (!page) return { robots: { index: false, follow: false } };
 
   // His own title and description where he has written them, which he does at
   // the foot of each of the four business pages. They are complete titles,

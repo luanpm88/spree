@@ -33,6 +33,9 @@ export async function generateMetadata({
     });
     return {
       title: t("policyNotFound"),
+      // See lib/metadata/product.ts: a missing record answers 200 under
+      // cacheComponents, so the directive has to do what the status cannot.
+      robots: { index: false, follow: false },
       description: t("noContent"),
     };
   }

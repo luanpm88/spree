@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { shopBrand } from "@/lib/blocks/brand";
-import { basePathFor } from "@/lib/routing";
 import { shopSeo } from "@/lib/blocks/seo";
 import { buildHreflangLanguages } from "@/lib/metadata/alternates";
+import { basePathFor } from "@/lib/routing";
 import { buildCanonicalUrl, SOCIAL_IMAGE_PATH } from "@/lib/seo";
 import {
   getStoreMetaDescription,
