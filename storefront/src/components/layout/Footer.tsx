@@ -78,11 +78,25 @@ interface FooterProps {
 interface FooterCategoryLinksProps {
   rootCategories: Category[];
   basePath: string;
+  /**
+   * The order the client's own artwork lists them in, by name.
+   *
+   * Optional, and the six shops that do not pass it keep the order their own
+   * shop returns. The business design lists its categories in a deliberate
+   * sequence and he checked the page against it: "The category list is not in
+   * the order of the image provided."
+   *
+   * Names not in this list keep their existing order and follow the ones that
+   * are, so a category added after he wrote the list appears rather than
+   * disappearing.
+   */
+  order?: readonly string[];
 }
 
 export function FooterCategoryLinks({
   rootCategories,
   basePath,
+  order,
 }: FooterCategoryLinksProps) {
   const l = livery();
   // The children of "Categories", not the roots.
@@ -93,9 +107,23 @@ export function FooterCategoryLinks({
   // facets. What belongs here is what sits under Categories: Bottles & Cups,
   // Containers | Covers | Lid & Parts, Shop Specials, which is what his own
   // footer lists.
-  const categories =
+  const found =
     rootCategories.find((c) => c.permalink === "categories")?.children ??
     rootCategories;
+
+  // Sorted by his sequence when one is given, otherwise left exactly as the
+  // shop returned them. A name he did not list sorts after every name he did
+  // and keeps its relative position, so nothing vanishes because he wrote the
+  // list before the category existed.
+  const categories = order
+    ? [...found].sort((a, b) => {
+        const rank = (name: string) => {
+          const i = order.indexOf(name);
+          return i === -1 ? order.length : i;
+        };
+        return rank(a.name) - rank(b.name);
+      })
+    : found;
 
   return categories.map((category) => (
     <li key={category.id}>

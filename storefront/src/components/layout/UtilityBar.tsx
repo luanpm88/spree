@@ -57,7 +57,20 @@ export function UtilityBar({ basePath }: UtilityBarProps) {
             alt=""
             width={13}
             height={13}
-            className="h-[13px] w-[13px]"
+            // White, and this is why it was black.
+            //
+            // These two files are drawn with stroke="currentColor", which is
+            // the right way to ship an icon: it takes the colour of the text
+            // around it. But an <img> does not inherit anything from the page,
+            // so currentColor resolves to its own initial value, black, on his
+            // green bar. He reported it as "I gave you the icon files in white
+            // but the icons are black" and he was right: the files are fine and
+            // the way they were loaded was not.
+            //
+            // Same one line treatment the eight footer icons already carry, so
+            // both halves of his design are coloured the same way and his files
+            // stay exactly as he sent them.
+            className="h-[13px] w-[13px] brightness-0 invert"
           />
           {bar.trust}
         </span>
@@ -97,7 +110,7 @@ export function UtilityBar({ basePath }: UtilityBarProps) {
               alt=""
               width={13}
               height={13}
-              className="h-[13px] w-[13px]"
+              className="h-[13px] w-[13px] brightness-0 invert"
             />
             {bar.contact}
           </Link>

@@ -69,6 +69,16 @@ export async function BusinessFooter({
   const { legalName = getStoreName() } = shopFooter();
   const policies = await getPolicies();
   const f = BUSINESS_FOOTER;
+  // His order, not the database's. He checked it against the page: "The polices
+  // MUST go in the right order". A policy he did not list keeps its place after
+  // the ones he did, so adding one never makes it disappear.
+  const policyRank = (name: string) => {
+    const i = (f.policyOrder as readonly string[]).indexOf(name);
+    return i === -1 ? f.policyOrder.length : i;
+  };
+  const orderedPolicies = [...policies].sort(
+    (a, b) => policyRank(a.name) - policyRank(b.name),
+  );
 
   return (
     <footer style={l.surface}>
@@ -81,14 +91,18 @@ export async function BusinessFooter({
         <div className="grid grid-cols-1 gap-10 md:grid-cols-7">
           <div className="md:col-span-2">
             <Image
-              src="/brand/logo-footer-business.svg"
+              src="/brand/logo-footer-business-fitted.svg"
               alt=""
               width={186}
               height={152}
+              // The FITTED copy, not his file, and his file is untouched beside
+              // it. His export declares a canvas 595.73 wide while the artwork
+              // measures 617.42, so the last letters of the wordmark were being
+              // clipped by the file's own edge. The derived copy changes the
+              // viewBox and nothing else. Delete it when he re-exports.
+              //
               // 185.30px wide on his artwork. Height follows the file's own
-              // aspect so the mark is never squashed to hit a round number,
-              // and max-w-full so a narrow column shrinks it rather than
-              // cutting the word off, which is what it was doing.
+              // aspect so the mark is never squashed to hit a round number.
               className="h-auto w-[185px] max-w-full"
             />
             {/* Bold 16pt over 23pt leading. Two lines, and they are two lines on
@@ -161,7 +175,7 @@ export async function BusinessFooter({
           <div>
             <h3 className={l.heading}>POLICIES</h3>
             <ul className="mt-4 space-y-3">
-              {policies.map((policy) => (
+              {orderedPolicies.map((policy) => (
                 <li key={policy.slug}>
                   <Link
                     href={`${basePath}/policies/${policy.slug}`}
@@ -173,36 +187,38 @@ export async function BusinessFooter({
               ))}
             </ul>
           </div>
-        </div>
-
-        {/* FOLLOW US, under the columns and not one of them, which is where his
-            artwork puts it. The rule beneath the heading runs the width of the
-            block at 35% opacity. */}
-        <div className="mt-12 md:ml-[33.333%] md:w-2/3">
-          <h3 className={l.heading}>{f.followUs}</h3>
-          <ul className="mt-5 flex flex-wrap items-center gap-3">
-            {f.social.map((icon) => (
-              <li key={icon.name}>
-                <Link
-                  href={icon.href}
-                  aria-label={icon.name}
-                  className="flex h-[37px] w-[37px] items-center justify-center transition-opacity hover:opacity-70"
-                >
-                  <Image
-                    src={`/brand/icon-${icon.name}-business.svg`}
-                    alt=""
-                    width={37}
-                    height={37}
-                    // His files are dark artwork, and his design draws them
-                    // white on the green. Inverted here rather than by editing
-                    // twelve of his SVGs: the files stay exactly as he sent
-                    // them, which matters when he sends a revision.
-                    className="h-[37px] w-[37px] brightness-0 invert"
-                  />
-                </Link>
-              </li>
-            ))}
-          </ul>
+          {/* FOLLOW US: under the columns, starting at SUPPORT and running to the
+              right edge, which is where his artwork puts it.
+              It was offset a third of the way across and he marked it: "The FOLLOW
+              US needs to go right, it is way out of place." Placed by grid column
+              now rather than by a percentage margin, so it stays aligned with the
+              column above it if the column count ever changes. */}
+          <div className="mt-12 md:col-start-6 md:col-span-2">
+            <h3 className={l.heading}>{f.followUs}</h3>
+            <ul className="mt-5 flex flex-wrap items-center gap-3">
+              {f.social.map((icon) => (
+                <li key={icon.name}>
+                  <Link
+                    href={icon.href}
+                    aria-label={icon.name}
+                    className="flex h-[37px] w-[37px] items-center justify-center transition-opacity hover:opacity-70"
+                  >
+                    <Image
+                      src={`/brand/icon-${icon.name}-business.svg`}
+                      alt=""
+                      width={37}
+                      height={37}
+                      // His files are dark artwork, and his design draws them
+                      // white on the green. Inverted here rather than by editing
+                      // twelve of his SVGs: the files stay exactly as he sent
+                      // them, which matters when he sends a revision.
+                      className="h-[37px] w-[37px] brightness-0 invert"
+                    />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       </div>
 

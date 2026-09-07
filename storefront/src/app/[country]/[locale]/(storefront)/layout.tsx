@@ -7,6 +7,7 @@ import { BusinessFooter } from "@/components/layout/BusinessFooter";
 import { Footer, FooterCategoryLinks } from "@/components/layout/Footer";
 import { Header, HeaderMobileMenu } from "@/components/layout/Header";
 import { UtilityBar } from "@/components/layout/UtilityBar";
+import { BUSINESS_FOOTER } from "@/lib/blocks/content";
 import { shopTheme } from "@/lib/blocks/theme";
 import { getCategories } from "@/lib/data/categories";
 import { basePathFor } from "@/lib/routing";
@@ -129,11 +130,16 @@ async function StorefrontFooterCategoryLinks({
   basePath,
   country,
   locale,
-}: StorefrontNavigationProps) {
+  order,
+}: StorefrontNavigationProps & { order?: readonly string[] }) {
   const rootCategories = await getRootCategories(country, locale);
 
   return (
-    <FooterCategoryLinks rootCategories={rootCategories} basePath={basePath} />
+    <FooterCategoryLinks
+      rootCategories={rootCategories}
+      basePath={basePath}
+      order={order}
+    />
   );
 }
 
@@ -233,10 +239,15 @@ export default async function StorefrontLayout({
           locale={locale as Locale}
           categoryLinks={
             <Suspense fallback={<FooterCategoryLinksFallback />}>
+              {/* His sequence, from the artwork. He checked the page against it:
+                  "The category list is not in the order of the image provided."
+                  Only this footer passes one, so the other six keep the order
+                  their own shop returns. */}
               <StorefrontFooterCategoryLinks
                 basePath={basePath}
                 country={country}
                 locale={locale}
+                order={BUSINESS_FOOTER.shopOrder}
               />
             </Suspense>
           }
