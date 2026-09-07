@@ -433,7 +433,12 @@ input[type="search"]::-webkit-search-cancel-button {
  * Measured before changing anything, the logo was drawn at 32px.
  */
 [data-theme="business-green"] {
-  --logo-h: 36.87px;
+  /* 40px, his number on 7 Sep: "Make the logo 40px high is better".
+   *
+   * The artwork said 36.87px and that is what was built and measured. He looked
+   * at it on the page and asked for 40. A number on a drawing is a starting
+   * point; a number after he has seen it on screen is the decision. */
+  --logo-h: 40px;
 }
 
 [data-theme="green-blue"] {

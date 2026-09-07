@@ -232,7 +232,12 @@ export async function BusinessFooter({
 
       {/* The strip under it, his #313F22, with the copyright in bold 11pt. */}
       <div style={l.bar}>
-        <div className="container mx-auto px-4 py-5 text-center text-[11px] font-bold sm:px-6 lg:px-8">
+        {/* Regular, not bold.
+            His artwork annotated this line "Inter Bold 11pt" and that is what
+            was built. On 7 Sep he sent a picture of the line with a new note on
+            it, "Inter Regular 11pt", and said "change from bold to Regular".
+            His second instruction wins over his first drawing. */}
+        <div className="container mx-auto px-4 py-5 text-center text-[11px] sm:px-6 lg:px-8">
           &copy; <CurrentYear /> {legalName}. {t("allRightsReserved")}
         </div>
       </div>
