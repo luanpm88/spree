@@ -89,7 +89,14 @@ export async function BusinessFooter({
             screenshotting the deployed footer and looking at it, not by any
             test: every assertion still passed and the page still rendered. */}
         <div className="grid grid-cols-1 gap-10 md:grid-cols-7">
-          <div className="md:col-span-2">
+          {/* 16px of inside padding, from his note of 7 Sep: "We need to add
+              some padding, maybe 15 - 20?" with an arrow at this block's left
+              edge in his dev tools screenshot.
+              Measured before changing it: the block had padding 0 on all four
+              sides, and both the logo and the paragraph sat at exactly its left
+              boundary, 0px gap. 16 is the middle of the range he gave and the
+              nearest Tailwind step. */}
+          <div className="md:col-span-2 md:p-4">
             <Image
               src="/brand/logo-footer-business-fitted.svg"
               alt=""
