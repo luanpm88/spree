@@ -192,10 +192,18 @@ export async function BusinessFooter({
               It was offset a third of the way across and he marked it: "The FOLLOW
               US needs to go right, it is way out of place." Placed by grid column
               now rather than by a percentage margin, so it stays aligned with the
-              column above it if the column count ever changes. */}
-          <div className="mt-12 md:col-start-6 md:col-span-2">
+              column above it if the column count ever changes.
+
+              Three columns, not two. Two put it exactly under SUPPORT, which is
+              where his artwork starts it, but eight 37px icons plus their gaps
+              need more width than two columns of this grid give, and they
+              wrapped onto a second row. His drawing has them on one line, so the
+              line wins and the block starts one column earlier. */}
+          <div className="mt-12 md:col-start-5 md:col-span-3">
             <h3 className={l.heading}>{f.followUs}</h3>
-            <ul className="mt-5 flex flex-wrap items-center gap-3">
+            {/* nowrap, so a row that no longer fits fails visibly in review
+                rather than quietly folding onto a second line. */}
+            <ul className="mt-5 flex flex-nowrap items-center gap-3">
               {f.social.map((icon) => (
                 <li key={icon.name}>
                   <Link
