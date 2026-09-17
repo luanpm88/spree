@@ -7,6 +7,7 @@
 #   script/commercial ship <shop>   send HEAD to that shop's own directory
 #   script/commercial up <shop>     build, start, wait for health
 #   script/commercial nginx <shop> [backend|storefront]   vhost, nginx -t, certbot
+#   script/commercial admin_image <shop>   his own sign-in picture for /admin
 #   script/commercial status        what is deployed and what revision
 #   script/commercial ssh           open a shell
 #   script/commercial run '<cmd>'   run one command
@@ -289,11 +290,44 @@ cmd_ship() {
 
 # ── build and run ───────────────────────────────────────────────────────────
 
+# Whether this shop is served without the /{country}/{locale} prefix, from
+# config/clean_url_shops, keyed by the shop's own SHOP_KEY.
+#
+# Read from a file for the same reason script/shop_host reads it from one: a
+# setting typed on a command line is a setting that is missing the next time
+# somebody else rebuilds the shop, and this one moves every address on the shop
+# at once. Written into .env, because Next inlines NEXT_PUBLIC_* while building
+# and Compose reads its build args from there.
+#
+# Both directions. Taking a shop's line out of the file and rebuilding must put
+# the prefix back, and an add-only version would leave a shop on clean URLs with
+# nothing in the file saying so.
+sync_clean_urls() {
+  local dir="$1"
+  local key; key=$(host "grep -m1 '^SHOP_KEY=' '$dir/.env' 2>/dev/null | cut -d= -f2-" | tr -d '\r"')
+  local want=""
+  if [ -n "$key" ] && [ -f "$ROOT/config/clean_url_shops" ]; then
+    while read -r c_shop _; do
+      case "$c_shop" in ''|\#*) continue;; esac
+      [ "$c_shop" = "$key" ] && want=1
+    done < "$ROOT/config/clean_url_shops"
+  fi
+
+  host "cd '$dir' && sed -i '/^CLEAN_URLS=/d' .env && ${want:+echo 'CLEAN_URLS=1' >> .env;} true"
+  if [ -n "$want" ]; then
+    ok "clean URLs ON for $key: every address served without a country or language prefix"
+  else
+    info "clean URLs off for ${key:-this shop}: addresses keep the /{country}/{locale} prefix"
+  fi
+}
+
 cmd_up() {
   local shop="${1:?usage: script/commercial up <shop>}"
   local dir; dir="$(require_shop_dir "$shop")"
 
   host "test -f '$dir/.env'" || die "no $dir/.env yet. Create it first."
+
+  sync_clean_urls "$dir"
 
   step "Building (this box has the cores for it, so no registry is involved)"
   # web AND storefront. Building only web is a deploy that runs clean, reports
@@ -379,6 +413,98 @@ cmd_nginx() {
   ok "done"
 }
 
+# The sign-in picture for this shop's admin, which is his own artwork.
+#
+# This command exists because its absence was mistaken for a lost file. On 15 Sep
+# he wrote "I sent the admin login image at the start but it never got added". The
+# image was never lost: tmp/client/admin_login/business.png has been there since
+# 24 Aug and is the same picture he re-sent, to within JPEG noise (mean difference
+# 1.03 of 255). What was missing was this command. The seven shops on the OTHER
+# box all have their picture because script/shop_host has an admin_image; this
+# script did not, so the one shop that lives here never got one.
+#
+# Reads ENV["ADMIN_LOGIN_IMAGE"] at app/views/layouts/spree/minimal.html.erb:19,
+# falling back to Spree's own asset, so an unset variable is a plain default
+# rather than a broken page.
+cmd_admin_image() {
+  local shop="${1:?usage: script/commercial admin_image <shop> [path/to/picture.png]}"
+  local dir; dir="$(require_shop_dir "$shop")"
+
+  # A shop has TWO names and they are not the same one.
+  #
+  # The directory on this box is named after the shop's DOMAIN, while the
+  # storefront's own key for the same shop is a shorter word, and that shorter
+  # word is what tmp/client/admin_login is filed under. Looking the picture up by
+  # the directory name alone finds nothing and reads as "he never sent one", which
+  # is exactly the wrong conclusion: on the one shop this has happened to, the
+  # picture had been on disk for three weeks.
+  #
+  # So: try the directory name, then the storefront key from the override file,
+  # and let an explicit path win over both.
+  local src="${2:-}"
+  if [[ -z "$src" ]]; then
+    local candidates=("tmp/client/admin_login/$shop.png")
+    local key; key=$(host "grep -m1 '^SHOP_KEY=' '$dir/.env' 2>/dev/null | cut -d= -f2-" | tr -d '\r' | tr -d '"')
+    [[ -n "$key" ]] && candidates+=("tmp/client/admin_login/$key.png")
+    for c in "${candidates[@]}"; do
+      [[ -f "$c" ]] && { src="$c"; break; }
+    done
+    [[ -n "$src" ]] || die "no picture found. Tried: ${candidates[*]}. Pass one explicitly as the second argument."
+    info "using $src"
+  fi
+  [[ -f "$src" ]] || die "no picture at $src. They come from his own tracker task, and this script does not invent one."
+
+  local local_bytes; local_bytes=$(wc -c < "$src" | tr -d ' ')
+  step "Sending the sign-in picture for $shop ($local_bytes bytes)"
+  host "mkdir -p '$dir/brand'"
+  # A pipe rather than scp: host() already settles the key, the port and the user,
+  # and one path to the server is one path to get wrong.
+  host "cat > '$dir/brand/admin_login.png'" < "$src"
+
+  # Verify the bytes arrived. A truncated image is a broken page that answers 200,
+  # which is the failure class this repo keeps meeting.
+  local remote_bytes; remote_bytes=$(host "stat -c %s '$dir/brand/admin_login.png'" | tr -d '\r')
+  [[ "$remote_bytes" == "$local_bytes" ]] \
+    || die "the picture arrived truncated: $remote_bytes bytes on the server against $local_bytes here"
+  ok "picture on the server, $remote_bytes bytes"
+
+  # The mount and the variable, each added only if absent so a second run is a
+  # no-op. Braces around the awk and the mv: without them the shell reads
+  # `(grep || awk) && mv` and the mv runs even when awk was skipped, moving a
+  # .compose.new left by an interrupted run over a good docker-compose.yml.
+  host "cd '$dir' && grep -q 'public/brand' docker-compose.yml || { awk '
+        /^      - storage_data:\/rails\/storage/ {
+          print; print \"      # His own sign-in picture. Read by the minimal layout.\";
+          print \"      - ./brand:/rails/public/brand:ro\"; next }
+        { print }' docker-compose.yml > .compose.new && mv .compose.new docker-compose.yml; }"
+  host "cd '$dir' && grep -q '^ADMIN_LOGIN_IMAGE=' .env || echo 'ADMIN_LOGIN_IMAGE=/brand/admin_login.png' >> .env"
+
+  # RAILS_SERVE_STATIC_FILES, without which the whole thing fails silently.
+  #
+  # The picture is a plain file under public/, not an asset-pipeline asset, so
+  # Rails only serves it when this is on. nginx on this box proxies everything to
+  # Rails and has no static location of its own, so there is no second chance.
+  #
+  # Measured on 15 Sep rather than assumed, because the symptom is not an error:
+  #   this box   RAILS_SERVE_STATIC_FILES unset,  /robots.txt -> 404
+  #   the estate box, where the seven shops DO show their picture:
+  #              RAILS_SERVE_STATIC_FILES=true,   /brand/admin_login.png -> 200
+  # Without it the sign-in page renders a broken panel and still answers 200,
+  # which reads as "the picture was never sent" and sends everyone back to look
+  # for a lost file.
+  host "cd '$dir' && grep -q '^RAILS_SERVE_STATIC_FILES=' .env || echo 'RAILS_SERVE_STATIC_FILES=true' >> .env"
+  host "cd '$dir' && grep -q '^RAILS_SERVE_STATIC_FILES=true' .env" \
+    || die "RAILS_SERVE_STATIC_FILES is not true in $dir/.env. The picture would 404."
+
+  # Prove the compose file actually gained the mount rather than trusting the awk.
+  host "cd '$dir' && grep -q 'public/brand' docker-compose.yml" \
+    || die "the mount was not added to docker-compose.yml. Look at $dir/docker-compose.yml before rerunning."
+  ok "mount and ADMIN_LOGIN_IMAGE are in place"
+
+  warn "the web container must be recreated to see the new mount and variable:"
+  info "  script/commercial run \"cd $dir && docker compose up -d web\""
+}
+
 cmd_status() {
   host 'for d in /srv/*/; do
       n=$(basename "$d")
@@ -395,6 +521,7 @@ case "${1:-help}" in
   ship)    shift; cmd_ship "$@" ;;
   up)      shift; cmd_up "$@" ;;
   nginx)   shift; cmd_nginx "$@" ;;
+  admin_image) shift; cmd_admin_image "$@" ;;
   status)  shift; cmd_status "$@" ;;
   ssh)     shift; exec ssh -i "$KEY" -p "$COMMERCIAL_PORT" "$COMMERCIAL_USER@$COMMERCIAL_HOST" ;;
   run)     shift; host "$@" ;;

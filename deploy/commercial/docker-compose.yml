@@ -102,6 +102,17 @@ services:
       - "127.0.0.1:${SPREE_PORT:?set SPREE_PORT in .env, one per shop}:3000"
     volumes:
       - storage_data:/rails/storage
+      # His own sign-in picture for /admin, put there by
+      # `script/commercial admin_image <shop>`. Declared HERE rather than added to
+      # the server's copy of this file, which is what the first version did: ship
+      # overwrites that copy on every deploy, so the mount survived until the next
+      # release and then vanished, taking the picture with it and leaving a shop
+      # that had one looking like a shop that never got one.
+      #
+      # Read only, and absent on a shop with no picture: the directory is created
+      # by that command, and Compose makes an empty one otherwise, which the
+      # minimal layout falls back from to Spree's own artwork.
+      - ./brand:/rails/public/brand:ro
     healthcheck:
       test: curl -f http://localhost:3000/up || exit 1
       interval: 30s
@@ -171,6 +182,14 @@ services:
         NEXT_PUBLIC_DEFAULT_COUNTRY: ${STORE_COUNTRY:-nz}
         NEXT_PUBLIC_DEFAULT_LOCALE: ${STORE_LOCALE:-en}
         NEXT_PUBLIC_SHOP_KEY: ${SHOP_KEY:-}
+        # Whether this shop is served without the /{country}/{locale} prefix.
+        #
+        # A build arg because Next inlines NEXT_PUBLIC_* while building, and it is
+        # written into .env by `script/commercial up` from config/clean_url_shops,
+        # so the shape of a shop's addresses is a line in a file rather than
+        # something an operator has to remember. The estate box does the same
+        # thing in script/shop_host.
+        NEXT_PUBLIC_CLEAN_URLS: ${CLEAN_URLS:-}
     image: storefront-${SHOP:?}:latest
     restart: always
     depends_on:
@@ -187,6 +206,11 @@ services:
       NEXT_PUBLIC_STORE_NAME: ${SHOP_NAME:-Shop}
       NEXT_PUBLIC_DEFAULT_COUNTRY: ${STORE_COUNTRY:-nz}
       NEXT_PUBLIC_DEFAULT_LOCALE: ${STORE_LOCALE:-en}
+      NEXT_PUBLIC_CLEAN_URLS: ${CLEAN_URLS:-}
+      # The locale the API is asked in, where it differs from the one in the URL.
+      # Unset on a shop whose products carry plain `en` translations, which is
+      # this one. See storefront/src/lib/spree/locale.ts for the measurement.
+      SPREE_API_LOCALE: ${SPREE_API_LOCALE:-}
       # What lets Spree tell this storefront that the catalogue changed.
       #
       # Runtime, not a build arg, so rotating it is a restart rather than a
