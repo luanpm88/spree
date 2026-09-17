@@ -437,8 +437,26 @@ input[type="search"]::-webkit-search-cancel-button {
    *
    * The artwork said 36.87px and that is what was built and measured. He looked
    * at it on the page and asked for 40. A number on a drawing is a starting
-   * point; a number after he has seen it on screen is the decision. */
-  --logo-h: 40px;
+   * point; a number after he has seen it on screen is the decision.
+   *
+   * ── and why 40 never actually happened ────────────────────────────────────
+   *
+   * The height was set and the WIDTH CAP was not, so his mark inherited the
+   * shared --logo-max-w of 190px. His file is 300x41, a ratio of 7.3, so 40px
+   * of height wants 292px of width; capped at 190 with object-contain, the mark
+   * drew 190x26 inside a 40px box and the other 14px were empty. He looked at
+   * it on 17 Sep and said "the logo still looks to small", which is exactly
+   * what a 26px mark looks like.
+   *
+   * MEASURED on the live shop before changing it: naturalWidth 300, rendered
+   * box 190x40, computed max-width 190px. The number was right and the result
+   * was not, because nobody measured the drawn mark after setting it.
+   *
+   * So the cap goes up with the height, which is what he asked for: "make the
+   * logo auto width and adjust the height". 48px of height needs 351px of
+   * width, and the cap is 360 so the height is what decides. */
+  --logo-h: 48px;
+  --logo-max-w: 360px;
 
   /* Part 2's three colours are deliberately NOT here, and check_theme_css is
    * why. That gate decides by value: any token in a theme block holding a colour
@@ -452,6 +470,16 @@ input[type="search"]::-webkit-search-cancel-button {
    * #4D5538 his 4 Sep footer artwork names. That file exists for exactly this,
    * and says so: "A colour that lives in one file and is spelled out in another
    * is a colour that will be missed again." */
+}
+
+/* The same mark on a phone. 28px of height is 205px of width at his ratio, which
+ * fits beside the burger and the three icons on a 390px screen. Set as a pair,
+ * because setting one of them alone is the fault above. */
+@media (max-width: 767px) {
+  [data-theme="business-green"] {
+    --logo-h: 28px;
+    --logo-max-w: 210px;
+  }
 }
 
 [data-theme="green-blue"] {

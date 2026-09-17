@@ -104,6 +104,31 @@ export function homePage(storeName: string): PageDefinition {
   const combos = categoryId("combos");
   const newProducts = categoryId("new");
 
+  const hasSupply = "supply" in C;
+  const subscribeBlock: Block[] =
+    "subscribe" in C
+      ? [
+          {
+            type: "subscribe",
+            heading: C.subscribe.heading,
+            body: C.subscribe.body,
+            buttonLabel: C.subscribe.buttonLabel,
+            // He drew a name box beside the email on the retail shops and asked
+            // whether it could work. It can, but not through Spree's own
+            // endpoint, which takes an email and silently discards anything
+            // else. See the newsletter_signups controller for where the name
+            // ends up. His business design draws an email field and an arrow,
+            // so that shop declares it off.
+            // `as const` content means a shop that does not declare the key has
+            // no such property in its type at all, so this reads it off a widened
+            // copy rather than asserting one shop's shape onto the others.
+            ...((C.subscribe as { askForName?: boolean }).askForName === false
+              ? {}
+              : { askForName: true }),
+          },
+        ]
+      : [];
+
   return {
     name: storeName,
     blocks: [
@@ -289,6 +314,9 @@ export function homePage(storeName: string): PageDefinition {
           ] as Block[])
         : []),
 
+      // Section 10 of his business design: the subscribe band, above the strip.
+      ...(hasSupply ? subscribeBlock : []),
+
       // "Supply banner with 5 icons", his third line of 13 Sep. Below the
       // products, where his old feature strip was and where his new artwork
       // draws this. Same block as the trust band, because he drew them the same.
@@ -359,21 +387,13 @@ export function homePage(storeName: string): PageDefinition {
         : []),
 
       // The one section he asked to be changed rather than copied.
-      ...("subscribe" in C
-        ? ([
-            {
-              type: "subscribe" as const,
-              heading: C.subscribe.heading,
-              body: C.subscribe.body,
-              buttonLabel: C.subscribe.buttonLabel,
-              // He drew a name box beside the email and asked whether it could work.
-              // It can, but not through Spree's own endpoint, which takes an email and
-              // silently discards anything else. See the newsletter_signups controller
-              // for the measurement and for where the name ends up.
-              askForName: true,
-            },
-          ] as const)
-        : []),
+      //
+      // Placed by the SHOP rather than always last. His business front page
+      // design draws the subscribe band as section 10 and the five icon strip
+      // as section 11, so on a shop that has that strip the band goes above it.
+      // The five retail shops have no strip, their order is unchanged, and this
+      // is why the block is built once and inserted in one of two places.
+      ...(hasSupply ? [] : subscribeBlock),
     ],
   };
 }
