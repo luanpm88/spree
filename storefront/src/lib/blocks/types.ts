@@ -341,6 +341,20 @@ export interface SubscribeBlock {
   buttonLabel: string;
   /** He asked for a name to come in with the email. Off by default. */
   askForName?: boolean;
+  /** A small line above the heading. His business design: "STAY INFORMED". */
+  eyebrow?: string;
+  /**
+   * How the block is drawn.
+   *
+   *   default  the retail shops: bold heading on white, pill inputs.
+   *   band     his business design of 13 Sep: a tinted full-width band, a light
+   *            large heading in his olive, square-cornered inputs and button.
+   *
+   * A variant rather than a second component because the form, the action, the
+   * consent line and the result message are the same, and those are the parts
+   * that have broken before.
+   */
+  variant?: "default" | "band";
 }
 
 /** Raw HTML, the escape hatch his current page builder gives him. */

@@ -182,6 +182,8 @@ export type Livery = (typeof LIVERY)[keyof typeof LIVERY];
 export const BAND = {
   ink: "#4D5538",
   surface: "#F7F7F4",
+  /** His subscribe band on the 13 Sep artwork, sampled at 249,249,247. */
+  subscribeSurface: "#F9F9F7",
   rule: "#4E5639",
   /**
    * The rules are his hex and NOT solid.

@@ -2,6 +2,7 @@
 
 import { useActionState } from "react";
 import { Inline } from "@/components/blocks/Inline";
+import { BAND } from "@/components/layout/footerLivery";
 import { Button } from "@/components/ui/button";
 import { SUBSCRIBE_FIELDS_BY_SHOP } from "@/lib/blocks/content";
 import type { SubscribeBlock } from "@/lib/blocks/types";
@@ -39,6 +40,8 @@ export function Subscribe({
   body,
   buttonLabel,
   askForName,
+  eyebrow,
+  variant = "default",
   termsHref,
   termsLabel,
   privacyHref,
@@ -62,22 +65,56 @@ export function Subscribe({
   // no sentence, and policy slugs are the shop owner's to rename.
   const consent = Boolean(termsHref && privacyHref);
 
+  /**
+   * His business design of 13 Sep, read off the artwork rather than guessed:
+   * a band tinted #F9F9F7 across the full width, a small uppercase line, a LARGE
+   * heading at regular weight in his olive, the sentence under it in a softer
+   * olive, two white inputs and a button with 10px corners rather than pills,
+   * and the two policy names in bold with no underline.
+   *
+   * Everything else on this block, the form, the action, the consent rule and
+   * the result message, is shared with the retail shops on purpose: those are
+   * the parts that have broken before, and one copy of them is one place to fix.
+   */
+  const band = variant === "band";
+  const field = band
+    ? "flex-1 min-w-0 rounded-[10px] border border-[#D9DAD2] bg-white px-5 py-3 text-base"
+    : "flex-1 min-w-0 rounded-full border border-border bg-background px-6 py-3 text-base";
+
   return (
     // White, not the near-white accent. The shipping notice above is now a full
     // width grey band, and #F7F7F7 under #F5F5F5 reads as one grey area with a
     // heading floating in it rather than as a panel followed by a section. On his
     // own page this block sits on white, between the grey notice and the grey
     // footer, which is what gives all three their edges.
-    <section className="py-16 bg-background">
-      <div className="container mx-auto px-4 sm:px-6 lg:px-8 max-w-2xl text-center">
-        <h2 className="text-3xl font-bold mb-3">{heading}</h2>
+    <section
+      className={band ? "py-16 lg:py-20" : "py-16 bg-background"}
+      style={band ? { backgroundColor: BAND.subscribeSurface, color: BAND.ink } : undefined}
+    >
+      <div
+        className={`container mx-auto px-4 sm:px-6 lg:px-8 text-center ${band ? "max-w-3xl" : "max-w-2xl"}`}
+      >
+        {eyebrow ? (
+          <p className="mb-3 text-xs font-medium uppercase tracking-[0.08em]">
+            {eyebrow}
+          </p>
+        ) : null}
+        <h2
+          className={
+            band
+              ? "mb-3 text-3xl font-normal leading-tight sm:text-4xl lg:text-[44px]"
+              : "text-3xl font-bold mb-3"
+          }
+        >
+          {heading}
+        </h2>
         {/* Through the inline formatter, and in the body colour rather than the
             muted grey. His half sets the second half of this sentence in bold
             against black: "one good email at a time" is the promise, and it was
             the part being greyed out. Rendered as a plain string the ** markers
             would have printed themselves on the page. */}
         {body ? (
-          <p className="mb-8">
+          <p className={band ? "mb-8 text-lg opacity-80" : "mb-8"}>
             <Inline text={body} />
           </p>
         ) : null}
@@ -96,8 +133,11 @@ export function Subscribe({
               name as a metafield, which is what puts it in his CSV export. */}
           {askForName ? (
             <>
+              {/* The same words as the placeholder, so a screen reader asks the
+                  question the page asks. It said "Your name" on a shop whose
+                  field is a business name. */}
               <label htmlFor="newsletter-name" className="sr-only">
-                Your name
+                {shopFields.namePlaceholder ?? "Your name"}
               </label>
               <input
                 id="newsletter-name"
@@ -106,12 +146,12 @@ export function Subscribe({
                 autoComplete="name"
                 maxLength={100}
                 placeholder={shopFields.namePlaceholder ?? "Your name"}
-                className="flex-1 min-w-0 rounded-full border border-border bg-background px-6 py-3 text-base"
+                className={field}
               />
             </>
           ) : null}
           <label htmlFor="newsletter-email" className="sr-only">
-            Email address
+            {shopFields.emailPlaceholder ?? "Email address"}
           </label>
           <input
             id="newsletter-email"
@@ -120,7 +160,7 @@ export function Subscribe({
             required
             autoComplete="email"
             placeholder={shopFields.emailPlaceholder ?? "you@email.com"}
-            className="flex-1 min-w-0 rounded-full border border-border bg-background px-6 py-3 text-base"
+            className={field}
           />
           {/* Rounded ends and a capitalised label, both asked for by name. The
               label is upper cased here rather than in the content file so the
@@ -134,7 +174,12 @@ export function Subscribe({
           <Button
             type="submit"
             disabled={isPending}
-            className="rounded-full px-8 py-3 uppercase tracking-wide"
+            className={
+              band
+                ? "h-auto rounded-[10px] px-7 py-3 text-base font-semibold uppercase tracking-wide text-white hover:opacity-90"
+                : "rounded-full px-8 py-3 uppercase tracking-wide"
+            }
+            style={band ? { backgroundColor: BAND.ink } : undefined}
           >
             {isPending ? "Signing you up…" : buttonLabel}
           </Button>
@@ -145,13 +190,19 @@ export function Subscribe({
             slugs differ between his shops and a hardcoded pair has already put
             dead links on a page once. */}
         {consent ? (
-          <p className="mt-4 text-sm text-muted-foreground">
+          <p className={band ? "mt-5 text-sm opacity-75" : "mt-4 text-sm text-muted-foreground"}>
             By subscribing you agree to our{" "}
-            <a href={termsHref} className="underline hover:no-underline">
+            <a
+              href={termsHref}
+              className={band ? "font-semibold hover:underline" : "underline hover:no-underline"}
+            >
               {termsLabel || "Terms of Use"}
             </a>{" "}
             and{" "}
-            <a href={privacyHref} className="underline hover:no-underline">
+            <a
+              href={privacyHref}
+              className={band ? "font-semibold hover:underline" : "underline hover:no-underline"}
+            >
               {privacyLabel || "Privacy Policy"}
             </a>
             .

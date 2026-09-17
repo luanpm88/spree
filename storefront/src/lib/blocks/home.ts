@@ -113,6 +113,12 @@ export function homePage(storeName: string): PageDefinition {
             heading: C.subscribe.heading,
             body: C.subscribe.body,
             buttonLabel: C.subscribe.buttonLabel,
+            ...((C.subscribe as { eyebrow?: string }).eyebrow
+              ? { eyebrow: (C.subscribe as { eyebrow?: string }).eyebrow }
+              : {}),
+            ...((C.subscribe as { variant?: "default" | "band" }).variant
+              ? { variant: (C.subscribe as { variant?: "default" | "band" }).variant }
+              : {}),
             // He drew a name box beside the email on the retail shops and asked
             // whether it could work. It can, but not through Spree's own
             // endpoint, which takes an email and silently discards anything
