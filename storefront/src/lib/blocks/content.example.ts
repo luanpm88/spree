@@ -174,6 +174,7 @@ export const BRAND_BY_SHOP: Record<
   {
     logo?: string;
     logoFooter?: string;
+    logoFooterSize?: { width: number; height: number };
     favicon?: string;
     og?: string;
     hero?: { src: string; alt: string };

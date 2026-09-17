@@ -6,6 +6,7 @@ import { Embed } from "@/components/blocks/Embed";
 import { Enquiry } from "@/components/blocks/Enquiry";
 import { Faq } from "@/components/blocks/Faq";
 import { FeatureList } from "@/components/blocks/FeatureList";
+import { IconBanner } from "@/components/blocks/IconBanner";
 import { Notice } from "@/components/blocks/Notice";
 import { RichText } from "@/components/blocks/RichText";
 import { SubscribeSection } from "@/components/blocks/SubscribeSection";
@@ -40,7 +41,13 @@ export function Renderer({ blocks, basePath, currency }: RendererProps) {
           case "text_image":
             return <TextImage key={key} {...block} basePath={basePath} />;
           case "banner_slider":
-            return <BannerSlider key={key} {...block} />;
+            // basePath, because his Part 2 hero carries two buttons and an
+            // internal link without it points at /products rather than
+            // /nz/en/products. It reads right in a screenshot and is wrong on
+            // the click, which is the same fault the FeatureList buttons had.
+            return <BannerSlider key={key} {...block} basePath={basePath} />;
+          case "icon_banner":
+            return <IconBanner key={key} {...block} />;
           case "category_rows":
             return (
               <CategoryRows

@@ -147,6 +147,55 @@ export const LIVERY = {
 export type Livery = (typeof LIVERY)[keyof typeof LIVERY];
 
 /**
+ * The three colours in his Part 2 icon bands, 13 Sep.
+ *
+ * All three are written on the artwork by him rather than eyedropped off it:
+ *
+ *   "#4D5538"               the hero heading, the buttons and every icon
+ *   "Colour: #F7F7F4"       the trust band and the supply band
+ *   "Line colour: #4E5639"  the vertical rules between the icons
+ *
+ * `ink` is the same #4D5538 as LIVERY.business.surface above, from his 4 Sep
+ * footer artwork. One brand green, named by him twice, spelled once.
+ *
+ * ── why here and not in globals.css ─────────────────────────────────────────
+ *
+ * They were theme tokens under [data-theme="business-green"] for one build, and
+ * check_theme_css failed it. That gate decides by value: a colour token in a
+ * theme block must come with the utility overrides to match, because a token and
+ * a utility holding different colours is how the wholesale shop kept rendering
+ * black links on a black ground. It was right to fire.
+ *
+ * These are not palette tokens. No Tailwind utility reads them and nothing
+ * outside the three band components does. So they belong in the file this shop's
+ * other colours are already in, which is this one, for the reason written at the
+ * top of it.
+ *
+ * ── why one constant and not one per shop ───────────────────────────────────
+ *
+ * Only the commercial shop declares bands, so only the commercial shop draws
+ * them: home.ts renders an icon_banner solely for a shop whose content declares
+ * `trust` or `supply`, and it is the only one that does. When a second shop
+ * gains them this becomes a map keyed the same way LIVERY is, which is the shape
+ * LIVERY itself arrived at after the third shop.
+ */
+export const BAND = {
+  ink: "#4D5538",
+  surface: "#F7F7F4",
+  rule: "#4E5639",
+  /**
+   * The rules are his hex and NOT solid.
+   *
+   * Sampled across the three rules in his own trust band they measure #B8BAAA,
+   * #B7B9AC and #B7B9AC. Solved against the band ground that is his #4E5639 at
+   * 0.373, 0.379 and 0.396 opacity on the three colour channels: one answer
+   * three times over. Painting it solid because the label names a solid hex
+   * would be following the annotation past what the annotation shows.
+   */
+  ruleOpacity: 0.4,
+} as const;
+
+/**
  * Which of the three the shop this build serves wears.
  *
  * The green blue one is chosen by theme and the dark one by the gate, which

@@ -439,6 +439,19 @@ input[type="search"]::-webkit-search-cancel-button {
    * at it on the page and asked for 40. A number on a drawing is a starting
    * point; a number after he has seen it on screen is the decision. */
   --logo-h: 40px;
+
+  /* Part 2's three colours are deliberately NOT here, and check_theme_css is
+   * why. That gate decides by value: any token in a theme block holding a colour
+   * has to come with the matching utility overrides, because a token and a
+   * utility that disagree is how half a shop keeps the palette of the shop next
+   * door. It fired the moment three colours were added here, and it was right to
+   * by its own rule.
+   *
+   * They are component colours rather than palette ones, so they live where this
+   * shop's other colours already live: BAND in footerLivery.ts, beside the
+   * #4D5538 his 4 Sep footer artwork names. That file exists for exactly this,
+   * and says so: "A colour that lives in one file and is spelled out in another
+   * is a colour that will be missed again." */
 }
 
 [data-theme="green-blue"] {

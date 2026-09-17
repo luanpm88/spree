@@ -3,6 +3,7 @@ import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import type { ReactNode } from "react";
 import { LIVERY } from "@/components/layout/footerLivery";
+import { shopBrand } from "@/lib/blocks/brand";
 import { BUSINESS_FOOTER } from "@/lib/blocks/content";
 import { shopFooter } from "@/lib/blocks/footer";
 import { getPolicies } from "@/lib/data/policies";
@@ -67,6 +68,12 @@ export async function BusinessFooter({
   // exactly as the shared footer resolves it. Never a brand spelled out here:
   // this file is tracked and the repository is public.
   const { legalName = getStoreName() } = shopFooter();
+  // The path and its size come from the same brand config the other six shops
+  // read, rather than being written into this component. It was written in
+  // here, pointing at a file derived from his, which nothing uses now: a path
+  // written in two places is how one of them goes stale.
+  const { logoFooter, logoFooterSize = { width: 596, height: 489 } } =
+    shopBrand();
   const policies = await getPolicies();
   const f = BUSINESS_FOOTER;
   // His order, not the database's. He checked it against the page: "The polices
@@ -97,21 +104,37 @@ export async function BusinessFooter({
               boundary, 0px gap. 16 is the middle of the range he gave and the
               nearest Tailwind step. */}
           <div className="md:col-span-2 md:p-4">
-            <Image
-              src="/brand/logo-footer-business-fitted.svg"
-              alt=""
-              width={186}
-              height={152}
-              // The FITTED copy, not his file, and his file is untouched beside
-              // it. His export declares a canvas 595.73 wide while the artwork
-              // measures 617.42, so the last letters of the wordmark were being
-              // clipped by the file's own edge. The derived copy changes the
-              // viewBox and nothing else. Delete it when he re-exports.
-              //
-              // 185.30px wide on his artwork. Height follows the file's own
-              // aspect so the mark is never squashed to hit a round number.
-              className="h-auto w-[185px] max-w-full"
-            />
+            {logoFooter && (
+              <Image
+                src={logoFooter}
+                alt=""
+                width={logoFooterSize.width}
+                height={logoFooterSize.height}
+                // His own export, unmodified. Nothing derives from his artwork
+                // any more.
+                //
+                // What was here until 8 Sep was a copy of his 4 Sep SVG with a
+                // wider viewBox, because that file declared a canvas 595.73
+                // wide while its artwork measured 617.42 and clipped the last
+                // letters of its own wordmark. He re-exported on 7 Sep and
+                // re-sent it on 8 Sep, and the new file is correct: rendered
+                // side by side with the old one at 185px, both words of the
+                // wordmark are whole.
+                //
+                // Two things measured about it and deliberately left alone. It
+                // is a raster, 596px wide against the 185px it renders at, so
+                // 3.2x density and sharp on any screen. And it is cropped to
+                // its own artwork with no margin, the last column and last row
+                // stopping at alpha 191 rather than ramping to 0, which is
+                // three quarters of one pixel at 596 wide and under a quarter
+                // of a pixel where it is drawn. The breathing room he asked for
+                // comes from the block's padding below, not from his file.
+                //
+                // 185.30px wide on his artwork. Height follows the file's own
+                // aspect so the mark is never squashed to hit a round number.
+                className="h-auto w-[185px] max-w-full"
+              />
+            )}
             {/* Bold 16pt over 23pt leading. Two lines, and they are two lines on
                 his artwork rather than one that happens to wrap, so they are
                 written as two. */}
@@ -158,20 +181,24 @@ export async function BusinessFooter({
             <div key={column.heading}>
               <h3 className={l.heading}>{column.heading}</h3>
               <ul className="mt-4 space-y-3">
-                {column.links.map((link) => (
-                  <li key={link.label}>
-                    <Link
-                      href={
-                        link.href.startsWith("http")
-                          ? link.href
-                          : `${basePath}${link.href}`
-                      }
-                      className={l.link}
-                    >
-                      {link.label}
-                    </Link>
-                  </li>
-                ))}
+                {column.links.map((link) =>
+                  // Same split as the social row below: a link off this site,
+                  // including his https://# placeholders, is a plain anchor, and
+                  // only a link INTO the shop goes through the router.
+                  link.href.startsWith("http") ? (
+                    <li key={link.label}>
+                      <a href={link.href} className={l.link}>
+                        {link.label}
+                      </a>
+                    </li>
+                  ) : (
+                    <li key={link.label}>
+                      <Link href={`${basePath}${link.href}`} className={l.link}>
+                        {link.label}
+                      </Link>
+                    </li>
+                  ),
+                )}
               </ul>
             </div>
           ))}
@@ -208,12 +235,33 @@ export async function BusinessFooter({
               line wins and the block starts one column earlier. */}
           <div className="mt-12 md:col-start-5 md:col-span-3">
             <h3 className={l.heading}>{f.followUs}</h3>
-            {/* nowrap, so a row that no longer fits fails visibly in review
-                rather than quietly folding onto a second line. */}
-            <ul className="mt-5 flex flex-nowrap items-center gap-3">
+            {/* It wraps. It used to be flex-nowrap, and the reason given was
+                "so a row that no longer fits fails visibly in review rather
+                than quietly folding onto a second line".
+                That reasoning was wrong, and measuring it is what showed how.
+                It does not fail visibly. Eight 37px icons and their seven gaps
+                need 380px; a 390px phone offers 358 inside the container, so
+                the row does not shrink or break, it pushes the document wider
+                than the screen. Measured on the LIVE shop on 13 Sep:
+                  390px  scrollWidth 396 vs 390   sideways scroll
+                  768px  scrollWidth 838 vs 768   sideways scroll, 70px
+                  430px and 1024px  no overflow
+                A whole page that scrolls sideways on a phone is a worse fault
+                than a second row of icons, and it is the one that shipped.
+                His drawing still gets its single line everywhere it fits. */}
+            <ul className="mt-5 flex flex-wrap items-center gap-3">
               {f.social.map((icon) => (
                 <li key={icon.name}>
-                  <Link
+                  {/* A plain anchor, not next/link.
+                      These are his placeholders until he sends the real
+                      profiles, "Just do https://# for missing", and they are
+                      outside this site either way. next/link tried to PREFETCH
+                      each one and the router refused it fifteen times per page
+                      in the console: "Cannot prefetch 'https://#' because it
+                      cannot be converted to a URL". Nothing broke and nothing
+                      rendered wrong, which is why it took a browser check to
+                      see it at all. An external link does not want the router. */}
+                  <a
                     href={icon.href}
                     aria-label={icon.name}
                     className="flex h-[37px] w-[37px] items-center justify-center transition-opacity hover:opacity-70"
@@ -229,7 +277,7 @@ export async function BusinessFooter({
                       // them, which matters when he sends a revision.
                       className="h-[37px] w-[37px] brightness-0 invert"
                     />
-                  </Link>
+                  </a>
                 </li>
               ))}
             </ul>

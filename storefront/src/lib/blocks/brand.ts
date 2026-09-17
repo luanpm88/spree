@@ -41,6 +41,15 @@ export interface ShopBrand {
    */
   logoFooter?: string;
   /**
+   * The footer mark's own pixel size, for the aspect ratio.
+   *
+   * Same reason logoSize exists. The shared footer declares 400 x 311 for every
+   * shop, which is one shop's file at best, and a wrong ratio on next/image
+   * reserves the wrong box and shifts the layout when the real image decodes.
+   * Given per shop where the number has actually been read off the file.
+   */
+  logoFooterSize?: { width: number; height: number };
+  /**
    * One file, used for the browser tab and for an iOS home screen alike.
    *
    * His retail shops sent favicon180.png and the wholesale one sent favicon260.png.

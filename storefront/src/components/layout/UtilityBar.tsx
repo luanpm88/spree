@@ -78,7 +78,16 @@ export function UtilityBar({ basePath }: UtilityBarProps) {
         {/* Centre: the four claims, pipe separated exactly as drawn. Rendered as
             separate spans with a drawn divider rather than as one string with
             "|" in it, so the divider can be dimmed without dimming the words. */}
-        <span className="flex flex-1 items-center justify-center gap-2 text-center md:flex-none">
+        {/* flex-wrap on the ROW, whitespace-nowrap still on each claim.
+            The row would not wrap and would not shrink, so on a 360px phone his
+            four claims pushed the document 7px wider than the screen and the
+            whole page scrolled sideways. Measured on the live shop the same day,
+            where the footer icons were doing it too and the two together came to
+            36px at 360 and 21px at 375.
+            Each claim keeps its own nowrap so "Global Delivery" never breaks
+            across two lines, and the row still sits on one line at every width
+            his drawing covers. */}
+        <span className="flex flex-1 flex-wrap items-center justify-center gap-2 text-center md:flex-none">
           {bar.claims.map((claim, i) => (
             <span key={claim} className="flex items-center gap-2">
               {i > 0 && (

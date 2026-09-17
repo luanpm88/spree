@@ -1,8 +1,8 @@
 import { shopBrand } from "@/lib/blocks/brand";
 import { HOME_BY_SHOP } from "@/lib/blocks/content";
 import type { Block, PageDefinition } from "@/lib/blocks/types";
-import { isAccountRequired } from "@/lib/store";
 import { shopKey } from "@/lib/shop-key";
+import { isAccountRequired } from "@/lib/store";
 
 /**
  * The home page, as a list of blocks.
@@ -117,11 +117,26 @@ export function homePage(storeName: string): PageDefinition {
         ? ([
             {
               type: "banner_slider",
-              slides: [...C.banner.slides],
+              // Copied one level down, not just spread.
+              //
+              // content.ts is `as const`, so every array in it is readonly, and
+              // a readonly array is not assignable to a mutable one. A shallow
+              // `[...slides]` used to be enough because a slide held only
+              // strings and numbers; his Part 2 slide holds two arrays of its
+              // own, so those are copied too.
+              slides: C.banner.slides.map((s) => ({
+                ...s,
+                ...(s.features ? { features: [...s.features] } : {}),
+                ...(s.ctas ? { ctas: [...s.ctas] } : {}),
+              })),
               ...(C.banner.height ? { height: C.banner.height } : {}),
               ...(C.banner.intervalMs
                 ? { intervalMs: C.banner.intervalMs }
                 : {}),
+              // This shop's banner IS its hero, so its first heading is the
+              // page's h1. A shop that declares both a banner and a hero keeps
+              // the h1 on the hero below, which is where it was before Part 2.
+              ...("hero" in C ? {} : { isPageTitle: true }),
             },
           ] as Block[])
         : []),
@@ -139,21 +154,19 @@ export function homePage(storeName: string): PageDefinition {
               type: "text_image",
               heading: C.hero.heading,
               body: [...C.hero.body],
-              ...(B.hero
-                ? { image: B.hero, imageSide: "right" as const }
-                : {}),
-        // No button on the five retail shops. He drew an arrow at it and wrote
-        // "remove": his own retail home page ends the welcome copy on the last
-        // sentence and sends people on with the product rows underneath, so a
-        // call to action there is a second, competing one.
-        //
-        // His WHOLESALE home page does carry one, reading BROWSE PRODUCTS, which
-        // is why the label was kept in content.ts rather than deleted with the
-        // button. Read off his live page rather than off the screenshot.
-        // `"ctaLabel" in C.hero` rather than reading it straight off: not every
-        // shop's hero carries one, and the sixth shop's does not, so reading the
-        // property directly stopped the whole file type checking the moment that
-        // shop was added. Same shape as the `in` checks on the rows below.
+              ...(B.hero ? { image: B.hero, imageSide: "right" as const } : {}),
+              // No button on the five retail shops. He drew an arrow at it and wrote
+              // "remove": his own retail home page ends the welcome copy on the last
+              // sentence and sends people on with the product rows underneath, so a
+              // call to action there is a second, competing one.
+              //
+              // His WHOLESALE home page does carry one, reading BROWSE PRODUCTS, which
+              // is why the label was kept in content.ts rather than deleted with the
+              // button. Read off his live page rather than off the screenshot.
+              // `"ctaLabel" in C.hero` rather than reading it straight off: not every
+              // shop's hero carries one, and the sixth shop's does not, so reading the
+              // property directly stopped the whole file type checking the moment that
+              // shop was added. Same shape as the `in` checks on the rows below.
               // The gate, OR an explicit opt in.
               //
               // Keyed on the gate alone until 1 Sep, which was right for the eight
@@ -172,15 +185,18 @@ export function homePage(storeName: string): PageDefinition {
           ] as Block[])
         : []),
 
-      // Section 4 of his front page design, the TRUST BAR. Four of his phrases
-      // across, no icons: his mockup draws one over each and none has been sent,
-      // and FeatureList already refuses to invent a picture for that reason.
+      // "Trust banner with 4 icons", his second line of 13 Sep, and the band
+      // directly under the hero in his artwork.
+      //
+      // It used to be a feature_list of four bare phrases, because his mockup
+      // drew an icon over each and none had been sent: "FeatureList already
+      // refuses to invent a picture for that reason". The icons have now arrived,
+      // so the band is what he drew rather than the honest stand-in for it.
       ...("trust" in C
         ? ([
             {
-              type: "feature_list",
-              columns: C.trust.columns,
-              items: C.trust.items.map((title) => ({ title })),
+              type: "icon_banner",
+              items: [...C.trust.icons],
             },
           ] as Block[])
         : []),
@@ -273,14 +289,14 @@ export function homePage(storeName: string): PageDefinition {
           ] as Block[])
         : []),
 
-      // Section 11 of his front page design, the FEATURE STRIP. Five of his
-      // phrases, below the products, same treatment as the trust bar above them.
-      ...("featureStrip" in C
+      // "Supply banner with 5 icons", his third line of 13 Sep. Below the
+      // products, where his old feature strip was and where his new artwork
+      // draws this. Same block as the trust band, because he drew them the same.
+      ...("supply" in C
         ? ([
             {
-              type: "feature_list",
-              columns: C.featureStrip.columns,
-              items: C.featureStrip.items.map((title) => ({ title })),
+              type: "icon_banner",
+              items: [...C.supply.icons],
             },
           ] as Block[])
         : []),
@@ -294,21 +310,21 @@ export function homePage(storeName: string): PageDefinition {
               heading: C.about.heading,
               body: [...C.about.body],
               ...(B.about ? { image: B.about } : {}),
-        // Image right. It was left, and he marked it "wrong side, need to flip".
-        imageSide: "right",
-        // Green on the retail shops, BLACK on the wholesale one. Both are his.
-        //
-        // The comment this replaces said the wholesale About section "sits on
-        // the page with no colour behind it", and that was simply untrue: his
-        // own screenshot of it measures rgb(0,0,0) solid. The mistake came from
-        // reading one half of a pair. He drew a red circle-slash on our green
-        // band and a green tick on his black one; the strike was honoured and
-        // the tick was dropped, so the section went green to white and matched
-        // neither picture.
-        //
-        // Keyed on the gate rather than on the shop name, the same way the
-        // footer chooses its livery, so a second closed shop inherits it
-        // without anyone remembering to add its name.
+              // Image right. It was left, and he marked it "wrong side, need to flip".
+              imageSide: "right",
+              // Green on the retail shops, BLACK on the wholesale one. Both are his.
+              //
+              // The comment this replaces said the wholesale About section "sits on
+              // the page with no colour behind it", and that was simply untrue: his
+              // own screenshot of it measures rgb(0,0,0) solid. The mistake came from
+              // reading one half of a pair. He drew a red circle-slash on our green
+              // band and a green tick on his black one; the strike was honoured and
+              // the tick was dropped, so the section went green to white and matched
+              // neither picture.
+              //
+              // Keyed on the gate rather than on the shop name, the same way the
+              // footer chooses its livery, so a second closed shop inherits it
+              // without anyone remembering to add its name.
               background: isAccountRequired() ? "dark" : "brand",
             },
           ] as Block[])

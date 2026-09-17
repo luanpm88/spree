@@ -109,17 +109,87 @@ export interface CollectionBlock {
  * banner; a banner that pretends to be clickable and is not is worse than one
  * that does not.
  */
+/**
+ * An icon over a bold line over a lighter line.
+ *
+ * One shape, three places, because his Part 2 design draws all three the same:
+ * the four in the hero, the four in the trust band and the five in the supply
+ * band are identical treatments at identical sizes. Measured on the annotated
+ * artwork of 13 Sep rather than read off the picture: every one of his thirteen
+ * icon files is exactly 63px tall, which is the number he wrote beside them
+ * three times ("Icon 63px heigh").
+ *
+ * ── why the intrinsic width is carried ──────────────────────────────────────
+ *
+ * They are a common HEIGHT set, not a common size: the thirteen files run from
+ * 44px to 86px wide at that 63px height. next/image needs the file's true
+ * dimensions or it reserves the wrong box and the row jumps as each one loads,
+ * so each icon states its own, and the component pins the height and lets the
+ * width follow. Pinning both to a square would squash nine of the thirteen.
+ */
+export interface IconFeature {
+  icon: string;
+  /** The file's true pixel width. His run 44 to 86. */
+  iconWidth: number;
+  /** The file's true pixel height. His are all 63. */
+  iconHeight: number;
+  title: string;
+  /** The lighter second line. "Built to last", "20+ years of experience". */
+  body?: string;
+}
+
 export interface BannerSlide {
   src: string;
   alt: string;
   width: number;
   height: number;
+  /**
+   * A different file for narrow screens.
+   *
+   * His desktop banner is 2078x757 landscape and his mobile one is 1122x1402
+   * portrait: not a crop of the same file, a different photograph of the same
+   * scene. Cropping the landscape one to a phone would throw away the bottles,
+   * which are the product. Absent, the desktop file is used at every width,
+   * which is what the seven retail shops do.
+   */
+  mobileSrc?: string;
+  mobileWidth?: number;
+  mobileHeight?: number;
   /** Optional words drawn over the image. */
   heading?: string;
   body?: string;
-  /** Optional destination for the whole slide. */
+  /**
+   * Optional destination for the whole slide, and its single button.
+   *
+   * The one-button form, and it is what a banner with one destination uses. Left
+   * exactly as it was: `ctas` below is the Part 2 addition and no existing slide
+   * moves onto it.
+   */
   href?: string;
   ctaLabel?: string;
+  /**
+   * How the overlaid words are painted.
+   *
+   * "dark" is the original and stays the default: white text over a dark wash,
+   * which is what any slide written before this assumed.
+   *
+   * "light" is his Part 2 hero: his own ink straight onto a bright photograph,
+   * with no wash at all. That is not a preference, it is measured. His ink
+   * (#4D5538) over the left third of his banner reads at a median contrast of
+   * 6.85:1, and 0.3% of that area falls below the 4.5:1 body-text threshold. A
+   * dark wash there would be painting over a photograph that does not need it.
+   */
+  tone?: "dark" | "light";
+  /** His four hero icons, drawn in a row under the body text. */
+  features?: IconFeature[];
+  /**
+   * More than one button. His hero draws two, "View Product Range" filled and
+   * "Request a Quaote" outlined.
+   *
+   * `href`/`ctaLabel` above are the single-button form and are left alone: they
+   * are what a banner with one destination uses, and no existing slide moves.
+   */
+  ctas?: { label: string; href?: string; variant?: "solid" | "outline" }[];
 }
 
 export interface BannerSliderBlock {
@@ -129,6 +199,51 @@ export interface BannerSliderBlock {
   height?: number;
   /** Milliseconds between slides. 0 or absent means it does not advance itself. */
   intervalMs?: number;
+  /**
+   * The first slide's heading is the page's h1.
+   *
+   * Same switch as TextImageBlock's isPageTitle and it exists for the same
+   * reason. On 13 Sep this banner BECAME the business shop's hero, replacing a
+   * text block that carried the h1, so the home page went from one h1 to none
+   * and nothing failed: every heading still rendered, at the size his artwork
+   * asks for. Found by counting headings in a browser before this shipped.
+   *
+   * Only the first slide, because every slide is in the DOM at once and a page
+   * with four h1 elements is not better than a page with none.
+   *
+   * Off by default: on a page whose title is elsewhere, a rotating banner is
+   * furniture, not the title.
+   */
+  isPageTitle?: boolean;
+}
+
+/**
+ * A full-bleed band of icons: his trust banner and his supply banner.
+ *
+ * Two of the three things he asked for on 13 Sep, and they are the same block
+ * twice: "Trust banner with 4 icons", "Supply banner with 5 icons".
+ *
+ * ── why this is not FeatureList ─────────────────────────────────────────────
+ *
+ * FeatureList is page CONTENT: a container, py-12, an h2, a grid of items that
+ * may carry prose, bullets, cards and buttons. Fifteen groups across his six
+ * business pages are that shape and they are signed off.
+ *
+ * This is FURNITURE: a full-bleed 195px band with no heading, a tinted ground,
+ * vertical rules between the items and exactly two lines under each icon. Every
+ * number in that sentence is one he wrote on the artwork. Bolting a band mode
+ * onto FeatureList would put a branch through all fifteen of those groups to
+ * serve two bands, which is how a change to one page breaks five others.
+ *
+ * The `items` are IconFeature, the same type the hero row uses, because his
+ * design draws them identically. Building them as one shape is what stops the
+ * hero icons and the band icons drifting to different sizes later.
+ */
+export interface IconBannerBlock {
+  type: "icon_banner";
+  items: IconFeature[];
+  /** Band height in pixels. His figure, written twice on the artwork, is 195. */
+  minHeight?: number;
 }
 
 /**
@@ -404,6 +519,7 @@ export type Block =
   | FaqBlock
   | TextImageBlock
   | BannerSliderBlock
+  | IconBannerBlock
   | CategoryRowsBlock
   | CollectionBlock
   | NoticeBlock

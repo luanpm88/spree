@@ -45,16 +45,60 @@ const RETAIL = {
 } as const;
 
 // The real shape, matching content.ts, so this test moves when that does.
+//
+// Part 2, 13 Sep: no `hero` key. His words, his four icons and his two buttons
+// moved onto the banner slide, so the separate text block went with them.
+const ICON = { icon: "/brand/i.png", iconWidth: 70, iconHeight: 63 } as const;
 const BUSINESS = {
-  hero: {
-    heading: "Quality you can depend on.\nBuilt for your business.",
-    body: [],
-    ctaLabel: "Shop All Products",
-    showCta: true,
+  trust: {
+    icons: [
+      { ...ICON, title: "Trusted by Business", body: "Worldwide" },
+      { ...ICON, title: "Since 2005", body: "20+ years of experience" },
+      { ...ICON, title: "Manufacturing Experience", body: "Product knowledge" },
+      { ...ICON, title: "Dedicated Support", body: "We're here to help" },
+    ],
   },
-  trust: { columns: 4, items: ["Trusted by Businesses", "Custom Solutions"] },
-  featureStrip: { columns: 4, items: ["Premium Materials", "Bulk Pricing"] },
-  banner: { slides: [], height: 450, intervalMs: 6000 },
+  supply: {
+    icons: [
+      { ...ICON, title: "Sustainable Choice", body: "Better product choices" },
+      { ...ICON, title: "Flexible Quantities", body: "Carton to container" },
+      { ...ICON, title: "Quality Checked", body: "Consistent standards" },
+      { ...ICON, title: "Reliable Supply", body: "Supply you can depend on" },
+      { ...ICON, title: "Global Shipping", body: "Pallet & container freight" },
+    ],
+  },
+  banner: {
+    slides: [
+      {
+        src: "/brand/banner-hero-business.png",
+        width: 2078,
+        height: 757,
+        alt: "bottles",
+        mobileSrc: "/brand/banner-hero-business-mobile.png",
+        mobileWidth: 1122,
+        mobileHeight: 1402,
+        tone: "light",
+        heading: "Quality you can depend on\nBuilt for your business.",
+        body: "Premium commercial products for hospitality.",
+        features: [
+          { ...ICON, title: "Premium Materials", body: "Built to last" },
+          { ...ICON, title: "Bulk Pricing", body: "Better value" },
+          { ...ICON, title: "Custom Solutions", body: "Made for your needs" },
+          { ...ICON, title: "Global Delivery", body: "Door-to-door worldwide" },
+        ],
+        ctas: [
+          { label: "View Product Range", href: "/products" },
+          {
+            label: "Request a Quote",
+            href: "/pages/request-a-quote",
+            variant: "outline",
+          },
+        ],
+      },
+    ],
+    height: 450,
+    intervalMs: 6000,
+  },
   categoryRows: { perRow: 4, viewAll: "Explore category" },
 } as const;
 
@@ -85,30 +129,76 @@ describe("the commercial shop's home page", () => {
 
   it("is his design's sections, in his order, and nothing else", async () => {
     const blocks = await blocksFor("business");
-    // Banner, his two hero lines, his trust bar, his category rows, his feature
-    // strip. No About panel, no shipping notice, no newsletter: his design has
-    // none of the three and this codebase does not write copy he did not send.
+    // Part 2, 13 Sep. His hero slider, his trust band, his category rows, his
+    // supply band. NO text_image any more: his words are on the photograph now,
+    // so a separate hero block under it would print his heading twice.
+    //
+    // Still no About panel and no shipping notice. His design DOES draw a
+    // newsletter, between the products and the supply band, and it is not built
+    // because he asked for three things on 13 Sep and that was not one of them.
+    // Asserted rather than left implicit so the day it is added, this line is
+    // what says it was a decision.
     expect(blocks.map((b) => b.type)).toEqual([
       "banner_slider",
-      "text_image",
-      "feature_list",
+      "icon_banner",
       "category_rows",
-      "feature_list",
+      "icon_banner",
     ]);
+    expect(blocks.map((b) => b.type)).not.toContain("text_image");
     expect(blocks.map((b) => b.type)).not.toContain("notice");
     expect(blocks.map((b) => b.type)).not.toContain("subscribe");
   });
 
-  it("shows his hero button on a shop that is not account gated", async () => {
-    // The button is keyed on the account gate for the eight shops that came
-    // first. This shop is prices_hidden rather than gated, and his design draws
-    // the button, so it opts in explicitly instead of the gate check being
-    // loosened for the five retail shops that had it removed.
+  it("carries his two hero buttons, his four icons and his phone photograph", async () => {
     const blocks = await blocksFor("business");
-    const hero = blocks.find((b) => b.type === "text_image");
-    expect(hero).toMatchObject({
-      cta: { label: "Shop All Products", href: "/products" },
-    });
+    const banner = blocks.find((b) => b.type === "banner_slider");
+    const slide = banner?.type === "banner_slider" ? banner.slides[0] : null;
+
+    // Two buttons, his, the second outlined. Until Part 2 this shop opted into
+    // ONE button through a showCta flag on the hero; his artwork draws two.
+    expect(slide?.ctas).toEqual([
+      { label: "View Product Range", href: "/products" },
+      {
+        label: "Request a Quote",
+        href: "/pages/request-a-quote",
+        variant: "outline",
+      },
+    ]);
+    // Four icons in the hero, and every one of them carries its own intrinsic
+    // width: they are a common-height set, 63px tall at widths from 44 to 86,
+    // and a missing width makes next/image reserve a square box for nine of the
+    // thirteen.
+    expect(slide?.features).toHaveLength(4);
+    for (const f of slide?.features ?? []) {
+      expect(f.iconHeight).toBe(63);
+      expect(f.iconWidth).toBeGreaterThan(0);
+    }
+    // His separate portrait photograph for phones, not a crop of the landscape
+    // one. Dropping it would put a 2.7:1 letterbox on a phone screen.
+    expect(slide?.mobileSrc).toBeTruthy();
+    // Light tone: his ink on the photograph with no dark wash, which is measured
+    // at 6.85:1 median rather than judged by eye.
+    expect(slide?.tone).toBe("light");
+  });
+
+  it("gives the trust band 4 icons and the supply band 5, in that order", async () => {
+    // His own three lines of 13 Sep: "Hero slider ... with 4 icons / Trust
+    // banner with 4 icons / Supply banner with 5 icons". The counts are the
+    // specification, and the supply band sits BELOW the products where his
+    // artwork draws it, not beside the trust band.
+    const blocks = await blocksFor("business");
+    const bands = blocks.filter((b) => b.type === "icon_banner");
+    expect(bands).toHaveLength(2);
+    expect(bands[0].type === "icon_banner" && bands[0].items).toHaveLength(4);
+    expect(bands[1].type === "icon_banner" && bands[1].items).toHaveLength(5);
+
+    const types = blocks.map((b) => b.type);
+    expect(types.indexOf("category_rows")).toBeGreaterThan(
+      types.indexOf("icon_banner"),
+    );
+    expect(types.lastIndexOf("icon_banner")).toBeGreaterThan(
+      types.indexOf("category_rows"),
+    );
   });
 
   it("carries his height and asks for 4 products a category", async () => {
@@ -150,5 +240,13 @@ describe("the commercial shop's home page", () => {
     expect(types).toContain("notice");
     expect(types).toContain("subscribe");
     expect(types.filter((t) => t === "text_image").length).toBe(2);
+  });
+
+  it("leaves the seven retail shops without a band", async () => {
+    // icon_banner is new on 13 Sep and only this shop declares trust or supply.
+    // A band appearing on a retail home page would be five live shops changing
+    // shape to answer a question about the eighth.
+    const blocks = await blocksFor("", "nz");
+    expect(blocks.map((b) => b.type)).not.toContain("icon_banner");
   });
 });
