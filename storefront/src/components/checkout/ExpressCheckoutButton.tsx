@@ -28,6 +28,7 @@ import {
   buildLineItems,
   buildShippingRateMap,
   buildSpreeAddress,
+  expressCheckoutAmount,
   hasPayableTotal,
   parseName,
 } from "@/lib/utils/express-checkout";
@@ -77,13 +78,18 @@ function ExpressCheckoutInner({
   // Sync amount with Elements when cart changes (without remounting).
   // Must use buildLineItems total (not just item_total) because the cart
   // may already include tax/discounts from a prior checkout attempt.
-  const cartLineItemsAmount = useMemo(() => {
-    const items = buildLineItems(cart);
-    return items.reduce((sum, item) => sum + item.amount, 0);
-  }, [cart]);
+  const cartLineItemsAmount = useMemo(
+    () => expressCheckoutAmount(cart),
+    [cart],
+  );
 
   useEffect(() => {
     if (!elements) return;
+    // Zero is not a valid amount for Stripe, and a cart can reach zero while
+    // this element is mounted: remove the last paid item and keep a free one.
+    // The update is skipped rather than sent, because the throw lands in an
+    // effect and takes the page down with it.
+    if (cartLineItemsAmount <= 0) return;
     try {
       elements.update({ amount: cartLineItemsAmount });
     } catch (_) {
@@ -489,12 +495,9 @@ function ExpressCheckoutWithElements({
   // Use refs for amount/currency so Elements options stays stable
   // and doesn't cause remount (which destroys the ExpressCheckoutElement).
   // Amount updates are handled via elements.update() inside the inner component.
-  // Must use buildLineItems total (not just item_total) because the cart
-  // may already include tax/discounts from a prior checkout attempt.
-  const initialAmountRef = useRef(() => {
-    const items = buildLineItems(cart);
-    return items.reduce((sum, item) => sum + item.amount, 0);
-  });
+  // The same number the guard uses, so a cart the button is shown for can
+  // never hand Stripe a zero.
+  const initialAmountRef = useRef(() => expressCheckoutAmount(cart));
   const initialCurrencyRef = useRef(currency);
 
   const options = useMemo(

@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { ProductImage } from "@/components/ui/product-image";
 import { useCart } from "@/contexts/CartContext";
 import { trackRemoveFromCart, trackViewCart } from "@/lib/analytics/gtm";
+import { hasPayableTotal } from "@/lib/utils/express-checkout";
 import { extractBasePath } from "@/lib/utils/path";
 
 const ExpressCheckoutButton = dynamic(
@@ -221,7 +222,7 @@ export default function CartPage() {
             </dl>
 
             <div className="mt-6 space-y-3">
-              {parseFloat(cart.total ?? "0") > 0 && (
+              {hasPayableTotal(cart) && (
                 <ExpressCheckoutButton
                   cart={cart}
                   basePath={basePath}

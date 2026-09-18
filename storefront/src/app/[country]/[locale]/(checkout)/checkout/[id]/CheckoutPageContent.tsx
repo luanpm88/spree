@@ -49,6 +49,7 @@ import {
   completeCheckoutOrder,
   completeCheckoutPaymentSession,
 } from "@/lib/data/payment";
+import { hasPayableTotal } from "@/lib/utils/express-checkout";
 import { extractBasePath } from "@/lib/utils/path";
 import { CheckoutSidebar } from "./CheckoutSidebar";
 import type { CheckoutInitialData } from "./page";
@@ -692,7 +693,7 @@ function CheckoutPageContentInner({
       )}
 
       {/* Express checkout for guests */}
-      {!isAuthenticated && parseFloat(cart.total ?? "0") > 0 && (
+      {!isAuthenticated && hasPayableTotal(cart) && (
         <div className={expressAvailable ? "mb-4" : ""}>
           {expressAvailable && (
             <h2 className="text-lg font-bold text-gray-900 mb-3">

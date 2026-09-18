@@ -53,10 +53,33 @@ export function randomSuffix(): string {
  * caller must skip Express Checkout entirely rather than send `amount: 0`.
  */
 export function hasPayableTotal(order: Cart): boolean {
-  const total = order.total ?? order.item_total;
-  if (total == null) return false;
-  const n = Number(total);
-  return Number.isFinite(n) && n > 0;
+  return expressCheckoutAmount(order) > 0;
+}
+
+/**
+ * The exact amount Express Checkout hands to Stripe.
+ *
+ * ── the fault this exists for ───────────────────────────────────────────────
+ *
+ * It was two numbers. The mount condition read `order.total`, which INCLUDES
+ * shipping, and the Elements amount was the sum of buildLineItems, which does
+ * not. A cart holding only free items with postage charged on top made the two
+ * disagree: total 12.00 so the button mounted, line items 0 so Stripe received
+ * `elements({ amount: 0 })` and threw
+ *
+ *   IntegrationError: Invalid value for elements(): `amount` must be greater than 0
+ *
+ * during render, which the checkout's error boundary turned into "Something
+ * went wrong" with no way past it. Reported by the client twice on the free
+ * seal, and not reproduced the first time because a guest never reaches a
+ * shipping quote without a valid address.
+ *
+ * One number now, used by the guard and by Elements, so the two cannot drift.
+ */
+export function expressCheckoutAmount(order: Cart): number {
+  const items = buildLineItems(order);
+  if (items.length === 0) return 0;
+  return items.reduce((sum, item) => sum + item.amount, 0);
 }
 
 /**

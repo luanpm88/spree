@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/sheet";
 import { useCart } from "@/contexts/CartContext";
 import { trackRemoveFromCart, trackViewCart } from "@/lib/analytics/gtm";
+import { hasPayableTotal } from "@/lib/utils/express-checkout";
 import { extractBasePath } from "@/lib/utils/path";
 
 const ExpressCheckoutButton = dynamic(
@@ -259,7 +260,7 @@ export function CartDrawer() {
             )}
 
             {/* Express Checkout — must stay mounted during processing */}
-            {cart && parseFloat(cart.total ?? "0") > 0 && (
+            {cart && hasPayableTotal(cart) && (
               <ExpressCheckoutButton
                 cart={cart}
                 basePath={basePath}
