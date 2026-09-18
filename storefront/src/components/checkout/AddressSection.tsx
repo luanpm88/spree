@@ -11,6 +11,7 @@ import { AddressSelector } from "@/components/checkout/AddressSelector";
 import { Input } from "@/components/ui/input";
 import type { User } from "@/contexts/AuthContext";
 import { useCountryStates } from "@/hooks/useCountryStates";
+import { preferredCountryIso } from "@/lib/store";
 import {
   type AddressFormData,
   addressToFormData,
@@ -102,12 +103,13 @@ export function AddressSection({
   // `stale` — so keying off `isAuthenticated` alone would leave the field
   // disabled and blank, blocking checkout. Gate on the account email instead.
   const hasAccountEmail = isAuthenticated && !!user?.email;
-  const defaultCountryIso = countries[0]?.iso ?? "";
+  const defaultCountryIso = preferredCountryIso(countries);
 
   const [shipAddress, setShipAddress] = useState<AddressFormData>(() => {
     if (initialSavedAddress) return addressToFormData(initialSavedAddress);
     const formData = addressToFormData(cart.shipping_address);
-    // Pre-fill country from the market's first country when empty
+    // Pre-fill the country when empty: the shop's own, not the first the
+    // market happens to return. See preferredCountryIso.
     if (!formData.country_iso && defaultCountryIso) {
       formData.country_iso = defaultCountryIso;
     }

@@ -169,3 +169,43 @@ export function getStoreEmailFrom(): string {
 export function isStoreEmailFromFallback(): boolean {
   return !process.env.EMAIL_FROM;
 }
+
+/**
+ * Which country the checkout should open on.
+ *
+ * ── the fault this exists for ───────────────────────────────────────────────
+ *
+ * It was `countries[0]`, the first country the market returns. On the shops
+ * whose market sells to one country that is the right country by accident. The
+ * US market also sells to the territories, and the list comes back in
+ * alphabetical order, so the US checkout opened on American Samoa.
+ *
+ * What a customer saw on the live shop, measured on 18 Sep: country American
+ * Samoa, a US postcode typed into it, "Shipping address zipcode is invalid" in
+ * red, no shipping method offered and a total that stayed at 0.00. Nothing
+ * errored anywhere; the shop simply could not be bought from until the customer
+ * noticed the country box and changed it.
+ *
+ * Three cases, in order:
+ *
+ *   the market sells to the shop's own country   that country
+ *   the market has exactly one country           that one
+ *   anything else                                nothing, so the customer picks
+ *
+ * The last case is the rest-of-world shop, which builds with a shop name in
+ * NEXT_PUBLIC_DEFAULT_COUNTRY rather than a country code. It was opening on
+ * Belgium, first alphabetically of the countries it ships to, and a Belgian
+ * postcode is four digits, so a German customer typing five got the same red
+ * line as the US one. A shop that sells to thirty countries has no right
+ * default, and an empty box says "choose" where a wrong one says nothing.
+ */
+export function preferredCountryIso(
+  countries: { iso: string }[],
+  ownCountry: string = getDefaultCountry(),
+): string {
+  const own = ownCountry.toUpperCase();
+  const match = countries.find((c) => c.iso?.toUpperCase() === own);
+  if (match) return match.iso;
+  if (countries.length === 1) return countries[0].iso;
+  return "";
+}
