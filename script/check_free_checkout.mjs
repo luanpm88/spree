@@ -23,70 +23,126 @@
 // So this walks the whole way: product, cart, checkout, address, shipping
 // method, payment. It STOPS at Pay Now. These are the client's live shops and a
 // real payment terminal.
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
-// An address each shop's own country accepts. Postcodes are validated per
-// country, so one address for all of them does not work: a Canadian shop
-// rejects "4000" and quotes no postage.
+// Two tables, both gitignored, both read rather than typed here.
 //
-// The hostnames are NOT here. They name the client and this repository is
-// public, so they are read from .estate, which is gitignored for that reason.
-// script/check_no_client_data refused this file until they were.
-const ADDRESSES = {
-  au: {
-    country: "Australia",
-    city: "Brisbane",
-    state: "Queensland",
-    postal: "4000",
-    phone: "0400000000",
-  },
-  ca: {
-    country: "Canada",
-    city: "Toronto",
-    state: "Ontario",
-    postal: "M5H 2N2",
-    phone: "4160000000",
-  },
-  us: {
-    country: "United States",
-    city: "New York",
-    state: "New York",
-    postal: "10001",
-    phone: "2120000000",
-  },
-  nz: {
-    country: "New Zealand",
-    city: "Auckland",
-    state: null,
-    postal: "1010",
-    phone: "0210000000",
-  },
-  nolocal: {
-    country: null, // sells to many, so the customer chooses
-    city: "Auckland",
-    state: null,
-    postal: "1010",
-    phone: "0210000000",
-  },
+//   .estate                          which shops exist and their live urls
+//   config/checkout_probe_addresses  an address each shop's country accepts
+//
+// They are not in this file because they name the client and this repository is
+// public: check_no_client_data refused the file twice while they were, once for
+// the hostnames and once for a shop key.
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+const readTable = (name) => {
+  const rows = [];
+  for (const line of readFileSync(join(ROOT, name), "utf8").split("\n")) {
+    if (!line.trim() || line.startsWith("#") || !line.includes("|")) continue;
+    rows.push(line.split("|").map((f) => f.trim()));
+  }
+  return rows;
 };
 
+const dash = (v) => (v && v !== "-" ? v : null);
+
+// Which product to walk with.
+//
+// Asked of the shop rather than written down anywhere. A slug in a config file
+// is a slug that is wrong the first time he renames a product, and this check
+// then reports a shop that cannot sell when the truth is that a file is stale.
+// The shop is the only thing that knows what it is currently selling for
+// nothing, so the shop is asked. Same ssh settings as every other check here.
+const ssh = (() => {
+  if (!existsSync(join(ROOT, ".estate.env"))) return null;
+  const env = {};
+  for (const line of readFileSync(join(ROOT, ".estate.env"), "utf8").split("\n")) {
+    const m = line.match(/^([A-Z_]+)=(.*)$/);
+    if (!m) continue;
+    // The file is meant for `set -a; . ./.estate.env`, so the values are shell:
+    // quoted, and the key path is written with $HOME in it. Reading them as
+    // plain text gave ssh the literal string $HOME and a port with quotes round
+    // it, and every shop then came back as having no free product.
+    env[m[1]] = m[2]
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .replace(/^\$HOME|^~/, homedir());
+  }
+  if (!env.SSH_KEY || !env.SSH_HOST) return null;
+  return (command) =>
+    execFileSync(
+      "ssh",
+      ["-n", "-i", env.SSH_KEY, "-p", env.SSH_PORT || "22",
+       "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", env.SSH_HOST, command],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+})();
+
+// Three answers, and the difference between the last two is the whole point:
+// a slug, "this shop sells nothing for nothing", or "I could not ask". The
+// first version returned null for the last two alike and printed a green run
+// with six shops skipped while the ssh command was failing on every one of
+// them. A check that cannot tell those apart is worse than no check.
+const freeProductOn = (shop) => {
+  const fromEnv = process.env[`FREE_SLUG_${shop.toUpperCase()}`];
+  if (fromEnv) return { slug: fromEnv };
+  if (!ssh) return { unknown: "there is no .estate.env on this machine" };
+  // status active and the product not deleted, because a free variant on a
+  // draft product is not something a customer can reach.
+  const ruby =
+    "v = Spree::Variant.joins(:prices).where(spree_prices: { amount: 0 })" +
+    ".where(deleted_at: nil).detect { |x| x.product && x.product.deleted_at.nil?" +
+    " && x.product.status == %q{active} }; " +
+    "print %q{<<S:} + (v ? v.product.slug : %q{}) + %q{:S>>}";
+  try {
+    const out = ssh(`docker exec ${shop}_web bin/rails runner '${ruby}' 2>/dev/null`);
+    const found = out.match(/<<S:(.*):S>>/);
+    if (!found) return { unknown: "the shop answered nothing at all" };
+    return found[1] ? { slug: found[1] } : { none: true };
+  } catch (e) {
+    return { unknown: String(e.message).split("\n")[0].slice(0, 80) };
+  }
+};
+
+const ADDRESSES = {};
+for (const [shop, opensOn, pick, city, state, postal, phone] of readTable(
+  "config/checkout_probe_addresses",
+)) {
+  ADDRESSES[shop] = {
+    country: dash(opensOn),
+    pick: dash(pick) ?? dash(opensOn),
+    city,
+    state: dash(state),
+    postal,
+    phone,
+  };
+}
+
 // shop|database|directory|port|storefront port|review host|admin host|live url|code
-const ESTATE = join(dirname(fileURLToPath(import.meta.url)), "..", ".estate");
 const SHOPS = {};
-for (const line of readFileSync(ESTATE, "utf8").split("\n")) {
-  if (!line.trim() || line.startsWith("#") || !line.includes("|")) continue;
-  const f = line.split("|");
-  const site = (f[7] || "").trim();
+for (const f of readTable(".estate")) {
+  const site = f[7] || "";
   if (!ADDRESSES[f[0]] || !site.startsWith("https://")) continue;
   SHOPS[f[0]] = { site: site.replace(/\/$/, ""), ...ADDRESSES[f[0]] };
 }
 
+// A shop in .estate with no address row is not walked, and saying nothing about
+// it is the same silence this check exists to remove. The wholesale shop is the
+// one: every page of it needs an account, so a guest walk cannot reach its
+// checkout at all.
+const unwalked = readTable(".estate")
+  .map((f) => f[0])
+  .filter((name) => name && !SHOPS[name]);
+
 const only = process.argv[2];
 const names = only ? [only] : Object.keys(SHOPS);
 let failed = 0;
+let skipped = 0;
 
 for (const name of names) {
   const shop = SHOPS[name];
@@ -95,12 +151,21 @@ for (const name of names) {
     failed++;
     continue;
   }
-  const slug = process.env[`FREE_SLUG_${name.toUpperCase()}`];
-  if (!slug) {
-    console.log(`${name}: no free product given. Set FREE_SLUG_${name.toUpperCase()}`);
+  // Two of the seven shops carry no free product at all, which is a fact about
+  // the catalogue and not a fault. Counting it as a failure made a green run
+  // impossible and would have trained somebody to ignore the last line.
+  const found = freeProductOn(name);
+  if (found.unknown) {
+    console.log(`${name.padEnd(8)} FAILED   could not ask what it sells: ${found.unknown}`);
     failed++;
     continue;
   }
+  if (found.none) {
+    console.log(`${name.padEnd(8)} skipped  the shop says it sells nothing for nothing`);
+    skipped++;
+    continue;
+  }
+  const slug = found.slug;
 
   const browser = await chromium.launch();
   const page = await (
@@ -155,14 +220,21 @@ for (const name of names) {
       .first()
       .evaluate((el) => el.options[el.selectedIndex]?.text ?? "")
       .catch(() => "");
-    if (preselected && shop.country && preselected !== shop.country)
-      problems.push(`the country box opens on ${preselected}, not ${shop.country}`);
+    if (shop.country) {
+      if (preselected && preselected !== shop.country)
+        problems.push(`the country box opens on ${preselected}, not ${shop.country}`);
+    } else if (preselected && !/^select a country$/i.test(preselected)) {
+      problems.push(
+        `the country box opens on ${preselected}, and this shop sells to too many for any of them to be right`,
+      );
+    }
 
     // Chosen explicitly, because the point of this walk is the free item and a
     // wrong country turns every later step into noise.
+    const carryOn = shop.pick ?? shop.country;
     const countrySel = page.locator("#ship-country").first();
-    if ((await countrySel.count()) && shop.country)
-      await countrySel.selectOption({ label: shop.country }).catch(() => {});
+    if ((await countrySel.count()) && carryOn)
+      await countrySel.selectOption({ label: carryOn }).catch(() => {});
     await page.waitForTimeout(1500);
 
     await fill("#email", "probe@example.test");
@@ -269,9 +341,15 @@ for (const name of names) {
   }
 }
 
+for (const name of only ? [] : unwalked) {
+  console.log(`${name.padEnd(8)} skipped  no address for it in config/checkout_probe_addresses`);
+  skipped++;
+}
+
+const tail = skipped ? `, ${skipped} skipped` : "";
 console.log(
   failed
-    ? `\n${failed} shop(s) cannot sell a free product`
-    : `\nevery shop checked can sell a free product`,
+    ? `\n${failed} shop(s) cannot sell a free product${tail}`
+    : `\nevery shop with a free product can sell it${tail}`,
 );
 process.exit(failed ? 1 : 0);

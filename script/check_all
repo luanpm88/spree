@@ -122,6 +122,10 @@ fi
 # The second one shipped 88 times and the measurement afterwards was byte for
 # byte the measurement before, which is what sent the search off in the wrong
 # direction for an hour.
+if [ -f script/check_brand_svg ]; then
+  run "his brand svgs parse, scale and are his ink" script/check_brand_svg
+fi
+
 if [ -f script/check_theme_css ]; then
   run "per-shop themes reach the utilities, not just the tokens" script/check_theme_css
 fi
@@ -148,6 +152,19 @@ fi
 # it opens a checkout, types into the box, reloads and reads it back.
 if [ -f script/check_note_box ]; then
   run "every checkout has a message box that saves" script/check_note_box
+fi
+
+# A free product could not be bought, twice, and every gate above was green
+# through both reports. Two separate faults live past the point the other checks
+# stop at: Express Checkout was handed an amount of 0 and threw inside a render,
+# and the country box opened on the first country the market returns, so three
+# shops quoted no postage at all. The client asked for both to be part of the
+# default checks.
+#
+# It walks product, cart, checkout, address, shipping method and the card field,
+# on every shop, and stops at Pay Now.
+if [ -f script/check_free_checkout.mjs ]; then
+  run "a free product can be bought, on every shop" node script/check_free_checkout.mjs
 fi
 
 # A product in a shipping category no live method serves cannot be bought. The
@@ -313,6 +330,38 @@ if [ -f .estate ] && [ -f script/check_image_optimizer ]; then
   run "images are resized before they are sent" script/check_image_optimizer
 else
   skip "images are resized before they are sent" "no .estate on this machine"
+fi
+
+# Is there a copy of every shop off the machine it runs on, and is it recent.
+#
+# Added 10 Sep. Two backup checkers already existed and neither could see the
+# thing that was wrong: script/backups reads the receipt the job leaves behind,
+# and script/estate prints an age off /var/backups on the box. Both watch the
+# copy that does not survive losing the machine. Meanwhile the bucket the client
+# made for his second server on 26 August held zero objects, and it had held
+# zero objects for fifteen days, because nothing anywhere looked at a bucket.
+if [ -f .estate ] && [ -f script/check_backups_offsite ]; then
+  run "every shop has a copy off its own machine" script/check_backups_offsite
+else
+  skip "every shop has a copy off its own machine" "no .estate on this machine"
+fi
+
+# Search, on every shop, in a browser.
+#
+# Added 8 Sep, after search had been returning nothing on two of the seven shops
+# for weeks and the client was the one who found it. Nothing here could have:
+# the browser walk below clicks add to cart and never types into a search field,
+# and every other gate reads HTML, status codes or the database. A shop whose
+# search is dead renders perfectly, answers 200 everywhere and takes orders.
+#
+# It runs over every shop rather than the one host given, because the cause was
+# a per-shop runtime setting and a per-shop fault is exactly what a single-host
+# walk cannot see. It signs in to the closed shop, so all seven are covered
+# rather than six with the seventh quietly dropped.
+if [ -f .estate ] && [ -f script/check_search.mjs ]; then
+  run "every shop finds its own products by name" node script/check_search.mjs
+else
+  skip "every shop finds its own products by name" "no .estate on this machine"
 fi
 
 # ── the gate that needs a running shop ──────────────────────────────────────
