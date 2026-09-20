@@ -6354,3 +6354,217 @@ mới tới migrate, và 9 điểm trên chặn trước đó.
 Chính gem trỏ tới hướng dẫn nâng cấp tại
 `spreecommerce.org/docs/developer/upgrades/5.6-to-6.0`. Mở ra: **404**. Trang
 chưa xuất bản.
+
+## 62. Next dev server tiếp tục phục vụ code, CSS và JSON đã sửa, và restart không chữa (17 Sep)
+
+Trên worktree demo, trong một ngày, **năm lần** dev server (Next 16, Turbopack)
+phục vụ bản cũ sau khi file đã đổi và container đã restart:
+
+| thứ đã đổi | thứ trình duyệt nhận |
+|---|---|
+| `SearchToggle.tsx` bị xoá | vẫn render markup của nó |
+| `meta.json` thêm field | `/api/themes` trả field cũ |
+| palette mới trong `globals.css` | chunk CSS phục vụ không có một quy tắc nào |
+
+File trong container đã đúng (đếm bằng `grep -c` bên trong container). `restart`
+không đủ, `touch` file không đủ, `rm -rf .next` lúc container chạy thì báo
+`Resource busy`.
+
+### Cách chắc chắn
+
+Xoá cache build **khi container đã dừng**:
+
+```bash
+docker compose -p spreetheme -f docker-compose.dev.yml stop storefront
+docker compose -p spreetheme -f docker-compose.dev.yml run --rm --no-deps \
+  --entrypoint sh storefront -c "rm -rf /app/.next/dev /app/.next/cache"
+docker compose -p spreetheme -f docker-compose.dev.yml start storefront
+```
+
+### Vì sao đáng ghi
+
+Lần đầu, probe kiểm header "qua hết" trên đúng cái `SearchToggle` đã xoá: nó đo
+hình dạng (logo giữa, có nút giỏ) và hình dạng cũ cũng thoả. Từ đó mọi probe sau
+một thay đổi phải khẳng định **dấu vết của code mới** trước khi đo: class chính
+xác theme viết, hoặc số quy tắc palette trong CSS đang phục vụ.
+
+---
+
+## 63. Sản phẩm giá 0 làm sập checkout, vì một con số được tính ở hai nơi (18 Sep)
+
+Khách báo hai lần: không mua được sản phẩm miễn phí. Lần này trên shop au, đúng
+một cái seal giá $0.00. Dựng lại bằng Playwright trên shop thật, ba lần giống
+nhau: trang sản phẩm bình thường, thêm vào giỏ bình thường, và checkout sập
+thành "Something went wrong" **đúng lúc điền xong địa chỉ giao hàng**.
+
+Trong console:
+
+```
+IntegrationError: Invalid value for elements(): `amount` must be greater than 0
+```
+
+ném từ `js.stripe.com`, bên trong một lần render của React, nên error boundary
+của checkout nuốt trang.
+
+### Cơ chế
+
+Cùng một câu hỏi "giỏ này có tiền để trả không" được trả lời ở hai chỗ khác nhau:
+
+| nơi | đọc gì | với giỏ seal miễn phí + cước |
+|---|---|---|
+| điều kiện mount nút Express Checkout | `cart.total` — **đã gồm cước** | `12.00` → mount |
+| số đưa cho Stripe | tổng `buildLineItems` — **không gồm cước** | `0` → ném |
+
+Cước được Express Checkout Element tự báo giá qua `shippingRates`, nên line
+items cố tình không chứa nó. Hai con số đó chỉ lệch nhau đúng một trường hợp:
+giỏ toàn hàng giá 0 và có tính cước. Đó là trường hợp khách gặp.
+
+Trước khi có địa chỉ, `total` vẫn là `0.0` nên nút không mount và không có gì
+sập — vì thế lần báo đầu tiên không dựng lại được: người dựng dừng ở trang giỏ.
+
+### Cách sửa
+
+`hasPayableTotal()` giờ trả về `expressCheckoutAmount(order) > 0`, và
+`expressCheckoutAmount()` chính là con số đưa cho Stripe. Một con số, hai nơi
+dùng, không thể lệch. `elements.update()` cũng bỏ qua khi bằng 0, vì giỏ có thể
+về 0 khi element đang mount (bỏ món cuối có tiền, giữ lại món miễn phí) và cú
+ném đó rơi vào effect.
+
+### Vì sao đáng ghi
+
+Không phải lỗi Stripe và không phải lỗi giá. Là hai biểu thức trả lời cùng một
+câu hỏi, viết cách nhau 400 dòng, mỗi cái đúng theo cách của nó. Chúng đồng ý
+trên mọi giỏ hàng bình thường, nên test, health check và cả đợt kiểm tra sau
+lần báo đầu tiên đều xanh.
+
+### Diện ảnh hưởng, và một phép đếm sai trên đường đi
+
+Lần đếm đầu đọc mọi dòng giá bằng 0: au 8, ca 61, us 9, nz 4, nolocal 7, hai
+shop còn lại 0. Con số đó gồm cả sản phẩm đã xoá và các dòng giá của loại tiền
+khác. Đếm lại theo sản phẩm **đang bán**:
+
+| shop | sản phẩm giá 0 |
+|---|---|
+| au | 7 |
+| ca | 5 |
+| us | 5 |
+| nz | 4 |
+| nolocal | 3 |
+| hai shop còn lại | 0 |
+
+Ghi lại vì con số 61 đã nằm trong commit message d850d28c và suýt được gửi cho
+khách. Một phép đếm chạy được không có nghĩa là nó đếm đúng thứ mình nói.
+
+---
+
+## 64. Ô chọn quốc gia mở ra nước đầu bảng chữ cái, và hai shop không mua được (18 Sep)
+
+Tìm ra khi đi hết luồng mua một sản phẩm giá 0 trên từng shop sau khi sửa số 63.
+Không phải cùng một lỗi, mà là một lỗi khác cùng hạng: khách không mua được và
+không có gì báo lỗi.
+
+Checkout điền trước `countries[0]`, nước đầu tiên market trả về. Market một nước
+thì đúng — đúng do may. Đếm số nước mỗi market:
+
+| shop | số nước | nước đầu |
+|---|---|---|
+| au, ca, nz, b2b | 1 | chính nó |
+| us | 6 | American Samoa |
+| nolocal | 34 | Belgium |
+| shop thứ bảy | 33 | Belgium |
+
+Trên shop us, khách thấy: ô nước là American Samoa, gõ zipcode Mỹ vào,
+"Shipping address zipcode is invalid" màu đỏ, **không có phương thức giao hàng
+nào**, tổng đứng ở 0.00. Không log nào, không exception nào. Shop chỉ đơn giản
+là không mua được cho tới khi khách tự để ý ô nước và đổi.
+
+### Cách sửa
+
+`preferredCountryIso()`: nước của chính shop nếu market bán tới đó, nước duy
+nhất nếu market chỉ có một, còn lại **không chọn gì**. Một shop bán tới 33 nước
+không có mặc định nào đúng, và ô trống nói "hãy chọn" trong khi ô sai không nói
+gì cả.
+
+### Vì sao đáng ghi
+
+Ba lần liên tiếp probe của tôi báo shop hỏng trong khi shop chạy tốt: đếm
+`input[type=radio]` trong khi shipping dùng Radix `role="radio"`; bỏ trống state
+nên Spree từ chối địa chỉ; và chọn nước bằng id `#ship-country_iso` không tồn
+tại (id thật là `#ship-country`). Mỗi lần đều phải mở ảnh chụp ra xem mới biết
+lỗi nằm ở phép đo. Đúng như CLAUDE.md viết: nghi phép đo trước khi nghi shop.
+
+## 65. Bốn kết luận sai trong một buổi, mỗi lần đều là probe tự đo chính nó (20 Sep)
+
+Mục 64 kết thúc bằng đúng bài học này, viết hai ngày trước. Hôm nay nó lặp lại
+bốn lần nữa trong một lần điều tra. Nên bài học thật không phải "nhớ nghi phép
+đo", mà là: một lời nhắc trong tài liệu không ngăn được gì, chỉ có ràng buộc
+trong code mới ngăn được.
+
+Khách báo năm ngày không có đơn. Bốn lần tôi tưởng đã tìm ra nguyên nhân:
+
+1. **"Khách Úc bị tính cước đi Trung Quốc."** Đơn của hai khách Úc đều gắn
+   phương thức `UBI China Postage`. Thật ra đó chỉ là `admin_name` nội bộ;
+   `name` mà khách nhìn thấy là "Standard Postage". Cột tôi đọc không phải cột
+   khách đọc.
+
+2. **"Zone Australia không có quốc gia nào."** Query trả về 0 thành viên. Bảng
+   đúng tên là `spree_shipping_method_zones`, không phải
+   `spree_shipping_methods_zones`, và zone có đủ 8 bang. Một câu SQL sai tên
+   bảng vẫn chạy và vẫn trả về một con số trông như dữ liệu.
+
+3. **"Form checkout tự xoá trắng."** Ảnh chụp cho thấy mọi ô trống trơn sau khi
+   tôi điền. Các input trên trang này **không có thuộc tính `name`**, chỉ có
+   `id` (`#email`, `#ship-address1`). Selector `input[name="email"]` khớp rỗng,
+   `fill()` được bọc trong `.catch(()=>{})` nên không kêu, và tấm ảnh của một
+   form chưa bao giờ được điền trông y hệt tấm ảnh của một form tự xoá.
+
+4. **"Ô nhập thẻ không hiện ra."** Bảy lần chạy liên tiếp đều báo BLANK, ảnh
+   chụp cho thấy một ô xám cao 400px trống rỗng. Nhìn vào **bên trong** iframe
+   thì ô thẻ có thật và đang hiển thị: id đã đổi thành `#payment-numberInput`,
+   trong khi probe tìm `#Field-numberInput`. Bảy lần trùng khớp không làm cho
+   một selector cũ trở thành đúng.
+
+Còn một cái thứ năm, ngược chiều: `fill()` đặt giá trị mà không phát các sự kiện
+form này lắng nghe, nên một địa chỉ đã điền đầy đủ vẫn để trang báo "Enter your
+shipping address to view available shipping methods". Gõ bằng phím thật rồi Tab
+ra thì cước hiện ngay. Ô nhập đúng, giá trị đúng, mà trang vẫn không biết.
+
+Ba ràng buộc đã đưa vào `script/check_order_completes.mjs`, vì chỉ chúng mới
+ngăn được lần thứ năm:
+
+- selector không khớp thì **ném lỗi**, không nuốt
+- gõ xong thì **đọc ngược lại** giá trị, khác là ném lỗi
+- gõ bằng sự kiện phím thật và rời ô bằng Tab, không dùng `fill()`
+
+## 66. Mọi cổng kiểm tra đều dừng lại ngay trước nút bấm, nên năm ngày không bán được hàng vẫn xanh (20 Sep)
+
+Ba shop đông nhất ngừng hoàn tất đơn trong vòng 36 giờ của nhau. Không có gì
+đổi trên server từ 13 đến 17 Sep: không deploy, không image, không file cấu
+hình, không một dòng nào trong các bảng thiết lập. Suốt thời gian đó mọi cổng
+trong repo này đều xanh, và đều xanh một cách trung thực:
+
+| cổng | dừng ở đâu |
+|---|---|
+| `check_storefront_e2e` | thêm vào giỏ, dừng ở giỏ |
+| `check_free_checkout` | đi tới Pay Now và **cố ý không bấm** |
+| `check_card_field` | chỉ hỏi ô thẻ có hiện ra không |
+| `probe_paid_order` | chụp ảnh từng bước tới trang thanh toán |
+
+Không cổng nào từng thấy một đơn chạm tới cổng thanh toán. Nên một shop không
+thu được tiền trông **giống hệt** một shop khoẻ mạnh, và nó trông như vậy suốt
+năm ngày.
+
+Hai thứ nữa khiến chỗ này khó nhìn hơn bình thường:
+
+- Lời gọi `confirm` đi thẳng từ **trình duyệt** sang Stripe, không bao giờ vào
+  log Rails. "Không thấy confirm nào trong log" không chứng minh được gì, và đã
+  có lúc được đọc như một bằng chứng.
+- Stripe giữ hàng chục payment intent đứng ở `requires_payment_method` mà gần
+  như **không có lỗi thẻ nào**. Nghĩa là thẻ không bị từ chối; thẻ chưa bao giờ
+  được gửi đi. Một bảng điều khiển đầy intent dở dang trông như khách bỏ giỏ,
+  không trông như hỏng.
+
+`check_order_completes.mjs` đóng khoảng trống đó: nó gõ vào đúng ô thẻ thật,
+bấm Pay Now, và chỉ đạt khi **Stripe trả lời** lời gọi confirm. Nó dùng số thẻ
+luôn bị từ chối của Stripe nên an toàn với cổng thanh toán thật: bị từ chối là
+ĐẠT, im lặng là TRƯỢT.
