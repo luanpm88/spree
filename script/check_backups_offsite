@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+#
+# Is there a copy of every shop OFF the machine it runs on, and is it from last night?
+#
+#   script/check_backups_offsite            check both buckets, exit non-zero if not
+#   script/check_backups_offsite --hours 30 change the staleness threshold
+#
+# ── the fault this exists for ────────────────────────────────────────────────
+#
+# Measured 10 September. The estate server backs up to Backblaze nightly and it
+# works: every one of the seven shops was restored out of the bucket that morning
+# with row counts matching the live shop exactly.
+#
+# The commercial server does not. Its nightly job writes to /var/backups/spree on
+# the same disk as the databases it protects, and the B2 bucket the client made
+# for it on 26 August held ZERO objects, fifteen days later. Nobody knew, because
+# nothing looked.
+#
+# Nothing looked for a specific reason worth writing down. There were already two
+# backup checkers and neither could see this:
+#
+#   script/backups   reads the RECEIPT the commercial job leaves behind. It
+#                    answers "did the job run and did it write a file", which was
+#                    yes, every night, correctly. It has no concept of offsite:
+#                    grep it for bucket, b2 or rclone and you get nothing.
+#   script/estate    prints a backup line per shop and an age in hours, walking
+#                    /var/backups/spree/*/ on the box. That is the local disk. A
+#                    person reads a green line while the bucket is empty.
+#
+# So both checkers were watching the copy that does not survive losing the
+# machine, and check_all and health referenced B2 nowhere at all. A backup you
+# have to remember to go and look at is not monitored, and this project already
+# has the lesson written down twice: a checklist that says it verified nothing is
+# worse than no checklist.
+#
+# ── what it asserts ─────────────────────────────────────────────────────────
+#
+# Per shop, in the bucket rather than on the box: the newest database dump is
+# younger than the threshold, and there are image objects. Then the same for the
+# commercial bucket, which is the one that was empty.
+#
+# It reads the bucket directly rather than any receipt, because a receipt is the
+# job's own account of itself and the whole failure here was a job doing exactly
+# what it was told while the result went nowhere.
+set -uo pipefail
+# The repo root. `git rev-parse --show-toplevel` already IS the root, so the
+# first version appended /.. to it and landed one directory above, where there is
+# no .b2.env: the check then reported itself skipped and exited 0. A gate whose
+# failure mode is "silently passes" is the exact thing this file was written
+# against, so it is worth the two lines to get right.
+cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || cd "$(dirname "$0")/.." || exit 2
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_OFF=$'\e[0m'
+[ -t 1 ] || { C_RED=""; C_GRN=""; C_YEL=""; C_DIM=""; C_OFF=""; }
+
+HOURS=30
+[ "${1:-}" = "--hours" ] && { HOURS="${2:?}"; }
+
+if [ ! -f .b2.env ]; then
+  echo "      skipped: no .b2.env on this machine, so the buckets cannot be read"
+  exit 0
+fi
+if ! command -v rclone >/dev/null 2>&1; then
+  echo "      skipped: rclone is not installed here"
+  exit 0
+fi
+set -a; . ./.b2.env; set +a
+
+# Credentials by environment, never on a command line and never printed. Same
+# no_check_bucket reason as the backup script: these keys are scoped to one
+# bucket each, which is how they should be issued, and rclone's default bucket
+# existence probe is a call a scoped key is not entitled to.
+b2ls() {
+  local key_id="$1" app_key="$2" path="$3"; shift 3
+  RCLONE_CONFIG_B2X_TYPE=s3 \
+  RCLONE_CONFIG_B2X_PROVIDER=Other \
+  RCLONE_CONFIG_B2X_ACCESS_KEY_ID="$key_id" \
+  RCLONE_CONFIG_B2X_SECRET_ACCESS_KEY="$app_key" \
+  RCLONE_CONFIG_B2X_ENDPOINT="$B2_ENDPOINT" \
+  RCLONE_CONFIG_B2X_NO_CHECK_BUCKET=true \
+  rclone lsl "b2x:$path" "$@" 2>/dev/null
+}
+
+now=$(date -u +%s)
+fail=0
+warn=0
+
+age_hours_of_newest() {
+  # rclone lsl gives "size YYYY-MM-DD HH:MM:SS.ffffffff path". Newest by date.
+  local newest
+  newest=$(printf '%s\n' "$1" | awk '{print $2" "$3}' | sort | tail -1)
+  [ -n "$newest" ] || { echo ""; return; }
+  # Parsed as LOCAL time, not UTC. rclone lsl prints in the machine's own
+  # timezone, and parsing that as UTC put every dump seven hours in the future
+  # here: the first run of this reported "dump -4h old" for all seven shops.
+  # A negative age is not cosmetic. It sails through the "older than the
+  # threshold" test, so a genuinely stale bucket would have been reported ok,
+  # which is the one failure mode this whole file exists to prevent.
+  local ts
+  ts=$(date -j -f "%Y-%m-%d %H:%M:%S" "${newest%%.*}" +%s 2>/dev/null \
+       || date -d "${newest%%.*}" +%s 2>/dev/null)
+  [ -n "$ts" ] || { echo ""; return; }
+  echo $(( (now - ts) / 3600 ))
+}
+
+echo "      the estate bucket, one line per shop"
+shops=$(awk -F'|' '!/^#/ && NF>7 { print $1 }' .estate 2>/dev/null)
+if [ -z "$shops" ]; then
+  echo "      ${C_YEL}no .estate on this machine, cannot say which shops to expect${C_OFF}"
+  exit 0
+fi
+
+# Which shops have images, asked ONCE as a directory listing.
+#
+# The first version listed every object under storage/<shop>/ per shop to count
+# them. That is 19,610 objects over the network and the check had not finished
+# after ten minutes, which makes it useless as a gate: a check nobody can afford
+# to run is a check that does not run. One --dirs-only call answers the question
+# this actually needs, which is whether a shop has images in the bucket at all.
+# The nightly job already counts both sides properly and fails loudly when the
+# numbers disagree, so counting again here would be duplicating the one thing
+# that is already covered.
+img_dirs=$(RCLONE_CONFIG_B2X_TYPE=s3 RCLONE_CONFIG_B2X_PROVIDER=Other \
+  RCLONE_CONFIG_B2X_ACCESS_KEY_ID="$B2_ESTATE_KEY_ID" \
+  RCLONE_CONFIG_B2X_SECRET_ACCESS_KEY="$B2_ESTATE_APP_KEY" \
+  RCLONE_CONFIG_B2X_ENDPOINT="$B2_ENDPOINT" \
+  RCLONE_CONFIG_B2X_NO_CHECK_BUCKET=true \
+  rclone lsf --dirs-only "b2x:$B2_ESTATE_BUCKET/storage/" 2>/dev/null | tr -d /)
+
+for shop in $shops; do
+  db="${shop}_shop"
+  dumps=$(b2ls "$B2_ESTATE_KEY_ID" "$B2_ESTATE_APP_KEY" "$B2_ESTATE_BUCKET/postgres/$db/")
+  imgs=0
+  printf '%s\n' "$img_dirs" | grep -qx "$shop" && imgs=1
+  if [ -z "$dumps" ]; then
+    printf '      %sFAIL%s %-9s no database dump in the bucket at all\n' "$C_RED" "$C_OFF" "$shop"
+    fail=$((fail+1)); continue
+  fi
+  age=$(age_hours_of_newest "$dumps")
+  n=$(printf '%s\n' "$dumps" | wc -l | tr -d ' ')
+  if [ -z "$age" ]; then
+    printf '      %s!%s    %-9s %s dump(s), could not read a date off the newest\n' "$C_YEL" "$C_OFF" "$shop" "$n"
+    warn=$((warn+1))
+  elif [ "$age" -lt 0 ]; then
+    # In the future, which means the clocks or the parsing disagree. Reported as
+    # a failure rather than as fresh, because "fresh" is what a wrong sign looks
+    # like and this check would then be lying in the safe-sounding direction.
+    printf '      %sFAIL%s %-9s newest dump reads %sh old, which is in the future. Clock or timezone.\n' "$C_RED" "$C_OFF" "$shop" "$age"
+    fail=$((fail+1))
+  elif [ "$age" -gt "$HOURS" ]; then
+    printf '      %sFAIL%s %-9s newest dump is %sh old, over the %sh threshold\n' "$C_RED" "$C_OFF" "$shop" "$age" "$HOURS"
+    fail=$((fail+1))
+  elif [ "$imgs" -eq 0 ]; then
+    printf '      %sFAIL%s %-9s dump is %sh old, but no images in the bucket at all\n' "$C_RED" "$C_OFF" "$shop" "$age"
+    fail=$((fail+1))
+  else
+    printf '      %sok%s   %-9s dump %sh old, %s kept, images present\n' "$C_GRN" "$C_OFF" "$shop" "$age" "$n"
+  fi
+done
+
+# ── the commercial bucket ───────────────────────────────────────────────────
+#
+# Separate because it is a separate server, a separate bucket and a separate
+# key, and because it is the one that was empty. A check that only walked the
+# estate would have gone green on the day this was written.
+echo
+echo "      the commercial bucket"
+if [ -z "${B2_COMMERCIAL_BUCKET:-}" ]; then
+  printf '      %s!%s    no commercial bucket configured in .b2.env\n' "$C_YEL" "$C_OFF"
+  warn=$((warn+1))
+else
+  # No depth limit, deliberately, and this is the second version.
+  #
+  # The first had --max-depth 2, reasoned from the estate's <kind>/<shop>/<file>
+  # layout. The commercial server writes <shop>/<timestamp>/<file>, one level
+  # deeper, so rclone lsl never reached a single file and this reported the
+  # bucket EMPTY within a minute of 54 files being uploaded into it. It would
+  # have gone on saying empty every night while the backups arrived, which is a
+  # worse failure than the one this check was written to catch: a red that is
+  # wrong teaches people to ignore the check.
+  #
+  # The limit was an optimisation for a bucket I had not measured. It holds 54
+  # objects, because the files are few and large, and listing all of them takes
+  # under a second.
+  call=$(b2ls "$B2_COMMERCIAL_KEY_ID" "$B2_COMMERCIAL_APP_KEY" "$B2_COMMERCIAL_BUCKET/")
+  n=$(printf '%s' "$call" | grep -c . || true)
+  if [ "${n:-0}" -eq 0 ]; then
+    printf '      %sFAIL%s the bucket is empty. The server it belongs to keeps its only\n' "$C_RED" "$C_OFF"
+    printf '           backup on the same disk as the databases it protects.\n'
+    fail=$((fail+1))
+  else
+    age=$(age_hours_of_newest "$call")
+    if [ -n "$age" ] && [ "$age" -gt "$HOURS" ]; then
+      printf '      %sFAIL%s %s object(s), newest %sh old, over the %sh threshold\n' "$C_RED" "$C_OFF" "$n" "$age" "$HOURS"
+      fail=$((fail+1))
+    else
+      printf '      %sok%s   %s object(s), newest %sh old\n' "$C_GRN" "$C_OFF" "$n" "${age:-?}"
+    fi
+  fi
+fi
+
+echo
+if [ "$fail" -gt 0 ]; then
+  printf '      %s%s shop or bucket(s) have no usable off-machine copy.%s\n' "$C_RED" "$fail" "$C_OFF"
+  echo
+  echo "      A backup on the same disk as the database is not a backup. Check the"
+  echo "      nightly job on the box concerned, and script/backup_b2 verify for what"
+  echo "      the estate bucket actually holds."
+  exit 1
+fi
+printf '      ok — every shop has a copy off its own machine, newer than %sh%s\n' "$HOURS" "$([ "$warn" -gt 0 ] && echo ", $warn to look at")"
+exit 0

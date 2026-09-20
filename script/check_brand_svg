@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""His brand SVGs are valid, scalable, and the colour he says they are.
+
+Written 14 Sep, the day he said "I will make new Icons in double the size and in
+SVG files tonight". Thirteen files are about to arrive and replace thirteen PNGs.
+
+Three of the four checks below exist because the fault already happened here.
+
+1. ANYTHING BEFORE THE XML DECLARATION.
+   On 7 Sep a brand SVG shipped with a comment above `<?xml`. That is invalid XML,
+   the browser refuses the whole document, and the icon renders as nothing. It got
+   as far as a live deploy and was found by screenshotting, not by review, because
+   a missing 24px icon in a footer looks like spacing. Commit 8bddf9c3.
+
+2. NO viewBox.
+   next/image serves a LOCAL svg straight from /public without optimising it
+   (measured on the live shop: three brand SVGs, every one `optimised: false`). So
+   the file's own box is what scales. Without a viewBox the icon cannot scale, and
+   the row pins height and lets width follow, so it collapses or overflows.
+
+3. THE INTRINSIC SIZE, REPORTED NOT JUDGED.
+   content.ts carries iconWidth and iconHeight per icon, and the component pins the
+   height while the width follows. Those numbers came from his PNGs. An SVG whose
+   viewBox has a different aspect makes them wrong, and next/image then reserves a
+   box of the wrong shape. This prints what each file actually is so the content
+   entries are updated from measurement rather than from the PNG they replace.
+
+4. THE INK.
+   His artwork names #4D5538 and every one of the thirteen PNGs is exactly that.
+   An SVG exported with a different fill, or with `currentColor`, changes the icon
+   colour on his shop. currentColor is not an error here, it is a different design
+   (it would inherit the row's colour, which is also #4D5538), so it is reported
+   rather than failed.
+
+Read only. Exits 1 on a finding.
+
+  script/check_brand_svg                 every svg in storefront/public/brand
+  script/check_brand_svg <file|dir> ...  only those
+"""
+
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+BRAND = ROOT / "storefront/public/brand"
+
+RED = "\033[31m"
+YEL = "\033[33m"
+GRN = "\033[32m"
+DIM = "\033[2m"
+OFF = "\033[0m"
+
+# His ink, from the artwork and from all thirteen PNGs.
+HIS_INK = {"#4d5538", "#4e5639"}
+
+
+def targets(argv):
+    if not argv:
+        return sorted(BRAND.glob("*.svg"))
+    out = []
+    for a in argv:
+        p = Path(a)
+        if p.is_dir():
+            out.extend(sorted(p.glob("*.svg")))
+        elif p.suffix.lower() == ".svg":
+            out.append(p)
+    return out
+
+
+def check(path):
+    """Return (findings, notes) for one file."""
+    findings, notes = [], []
+    raw = path.read_bytes()
+
+    # 1. Anything before the declaration or the root element.
+    #
+    # A BOM is legal before `<?xml` and browsers accept it, so it is not a
+    # finding; anything else printable is.
+    body = raw[3:] if raw[:3] == b"\xef\xbb\xbf" else raw
+    stripped = body.lstrip()
+    if not (stripped.startswith(b"<?xml") or stripped.startswith(b"<svg")):
+        head = stripped[:60].decode("utf-8", "replace").replace("\n", " ")
+        findings.append(f"does not start with <?xml or <svg; starts with {head!r}")
+    elif body[: len(body) - len(stripped)].strip():
+        findings.append("has content before the root element")
+
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        findings.append("is not valid UTF-8")
+        return findings, notes
+
+    m = re.search(r"<svg\b[^>]*>", text, re.S | re.I)
+    if not m:
+        findings.append("has no <svg> element")
+        return findings, notes
+    tag = m.group(0)
+
+    # 2. viewBox, and 3. the intrinsic box.
+    vb = re.search(r'viewBox\s*=\s*["\']([^"\']+)["\']', tag, re.I)
+    w = re.search(r'\bwidth\s*=\s*["\']([\d.]+)', tag, re.I)
+    h = re.search(r'\bheight\s*=\s*["\']([\d.]+)', tag, re.I)
+    if not vb:
+        findings.append("has no viewBox, so it cannot scale")
+    else:
+        nums = vb.group(1).replace(",", " ").split()
+        if len(nums) == 4:
+            try:
+                vw, vh = float(nums[2]), float(nums[3])
+                ratio = vw / vh if vh else 0
+                notes.append(f"viewBox {vw:g}x{vh:g} (aspect {ratio:.3f})")
+                if w and h:
+                    aw, ah = float(w.group(1)), float(h.group(1))
+                    if ah and abs((aw / ah) - ratio) > 0.02:
+                        findings.append(
+                            f"width/height {aw:g}x{ah:g} disagrees with the viewBox aspect "
+                            f"({aw / ah:.3f} against {ratio:.3f}); next/image would reserve the wrong box"
+                        )
+            except ValueError:
+                findings.append(f"has a viewBox that is not four numbers: {vb.group(1)!r}")
+
+    # 4. The ink.
+    fills = {c.lower() for c in re.findall(r'(?:fill|stroke)\s*=\s*["\']([^"\']+)["\']', text, re.I)}
+    fills |= {c.lower() for c in re.findall(r"(?:fill|stroke)\s*:\s*([^;\"'}]+)", text, re.I)}
+    colours = {c.strip() for c in fills if c.strip() not in {"none", "transparent", ""}}
+    if colours:
+        expanded = set()
+        for c in colours:
+            if re.fullmatch(r"#[0-9a-f]{3}", c):
+                c = "#" + "".join(ch * 2 for ch in c[1:])
+            expanded.add(c)
+        off = {c for c in expanded if c.startswith("#") and c not in HIS_INK}
+        if "currentcolor" in expanded:
+            notes.append("uses currentColor, so it inherits the row colour")
+        if off:
+            notes.append(f"carries colours he did not name: {', '.join(sorted(off))}")
+        elif expanded & HIS_INK:
+            notes.append("his ink")
+
+    return findings, notes
+
+
+def main():
+    files = targets(sys.argv[1:])
+    if not files:
+        print(f"  {YEL}no svg files found{OFF}")
+        return 0
+
+    bad = 0
+    for f in files:
+        findings, notes = check(f)
+        name = f.name
+        if findings:
+            bad += 1
+            print(f"  {RED}{name:<44}{OFF}")
+            for x in findings:
+                print(f"      {RED}{x}{OFF}")
+            for n in notes:
+                print(f"      {DIM}{n}{OFF}")
+        else:
+            note = f"  {DIM}{'; '.join(notes)}{OFF}" if notes else ""
+            print(f"  {name:<44} {GRN}ok{OFF}{note}")
+
+    print()
+    if bad:
+        print(
+            f"{RED}FAILED{OFF}: {bad} of {len(files)} brand svg(s) would not render, or would "
+            f"render at the wrong size.\n\n"
+            f"A broken SVG is not a visible error. It is a gap where an icon was, and it\n"
+            f"reached a live deploy once already (commit 8bddf9c3). Fix the file rather\n"
+            f"than the markup around it.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"  {GRN}ok{OFF} — {len(files)} brand svg(s), each parseable, scalable and sized as declared")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

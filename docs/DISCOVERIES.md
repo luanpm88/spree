@@ -5278,3 +5278,1079 @@ Không phép kiểm nào bắt được, kể cả browser walk 31/31, vì walk 
 vào** nên lúc đó đã có cookie. Thứ phát hiện ra nó là **mở một URL sâu bằng phiên
 sạch** — đúng cách khách từ Google vào. Và thứ khiến tôi nhìn thấy là **mở tấm ảnh
 chụp ra xem**, thay vì đọc dòng log báo "ok".
+
+## 35. Tìm kiếm trả về 0 vì một header locale, không phải vì dữ liệu (8 Sep)
+
+Khách báo tìm kiếm không ra gì trên ba shop. **Sáu lớp đo đều đúng** cho shop bị
+lỗi: dữ liệu trong console, API gọi bằng tay (65 dòng), gọi lại từ trong chính
+container của shop đó, replay từ ngoài, restart container, và không có cache
+handler hay volume nào. Trang vẫn render "0 products".
+
+Mọi lần đo đó là **một request tôi tự soạn**, không phải request mà storefront
+gửi. Đo bằng browser rồi đọc access log của nginx:
+
+```
+?q=<từ chưa ai tìm>   → có request, đúng y hệt: q[search]=..., 200
+?q=<từ đã tìm rồi>    → KHÔNG có request nào cả
+```
+
+Nên đổi hoa thường của cùng một từ để ra một cache key mới, và request thật hiện ra:
+
+```
+au   q[search]=TaNkA   200,     111 bytes    ← rỗng
+ca   q[search]=TaNkA   200, 200 087 bytes    ← có hàng
+```
+
+### Cơ chế
+
+SDK gửi `locale` thành **header** `x-spree-locale`, không nằm trong query string.
+Đo trên shop live, cùng một query, chỉ đổi một header:
+
+```
+au   (không header locale)      count=65
+au   x-spree-locale: en         count=0
+au   x-spree-locale: en-AU      count=65
+ca   cả ba cách                 count=56
+```
+
+Hai shop lỗi có `default_locale` là `en-AU` và `en-NZ`, còn storefront gửi `en` vì
+đó là đoạn locale trong URL.
+
+**Cơ chế thật, sau khi đo thêm** (lần giải thích đầu của tôi ở đây SAI, và đã sửa
+lại bên dưới). Ban đầu tôi viết "sản phẩm có bản dịch ở en-AU, không có ở en".
+Không đúng: shop AU **không có một dòng bản dịch en-AU nào cả**.
+
+```
+au: 84 sản phẩm, bảng spree_product_translations có {"en" => 24}
+    trong 24 dòng đó chỉ 2 dòng có name khác rỗng
+    default_locale = en-AU, supported = ["en", "en-AU"]
+```
+
+Thử đủ các locale trên cùng một query mới thấy rõ:
+
+```
+au   locale=none  65     ca   locale=none  56
+au   locale=en     0     ca   locale=en    56
+au   locale=en-AU 65     ca   locale=en-AU 56
+au   locale=en-NZ 65     ca   locale=fr    56
+au   locale=fr    65     ca   locale=xx-YY 56
+au   locale=de    65
+au   locale=xx-YY 65
+```
+
+Chỉ **đúng một** locale trả về 0, và đó là `en`. Một locale hoàn toàn bịa như
+`xx-YY` vẫn trả về 65.
+
+Nên quy tắc là: hỏi bằng một locale **không phải default của shop** mà **lại có
+dòng trong bảng bản dịch** thì Spree tìm trong đúng những dòng đó. AU có 24 dòng
+`en` gần như rỗng, nên khớp được 0. Locale nào không có dòng nào thì rơi về
+default rồi rơi tiếp về cột gốc, và ra kết quả đúng. Trên CA thì `en` chính là
+default nên nó đọc cột gốc và luôn đúng.
+
+Bài học riêng của lần này: tôi đã **suy luận** cơ chế từ hai phép đo rồi ghi vào
+đây như một sự thật, trong khi cái bảng bảy dòng ở trên rẻ hơn nhiều và nó phủ
+định cách giải thích đó. Đúng cái lỗi mà CLAUDE.md gọi là "Đo, đừng suy luận".
+
+Không có gì khác trông sai, và đó là lý do mất nhiều ngày. **Duyệt danh mục vẫn
+chạy** vì listing fallback về cột gốc, nên shop vẫn render, vẫn trả 200, vẫn bán
+được. API đúng, dữ liệu đúng, query đúng, và header duy nhất bị sai thì không nằm
+trong query string.
+
+### Shop thứ ba không hỏng
+
+Shop còn lại trả 0 cho cùng từ đó vì catalogue của nó là một brand khác, không có
+sản phẩm nào chứa từ ấy. Tìm bằng một từ trong chính catalogue của nó: 8/8 sản
+phẩm. Đây là **kết quả đúng**, không phải lỗi. Ba shop được báo, hai shop thật sự
+hỏng.
+
+### Bài học về dụng cụ đo
+
+Grep log Rails cho request này ra rỗng **cả trên shop đang chạy tốt** — ca vừa
+render 56 sản phẩm nên chắc chắn đã gọi. Đó là dấu hiệu dụng cụ sai chứ không
+phải shop sai: Rails ở đây log một dòng gọn `[id] GET /path 200 68ms`, đã bỏ query
+string. Một phép đo rỗng trên cả hai phía là tín hiệu phải sửa dụng cụ trước, và
+nó xuất hiện hai lần liền trong cùng buổi (lần sau là grep hostname trong một
+access log có format không hề chứa Host).
+
+## 36. Sửa một shell script đang chạy thì bash đọc tiếp bằng byte offset (8 Sep)
+
+Hai lần deploy liên tiếp kết thúc bằng lỗi ở một dòng **không tồn tại**:
+
+```
+script/shop_host: line 2255: ailures.: command not found      (file lúc đó 2254 dòng)
+script/shop_host: line 2335: unexpected EOF while looking for matching `'   (file 2330 dòng)
+```
+
+Cả hai lần công việc thật đã xong: image build được, container start được, webhook
+test delivery 200. Chỉ có rác in ra sau cùng.
+
+Đã đi tìm sai hướng khá lâu: đếm backtick trong file (133, số lẻ), viết parser tìm
+heredoc, kiểm tra `step`/`warn`/`die` có `eval` không. Không có gì sai trong file.
+
+### Cơ chế
+
+Bash **không đọc hết script vào bộ nhớ**. Nó đọc theo byte offset và đọc tiếp khi
+cần. Sửa file trong lúc nó đang chạy thì bash tiếp tục đọc từ offset cũ nhưng vào
+nội dung **mới**, nên nó rơi vào giữa một dòng khác và cố chạy phần đuôi của dòng
+đó. `after the failures.` bị cắt thành `ailures.`.
+
+Dấu hiệu nhận ra: số dòng báo lỗi luôn **vừa vượt quá EOF**, và nó **lớn lên theo
+số dòng mình vừa thêm** (2255 khi file 2254 dòng, 2335 khi file 2330 dòng). Không
+phải lỗi quote, không phải lỗi backtick.
+
+### Việc phải làm
+
+Không sửa một script trong lúc nó đang chạy. Ở đây build storefront mất vài phút
+và trong lúc chờ thì tranh thủ sửa chính script đó, hai lần. Nếu cần sửa, đợi nó
+xong, hoặc copy ra một file khác mà chạy.
+
+## 37. Bốn lỗi dụng cụ trong một buổi, cả bốn cùng một hướng (8 Sep)
+
+Trong một buổi đo, bốn phép đo cho kết quả sai, và **cả bốn đều báo "không có gì"**
+trên một hệ đang hoạt động bình thường:
+
+```
+grep log Rails tìm request      → rỗng CẢ TRÊN SHOP ĐANG CHẠY TỐT
+                                   (Rails ở đây log gọn, đã bỏ query string)
+grep hostname trong access log  → rỗng, vì format log không hề chứa Host
+đếm link policy ở footer        → 0 trên một shop, 4 trên các shop khác
+                                   (footer stream vào sau domcontentloaded)
+sed 's|https\?://||' trên macOS → không cắt gì, vì BSD sed không hiểu \? trong BRE
+```
+
+Cái thứ ba gần thành một "phát hiện" gửi cho khách: một shop không có link Privacy
+Policy. Shop hoàn toàn bình thường.
+
+**Dấu hiệu chung**: khi một phép đo trả về rỗng ở phía mình *biết là đang tốt*, thì
+sai ở dụng cụ chứ không ở hệ. Luôn đo cả một mẫu đối chứng đã biết kết quả, và nếu
+mẫu đối chứng cũng rỗng thì dừng lại sửa dụng cụ.
+
+Thêm một cái nữa cùng buổi, ngược hướng: bộ phát hiện "trang lỗi" khớp trên toàn bộ
+body nên hai trang Terms of Service và Returns Policy dài 12 543 ký tự bị báo là
+BROKEN, chỉ vì văn bản pháp lý có chứa các từ như "error", "unavailable". Sửa lại:
+chỉ khớp trong 200 ký tự đầu, vì trang lỗi của framework nói ngay ở đầu và không có
+gì khác.
+
+## 38. `shop_host public` xuất bản từ một thư mục có thể cũ hơn bản đang chạy (8 Sep)
+
+Khách nói đã tự sửa file llms của hai shop. Kiểm tra trước khi làm gì:
+
+```
+shop A   bản staged trong repo   9366 B     bản đang chạy  10750 B
+shop A   llms-full staged       15765 B    đang chạy      16615 B
+shop B   staged                  7861 B    đang chạy       9658 B
+shop B   llms-full staged       12822 B    đang chạy      14145 B
+shop C   robots.txt staged        431 B    đang chạy       2267 B
+```
+
+Bản staged là bản kéo về ngày 26/8. `cmd_public` **tar cả thư mục** và đè lên, và
+nó chỉ in ra những gì nó *upload*, không bao giờ in ra cái nó vừa xoá. Chạy một
+lệnh nữa là mất toàn bộ chữ khách đã viết, không có dòng log nào nói gì.
+
+### Không thể đoán bên nào mới hơn
+
+So nội dung thì không biết bên nào mới. Nên đã thêm một **manifest**: sau mỗi lần
+publish thành công, ghi md5 của từng file *đọc lại từ server*. Lần sau, nếu md5
+trên server khác manifest thì có người khác đã sửa, và lệnh từ chối chạy. `--force`
+là đường thoát có chủ ý.
+
+Ghi md5 đọc từ server chứ không hash file local, vì cái cần biết là **cái đang
+được phục vụ**, không phải cái mình định gửi.
+
+## 39. Bảy sản phẩm trên tám không có SKU (8 Sep)
+
+Đo khi làm việc đồng bộ metadata theo SKU:
+
+```
+shop khác brand   8 master variant, 7 cái sku rỗng
+hai shop retail   86 và 78 master variant, 0 cái rỗng
+```
+
+Không có gì hỏng hôm nay. Nhưng bất cứ việc gì khớp sản phẩm theo SKU thì bảy sản
+phẩm đó không khớp được với gì cả, và đó là cách một lần đồng bộ báo "xong" trong
+khi im lặng bỏ qua gần cả catalogue của một shop. Script đồng bộ vì vậy in cả hai
+phía: khớp được bao nhiêu, và bên nào có SKU mà bên kia không có.
+
+## 40. Hai bộ kiểm tra backup, cả hai đều nhìn bản copy nằm cùng đĩa (10 Sep)
+
+Khách hỏi về một MCP server của Backblaze. Đi kiểm tra hiện trạng thì ra chuyện
+khác hẳn:
+
+```
+máy chính (7 shop)   B2 hằng đêm 03:15, 30 ngày lưu, sáng nay restore đủ 7 shop
+                     từ bucket, số dòng khớp chính xác với shop đang chạy
+máy thứ hai (1 shop)  backup chạy hằng đêm, chỉ nằm ở /var/backups/spree
+                     bucket B2 dành cho nó: 0 object, suốt 15 ngày
+```
+
+Bucket đó khách tự tạo ngày 26/8 cùng lúc với bucket kia và gửi key. Một cái được
+dùng, một cái chưa bao giờ nhận gì.
+
+### Vì sao không ai biết
+
+Đã có **hai** thứ kiểm tra backup, và cả hai đều mù đúng chỗ này:
+
+```
+script/backups   đọc receipt mà job để lại. Trả lời "job có chạy và có ghi file
+                 không" — có, mỗi đêm, đúng. grep nó không có chữ bucket nào.
+script/estate    in tuổi backup theo giờ, đọc /var/backups/spree/*/ trên máy.
+                 Đó là bản copy nằm cùng đĩa với database nó bảo vệ.
+```
+
+`check_all` và `health` không hề nhắc tới B2. Nên màn hình xanh trong khi bucket
+rỗng, và cách duy nhất để biết là tự gõ lệnh liệt kê bucket rồi tự đọc ngày.
+
+### Đã thêm
+
+`script/check_backups_offsite`, vào `check_all`: đọc **thẳng bucket**, không đọc
+receipt, vì receipt là lời khai của chính job và lỗi ở đây là một job làm đúng
+y lệnh trong khi kết quả không đi tới đâu.
+
+### Ba lỗi của chính tôi trong lúc đo, đều tự bắt lại được
+
+```
+1. đọc listing bucket bằng `tail` → kết luận backup đã dừng 4 ngày.
+   Listing sắp mới nhất trước; `tail` cho ra cái CŨ nhất. Backup vẫn bình thường.
+2. grep "retention" trong script/backup_b2 → kết luận không có prune.
+   Sai file. Job chạy thật là /root/spree-backup-b2.sh, và nó có
+   `rclone delete --min-age 30d` scope đúng vào postgres/ để không đụng ảnh.
+3. gate mới in ra "dump -4h old" — tuổi âm.
+   rclone lsl in giờ LOCAL, tôi parse thành UTC. Tuổi âm không phải lỗi hiển thị:
+   nó lọt qua phép so "cũ hơn ngưỡng", nên một bucket cũ thật sẽ được báo ok.
+   Đã chặn riêng: tuổi âm là FAIL, không phải "còn mới".
+```
+
+Điểm chung của cả ba: đều nghiêng về phía **nghe có vẻ an toàn**. Một phép đo sai
+mà kết luận là "ổn" thì nguy hiểm hơn hẳn một phép đo sai kết luận "hỏng", vì
+không ai đi kiểm tra lại cái màu xanh.
+
+## 41. Job chạy hằng đêm không có chốt chặn mà bản chạy tay thì có (10 Sep)
+
+`script/backup_b2 run` (chạy tay) có:
+
+```bash
+local dbs; dbs=$(live_dbs)
+[[ -n "$dbs" ]] || { echo "no databases matched, refusing to report success"; exit 1; }
+```
+
+`/root/spree-backup-b2.sh` (chạy hằng đêm bằng cron) thì không:
+
+```bash
+for db in $(docker exec $PG psql -U postgres -lqt | ... | grep -E '_shop$'); do
+```
+
+Nếu lệnh trong `$( )` trả về rỗng — postgres chưa lên, container đổi tên, mạng
+lỗi — thân vòng lặp không chạy lần nào, biến `fail` giữ nguyên 0, và job ghi log
+"done, 0 failure(s)" trong khi **không backup gì cả**.
+
+Chốt chặn nằm ở bản người ta gõ tay và có mặt để đọc kết quả; bản chạy lúc 3 giờ
+sáng không có ai ngồi xem thì lại không có. Đúng chiều ngược với cái cần thiết.
+
+## 42. Giới hạn độ sâu đặt theo phỏng đoán làm gate báo "rỗng" ngay sau khi vừa upload (10 Sep)
+
+Viết `script/check_backups_offsite` xong, chạy thử: bucket máy thứ hai báo **rỗng**,
+trong khi vừa upload 54 file vào đó xong một phút trước.
+
+Nguyên nhân: tôi đặt `--max-depth 2` cho lệnh liệt kê, suy từ layout của máy chính
+là `<loại>/<shop>/<file>`. Máy thứ hai ghi `<shop>/<mốc-thời-gian>/<file>` — sâu
+hơn một tầng. `rclone lsl` với depth 2 không tới được file nào, nên trả về rỗng.
+
+Nếu không thử ngay thì gate đó sẽ báo "rỗng" mỗi đêm trong khi backup vẫn về đều.
+**Một cái đỏ sai còn tệ hơn cái lỗi nó định bắt**, vì nó dạy người ta bỏ qua gate.
+
+Bỏ giới hạn đó đi. Nó là tối ưu cho một bucket tôi chưa đo: bucket ấy có 54 object
+(file ít mà to), liệt kê hết mất chưa tới một giây.
+
+### Cùng buổi, lỗi ngược lại
+
+Bản đầu của cùng gate ấy đếm ảnh bằng cách liệt kê từng object dưới
+`storage/<shop>/` cho từng shop — 19 610 object qua mạng, chạy mười phút chưa xong.
+Một gate không ai chịu nổi thời gian chạy là một gate không được chạy.
+
+Hai lỗi ngược chiều nhau trong một file: một cái tối ưu quá tay thành sai, một cái
+không tối ưu thành không dùng được. Điểm chung là **cả hai đều do đoán khối lượng
+thay vì đo trước**.
+
+## 43. Lần thứ tư cùng một hình dạng đo sai: "không trả lời" bị tính là "trang hỏng" (10 Sep)
+
+`check_all` đỏ ở gate kiểm URL trong file llms:
+
+```
+lần 1   ours 000  /c/categories/categories/bottles-cups/cups-drinkware/chillmate-cups
+lần 2   ours 000  /c/categories/bottles-cups/single-wall-bottles/minitanka-600ml
+        ours 000  /policies/returns
+```
+
+**URL khác nhau mỗi lần chạy** — đó là dấu hiệu. Đo tay từng cái:
+
+```
+curl -L  →  200, theo 1 redirect, ~1.1 giây, ba lần liền
+20 request liên tiếp trộn 4 đường dẫn  →  200/20
+```
+
+Trang không sao cả. `000` của curl nghĩa là **request không hoàn thành**, không phải
+trang trả lời sai. Một lượt chạy gate gửi khoảng 250 request; một cái không về là
+chuyện mạng, và gate đang gọi đó là trang hỏng.
+
+Chính header của file ấy đã ghi ba lần trước cùng hình dạng này (DISCOVERIES 15).
+Đây là lần thứ tư.
+
+### Sửa
+
+Ba lần thử, có backoff, và **chỉ** cho request không hoàn thành. Một status code là
+một câu trả lời, không bao giờ thử lại: 404 hai lần vẫn là 404. Sau khi sửa: cả 7
+shop xanh, ca trở lại 43/43.
+
+### Vì sao không để đỏ cho "an toàn"
+
+Vì một cái đỏ sai dạy người ta bỏ qua gate, và sau đó cái đỏ thật cũng bị bỏ qua.
+Hôm nay đã gặp đúng chuyện này hai lần trong hai file khác nhau: gate offsite mới
+viết cũng báo bucket "rỗng" một phút sau khi upload 54 file vào đó, vì tôi đặt
+`--max-depth` theo phỏng đoán layout. Cùng một bài học: **đỏ phải đúng, không thì
+đừng đỏ.**
+
+## 44. Sửa real_ip ở nginx chỉ đúng một nửa đường: đơn hàng vẫn không có IP khách (11 Sep)
+
+Khách tự gửi cách sửa, đúng: `set_real_ip_from <dải Cloudflare>` +
+`real_ip_header CF-Connecting-IP`. Module đã có sẵn (`with-http_realip_module`),
+nhưng **không có dòng `set_real_ip_from` nào trên máy**.
+
+Đã áp dụng và đo lại bằng một request thật:
+
+```
+request trang        →  171.243.48.167   (đúng IP máy mình)     ✓
+request API mà trang đó gọi  →  204.188.219.27   (IP của chính server)
+```
+
+### Vì sao vẫn chưa xong
+
+Chuỗi thật là:
+
+```
+browser → Cloudflare → nginx → Next storefront → (ra Cloudflare rồi vào lại) → nginx → Rails
+```
+
+Đơn hàng do **storefront gọi API** tạo ra, không phải browser gọi. Nên Rails thấy
+IP của server. Sau khi sửa nginx, `spree_orders.last_ip_address` sẽ ghi
+**một giá trị duy nhất cho mọi khách** — về mặt so khớp thì còn tệ hơn IP
+Cloudflare xoay vòng trước đó.
+
+Nửa còn lại: storefront phải chuyển tiếp IP khách trên các lời gọi API tạo/sửa
+đơn, và Rails phải tin header đó. Đã grep: trong `storefront/src/lib/spree/` và
+`lib/data/` không có chỗ nào chuyển tiếp `X-Forwarded-For` / `CF-Connecting-IP`.
+
+### Bài học
+
+Sửa hop đầu rồi đo hop đầu thì thấy xanh. Phải đo **đúng cái field mình muốn
+sửa** — ở đây là IP trên bản ghi đơn hàng, không phải dòng log của nginx.
+
+## 45. `</dev/null` trên lệnh ssh đã xoá mất nội dung đang pipe vào (11 Sep)
+
+Trong script mới, bước ghi file:
+
+```bash
+printf '%s\n' "$CONF" | rsh "cat > $CONF_PATH && echo written" </dev/null
+```
+
+`</dev/null` có ở mọi lệnh `rsh` khác trong file để ssh không hút stdin của vòng
+lặp. Ở đúng lệnh này stdin **là dữ liệu**, và redirect đã ném nó đi.
+
+Kết quả: file 0 byte. Và mọi thứ đều báo xanh:
+
+```
+echo written     → in "written"
+nginx -t         → PASS, vì file rỗng là config hợp lệ
+systemctl reload → thành công
+```
+
+Chỉ phát hiện được vì bước xác minh cuối **đọc access log xem nó ghi gì**, chứ
+không hỏi nginx xem nó được cấu hình thế nào. Một file rỗng vượt qua được cả
+`nginx -t`: đó là lý do "config đã nạp" không bao giờ là bằng chứng cho
+"config đang có tác dụng".
+
+## 46. Spree nhận hostname để tìm store rồi vứt đi, và default store nuốt mọi request (12 Sep)
+
+Nghiên cứu theme cho nhiều merchant trên một storefront. Câu hỏi: Spree phân biệt
+store theo hostname được không?
+
+Nhìn code thì tưởng được:
+
+```ruby
+def current_store
+  @current_store ||= current_store_finder.new(url: request.env['SERVER_NAME']).execute
+end
+```
+
+Nhưng finder mà Spree 5.6.1 **thực sự dùng** là:
+
+```ruby
+class FindDefault
+  def initialize(scope: nil, url: nil)   # nhận url
+    @scope = scope || Spree::Store       # rồi không lưu
+  end
+  def execute
+    store = @scope.where(default: true).first || @scope.first
+```
+
+Nhận `url` rồi **bỏ luôn**. Mọi request đều ra store mặc định.
+
+### Đo bằng ma trận 4 ô trên Spree local có 2 store
+
+```
+Host của A + key của A   →  200, 36 sản phẩm của A
+Host của B + key của B   →  401
+Host của A + key của B   →  401
+Host của B + key của A   →  200, 36 sản phẩm CỦA A     ← ô này
+```
+
+Ô cuối mới là ô quan trọng. Request vào bằng **hostname của B**, mang **key của
+A**, được trả **dữ liệu của A**. Hostname không có tác dụng gì; request rơi về
+store mặc định rồi key của A hợp lệ với chính nó.
+
+### Ý nghĩa
+
+Nếu thêm merchant dưới dạng store rồi trỏ hostname của họ vào một Spree mà
+**không thay finder**, mọi merchant sẽ thấy catalogue, đơn hàng và khách của store
+mặc định. Không phải sai lệch nhỏ, mà là merchant này nhìn thấy shop của merchant
+kia, và cấu hình mặc định không chặn gì cả.
+
+`Spree.current_store_finder` thay được, nên làm một finder tìm theo `url` là việc
+nhỏ. Chỉ là nó không có sẵn.
+
+### Bài học
+
+Hai lần tôi kết luận sai trước khi đúng, và lần thứ hai sai theo hướng nguy hiểm
+("resolve theo hostname" — nghe như đã an toàn). Thứ bắt được nó là **ô lệch** của
+ma trận: chỉ thử cặp khớp nhau thì cả hai kết luận sai đều trông như đúng. Khi đo
+phân tách dữ liệu, ô phải thử là ô **không được phép chạy**.
+
+## 47. Sửa lại mục 44: đơn hàng không nhận IP của server, mà **không nhận gì cả** (13 Sep)
+
+Mục 44 viết rằng sau khi sửa nginx thì `spree_orders.last_ip_address` sẽ ghi IP của
+chính server. Sai. Đo lại, tách theo mốc chuyển đổi 28/8:
+
+```
+shop A   trước cutover  171 đơn, 171 đơn có IP    sau cutover  10 đơn,  0 có IP
+shop B   trước cutover  382 đơn, 382 đơn có IP    sau cutover  18 đơn,  1 có IP
+```
+
+Đơn duy nhất có IP sau cutover đề ngày **28/8**, đúng ngày chuyển, và mang địa chỉ
+Cloudflare — tức là đơn đặt trên storefront Rails cũ trước khi cắt xong.
+
+Nghĩa là **toàn bộ IP Cloudflare tôi đo hôm 11/9 là dữ liệu lịch sử**, do storefront
+Rails cũ ghi. Từ khi chạy headless, đường ghi field đó không còn được gọi.
+
+### Khác biệt quan trọng
+
+```
+mục 44 nói:  "field đang ghi SAI giá trị"   → việc phải làm là sửa giá trị
+thực tế   :  "field không được ghi"         → việc phải làm là tạo đường ghi
+```
+
+Hai việc khác nhau. Sửa nginx (mục 44) vẫn đúng và vẫn cần, nhưng nó là **điều kiện
+cần**, không phải bản sửa. Bản sửa thật gồm hai phần chưa làm: storefront chuyển
+tiếp IP khách trên lời gọi API, và Spree ghi nó vào đơn.
+
+### Vì sao tôi kết luận sai
+
+Đo `last_ip_address` trên **toàn bộ** đơn hàng rồi thấy đầy IP Cloudflare, kết luận
+"đang ghi sai". Không tách theo thời gian. Cột đầy dữ liệu không có nghĩa là cột
+đang được ghi — nó có thể đầy vì **quá khứ**. Phép tách theo mốc cutover là một
+dòng SQL và nó lật ngược kết luận.
+
+Phát hiện này do một agent trong workflow nêu ra, ngược với báo cáo của tôi, và khi
+đo lại thì agent đúng.
+
+## 48. `.next` cũ phục vụ CSS từ trước khi một theme block tồn tại (13 Sep)
+
+Thêm 3 biến vào `[data-theme="business-green"]` trong `globals.css`, chạy dev server,
+đo bằng trình duyệt: cả 3 đều rỗng.
+
+```
+getComputedStyle(html).getPropertyValue('--band-ink')   ''
+```
+
+Gần như đi sửa component. Trước khi sửa, đo thêm biến **đã có sẵn từ trước** trong
+cùng block đó:
+
+```
+--logo-h   dev  '2rem'      <- giá trị :root, tức block business-green không áp dụng
+--logo-h   live '40px'      <- trên shop live thì đúng
+```
+
+Đó mới là cái chốt. Biến cũ cũng hỏng, và nó hỏng **chỉ ở local**. Nên lỗi không nằm
+ở dòng tôi vừa viết.
+
+Duyệt toàn bộ `document.styleSheets`, đệ quy cả vào `CSSLayerBlockRule` vì Tailwind v4
+đặt rule trong `@layer`:
+
+```
+có   [data-theme="black"]         có   [data-theme="green-blue"]
+KHÔNG [data-theme="business-green"]
+```
+
+Rule biến mất khỏi CSS đã phục vụ, trong khi file nguồn đúng cú pháp, ngoặc cân bằng,
+selector đúng, và rule đứng SAU `:root` nên phải thắng.
+
+Nguyên nhân: `.next` còn cache từ trước ngày block `business-green` được thêm vào.
+`rm -rf .next/cache` **không đủ**. Phải `rm -rf .next`:
+
+```
+rm -rf .next/cache   -> --logo-h vẫn '2rem'
+rm -rf .next         -> --logo-h '40px', --band-ink '#4d5538'
+```
+
+### Bài học
+
+Khi một biến CSS mới không áp dụng, đo một biến **cũ** trong cùng selector trước khi
+nghi ngờ dòng mình vừa viết. Nếu cái cũ cũng hỏng thì lỗi không phải của dòng mới.
+
+Và so local với live: cùng một file nguồn cho hai kết quả khác nhau thì vấn đề nằm ở
+build, không nằm ở code.
+
+## 49. Icon 63px của khách là ảnh 1x, và banner nhỏ hơn chính nhãn khách ghi (13 Sep)
+
+Part 2 gồm 13 icon PNG và 2 banner. Đo từng file thay vì tin tên file:
+
+```
+13 icon    đều cao đúng 63px, rộng 44-86px, RGBA có alpha thật
+banner     2078x757   nhãn khách ghi trên artwork: "Full Width 2560 x 933px"
+mobile     1122x1402
+```
+
+Hai điều đo được, không suy ra:
+
+**Icon là 1x.** File cao 63px, thiết kế hiển thị 63px. Trên màn hình 2x nó là nửa độ
+phân giải. next/image không phóng to bao giờ — gọi `w=3840` vẫn trả về đúng 54x63.
+Nên đây là giới hạn của file, không phải lỗi code.
+
+**Banner nhỏ hơn nhãn của chính nó.** 2078 so với 2560 mà khách ghi. Tỉ lệ thì đúng
+(2.745 so với 2.744), chỉ là xuất nhỏ hơn. Trên màn 2560 sẽ phóng lên ~23%.
+
+### Cái bẫy đã suýt báo sai
+
+Đo `naturalWidth` trong Playwright ở `deviceScaleFactor: 2` cho ra `779x283` cho
+banner và `27x31` cho icon, tức là "next/image phục vụ ảnh thiếu kích thước". Sai.
+Tải thẳng URL optimizer và đo bytes trả về mới là thật:
+
+```
+/_next/image?url=...banner...&w=3840  ->  2078x757   (đúng nguồn, không phóng)
+/_next/image?url=...icon...&w=128     ->  54x63
+```
+
+`naturalWidth` dưới DPR giả lập không phải số đo tin được. Đo cái server trả về.
+
+## 50. Shop live bị cuộn ngang trên điện thoại, và lý do "để lỗi tự lộ ra" đã sai (13 Sep)
+
+Đo overflow ngang trên shop thương mại, cả local lẫn live:
+
+```
+LIVE  360px   scrollWidth 396 vs 360    lệch 36px
+LIVE  375px   scrollWidth 396 vs 375    lệch 21px
+LIVE  390px   scrollWidth 396 vs 390    lệch  6px
+LIVE  768px   scrollWidth 838 vs 768    lệch 70px
+LIVE  430px / 1024px                    không lệch
+```
+
+Cả trang cuộn ngang. Hai nguyên nhân độc lập, cả hai đều có từ trước Part 2:
+
+**1. Hàng 8 icon mạng xã hội ở footer.** 8 × 37px + 7 khoảng 12px = 380px, trong khi
+điện thoại 390px chỉ còn 358px trong container. Hàng đang để `flex-nowrap`.
+
+**2. Dải 4 khẩu hiệu trên đầu trang.** Mỗi khẩu hiệu `whitespace-nowrap`, hàng chứa
+không cho xuống dòng.
+
+### Câu comment đã biện minh cho lỗi này
+
+Ở footer có sẵn dòng giải thích vì sao dùng `flex-nowrap`:
+
+> "nowrap, so a row that no longer fits fails visibly in review rather than
+>  quietly folding onto a second line."
+
+Ý tưởng là: không cho xuống dòng thì khi chật sẽ "lộ ra" lúc review. **Đo thì thấy
+ngược lại.** Hàng đó không co lại, không tràn ra ngoài khung nhìn được, mà **đẩy cả
+document rộng hơn màn hình**. Không có gì "lộ ra" trong ảnh chụp một section; nó chỉ
+hiện ra khi đo `scrollWidth` so với `clientWidth` của cả trang.
+
+Một trang cuộn ngang trên điện thoại tệ hơn nhiều so với icon xuống hai hàng. Và nó
+đã lên live.
+
+### Bài học
+
+`flex-nowrap` không phải là một cái "cầu chì". Nó không làm hỏng chỗ nó, nó làm hỏng
+chỗ khác. Muốn một hàng chật báo lỗi thì phải **đo** `scrollWidth > clientWidth`, chứ
+không phải hy vọng nhìn thấy bằng mắt.
+
+Và ảnh chụp từng section không bao giờ phát hiện được lỗi này, vì mỗi section riêng
+lẻ đều đúng. Chỉ đo trên cả trang mới thấy.
+
+## 51. Khách ghi hai loại số trong cùng một bản thiết kế (13 Sep)
+
+Part 2 có hai nhóm số, và chúng KHÔNG cùng hệ:
+
+```
+"Full Width 2560 x 933px"   -> kích thước theo CHIỀU RỘNG khung nhìn (banner tràn viền)
+"195 px heigh"              -> chiều cao CỐ ĐỊNH, không đổi theo khung nhìn
+"Icon 63px heigh"  "18pt"   -> cố định
+```
+
+Hệ quả đo được, cùng một bản build:
+
+```
+khung nhìn   hero    dải icon   tỉ lệ dải/hero
+  2076px      757      195        0.258     <- bản vẽ của ổng: 0.254
+  1920px      722      195        0.270
+  1440px      547      195        0.356
+  1280px      492      195        0.396
+```
+
+Ở đúng chiều rộng canvas của ổng (2076) thì build khớp bản vẽ. Màn hình càng hẹp,
+hero càng co lại còn dải icon giữ nguyên 195px, nên dải trông ngày càng "nặng" so với
+bản vẽ. **Không phải lỗi** — cả hai con số đều là số ổng ghi, chỉ là chúng thuộc hai
+hệ khác nhau và bản vẽ chỉ tồn tại ở một chiều rộng.
+
+### Cách xử lý phần hero
+
+Toàn bộ nội dung trong hero được viết theo **phân số của canvas 2076** của ổng, chứ
+không phải px cố định:
+
+```
+heading  64.5/2076 = 3.107vw    gap 1  41/2076 = 1.97vw
+sub      26/2076   = 1.252vw    gap 2  40/2076 = 1.93vw
+icon     63/2076   = 3.034vw    gap 3  62/2076 = 2.99vw
+pad top  145/2076  = 7vw        pad bottom 70/2076 = 3.4vw
+```
+
+Đo lại ở 2076px sau khi sửa, so với bản vẽ của ổng (gốc hero y115):
+
+```
+                 ổng    build
+heading top      145     145
+icon top/bottom  438/502 437/500
+button top/bot   624/686 623/686
+chiều cao button  63      63
+khoảng dưới       70      71
+```
+
+Trước khi sửa, khoảng cách dùng px cố định (mt-4 / mt-7 / mt-7) và **sai tích luỹ dần
+xuống dưới**: heading đúng, icon lệch 37px, button lệch 71px. Canh giữa theo chiều dọc
+cũng sai: bản vẽ của ổng lệch lên trên (145 trên / 70 dưới), không phải cân đều.
+
+## 52. Hai cổng kiểm tra biến lỗi đường truyền thành kết luận về shop của khách (13 Sep)
+
+`check_all` chạy đủ 40 phút, báo `2 gate(s) failed`. Cả hai đều **sai**.
+
+### Cổng 1: "b2b: the storefront was built without a key"
+
+Cổng đọc key bằng:
+
+```bash
+sf_key=$(ssh ... "docker exec ${shop}_storefront printenv SPREE_PUBLISHABLE_KEY" 2>/dev/null | tr -d '\r')
+[[ -z "$sf_key" ]] && báo "storefront was built without a key"
+```
+
+Đo lại ngay sau đó, không nuốt stderr:
+
+```
+docker exec b2b_storefront printenv SPREE_PUBLISHABLE_KEY
+pk_gFySuT6Z8ry9h7N97KXSqzL7
+exit=0
+
+database   pk_gFySuT6Z8ry9h...
+storefront pk_gFySuT6Z8ry9h...   -> KHỚP
+```
+
+Container tồn tại, biến có, và key **trùng** database. Một lần `ssh` trong 40 phút
+bị rớt, `2>/dev/null` nuốt mất lý do, và chuỗi rỗng trở thành một "phát hiện" về
+shop đang chạy live.
+
+Text cảnh báo của cổng còn viết: *"Every page on those shops renders empty and
+answers 200"* — trong khi cũng trong lần chạy đó, cổng tìm kiếm báo `b2b ok
+browse=12 "miniTANKA" -> 5 card(s) (signed in)`. Hai dòng trong cùng một bản báo
+cáo mâu thuẫn nhau, và dòng đúng là dòng có đo.
+
+### Cổng 2: "6 of 7 shop(s) have no working message box at checkout"
+
+Dưới nó là sáu dòng `net::ERR_INTERNET_DISCONNECTED`. Đo lại 2 trong 6 shop:
+
+```
+shop A   200   tiêu đề riêng của shop   5579 ký tự nội dung
+shop B   200   tiêu đề riêng của shop   5079 ký tự nội dung
+```
+
+Không shop nào hỏng. Mạng của máy này rớt giữa chừng.
+
+### Điểm chung, và bản sửa
+
+Cả hai đều rút ra **kết luận về dữ liệu** từ một **lỗi vận chuyển**. Cùng họ với
+mục 45 (`</dev/null` nuốt payload) và `--max-depth` ở check backup.
+
+```
+trang tải được mà không có ô ghi chú   -> phát hiện thật
+trang chưa bao giờ tải được            -> không phải phép đo
+```
+
+Đã sửa cả hai. `check_storefront_key` bắt mỗi lệnh từ xa trả về mã thoát kèm theo
+(`echo "__rc=$?"`), và chỉ tin giá trị rỗng khi `rc=0`; không có mã thoát nghĩa là
+ssh không chạy được lệnh, báo vàng "không tới được hộp", không báo đỏ.
+`check_note_box` phân loại lỗi trình duyệt: các mã mạng (`ERR_INTERNET_DISCONNECTED`,
+`ERR_NAME_NOT_RESOLVED`, `ERR_CONNECTION_*`, ...) ra verdict `SKIP` sẵn có thay vì
+`FAIL`.
+
+### Bài học
+
+Một cổng kiểm tra chỉ được phép kết luận về shop khi nó **chắc chắn đã đo được**.
+Rỗng vì không hỏi được, và rỗng vì hỏi rồi không có, là hai chuyện khác nhau, và
+`2>/dev/null` xoá đúng cái phân biệt đó.
+
+## 53. Refund không phải là return, và 25/37 refund của khách là giảm giá khuyến mãi (14 Sep)
+
+Khách đề xuất đưa "người mua rồi trả hàng" vào hệ thống rủi ro. Đo trước khi thiết kế.
+
+**Spree 5.6.1 CÓ đầy đủ mô hình trả hàng** (khác hẳn dispute, vốn không có bảng nào):
+
+```
+Spree::ReturnAuthorization  Spree::CustomerReturn  Spree::ReturnItem
+Spree::Reimbursement        Spree::Refund          Spree::ReimbursementType
+```
+
+**Nhưng estate không dùng nó, một dòng nào cũng không:**
+
+```
+shop       đơn hoàn tất   RMA  customer_returns  return_items  refunds
+ca                    3     0        0               0            7
+au                  181     0        0               0           15
+us                   38     0        0               0            8
+nz                  401     0        0               0           22
+nolocal               6     0        0               0            8
+                    ---   ---      ---             ---          ---
+                    629     0        0               0           60
+```
+
+629 đơn hoàn tất, **0 lượt trả hàng được ghi nhận**. Quy trình returns của Spree
+chưa từng được dùng. Nên hôm nay một "return" là vô hình với hệ thống.
+
+### Cái bẫy: đếm refund thay cho return
+
+Có 60 refund. Nếu lấy refund làm return thì sai nghiêm trọng. Phân tích lý do
+refund trên nz và au (37 cái):
+
+```
+Christmas sale / Black Friday / Promotional discount refund   25
+Postage Refund                                                 8
+Test only                                                      2
+Item Refund  (refund hàng thật sự)                             2
+```
+
+**25/37 là hoàn một phần tiền như một hình thức giảm giá sau bán.** Đếm refund sẽ
+gắn cờ chính những khách mua nhiều nhất dịp Black Friday và Giáng sinh.
+
+### Cái Spree đã có sẵn và dùng được
+
+`spree_return_authorization_reasons` có 9 lý do, đều đang active, và chúng tự tách
+làm ba nhóm đúng như thiết kế cần:
+
+```
+lỗi của SHOP, không bao giờ được tính:
+  Damaged/Defective · Missing parts or accessories ·
+  Different from what was ordered · Different from description ·
+  Missed estimated delivery date
+
+LỰA CHỌN của khách, đây mới là tín hiệu:
+  No longer needed/wanted · Better price available · Accidental order
+
+GIAN LẬN, thuộc danh sách chargeback chứ không phải danh sách này:
+  Unauthorized purchase
+```
+
+Cùng hình dạng với kết luận về chargeback: **ghi nhận trước, lập danh sách sau.**
+Và chưa có khách nào refund quá một lần: mọi khách được refund đều đúng 1 đơn 1
+refund, khớp với chính lời khách nói là lượng đơn sẽ tăng khi chạy marketing.
+
+## 54. Một tính năng đã chạy trên 5 shop, chỉ quên bật cho shop thứ 6 (14 Sep)
+
+Khách yêu cầu bỏ `/nz/en/` khỏi URL shop thương mại. Đo trước khi ước lượng:
+
+```
+shop bán lẻ   vào "/"        200, 85 link, 0 link có tiền tố, canonical "/"
+shop business vào "/"        307 -> "/nz/en", 54 link, CẢ 54 đều có tiền tố
+```
+
+Cùng một bộ mã nguồn. `NEXT_PUBLIC_CLEAN_URLS` đã tồn tại, `script/shop_host`
+truyền nó qua `--build-arg`, còn `script/commercial` thì không, và `.env` của shop
+đó trên máy chủ không có dòng nào như vậy.
+
+Câu hỏi hồi quy, đo trên shop đã bật sẵn:
+
+```
+/nz/en           -> 308 -> /           -> 200
+/nz/en/products  -> 308 -> /products   -> 200
+```
+
+URL cũ vẫn chuyển hướng sạch, không có 404. **Đây là một công tắc chưa bật, không
+phải việc mới.**
+
+### Bài học
+
+Trước khi ước lượng một yêu cầu của khách, kiểm tra xem các shop khác đã làm việc
+đó chưa. Cùng một mã nguồn phục vụ 8 shop thì một "tính năng cần làm" rất có thể
+là một build-arg đã chạy ở nơi khác.
+
+## 55. Bốn chi tiết thiết kế chỉ lộ ra khi lấy mẫu pixel bản vẽ, không phải khi nhìn (14 Sep)
+
+Dựng xong Part 2, nhìn ảnh so sánh thấy "khớp". Cho ba lượt đọc độc lập bản vẽ của
+khách rồi tự đo lại từng phát hiện. Bốn thứ sai, và **không thứ nào nhìn bằng mắt
+mà thấy**:
+
+```
+                     bản vẽ của khách        đã dựng          bằng chứng
+phụ đề               #000000 ĐEN             xanh oliu        mẫu 60 px tối nhất:
+                                                              tiêu đề #454D31,
+                                                              phụ đề #000000
+nút viền             TRONG SUỐT, thấy ảnh    trắng đặc        trong nút rgb(235,234,233)
+                                                              sd 4.7 (có vân ảnh),
+                                                              0/23 px trắng phẳng
+leading tiêu đề      1.302                   1.08             bước dòng 84px / 64.5px
+hai nút              BẰNG NHAU ~270px        251 và 224       x160-430 và x453-718
+```
+
+Phụ đề đen là thứ dễ trượt nhất: cả cột chữ được tô `BAND.ink`, nên phụ đề thừa
+hưởng màu oliu cùng tiêu đề, icon và nút. Trên bản vẽ khách chú thích `#4D5538` cho
+tiêu đề và cho nút tô đặc, rồi để phụ đề màu đen. Nhìn ảnh chụp thì hai màu này gần
+như không phân biệt được.
+
+### Bài học
+
+Ảnh so sánh cạnh nhau chứng minh được **bố cục**, không chứng minh được **màu và
+nét**. Muốn biết khách vẽ màu gì thì phải lấy mẫu pixel bản vẽ, và muốn biết một
+nền là đặc hay trong suốt thì đo **độ lệch chuẩn** của vùng đó: nền đặc có sd gần 0,
+còn ảnh xuyên qua thì có vân.
+
+---
+
+## 56. Propshaft phục vụ asset đã băm mà không cần `RAILS_SERVE_STATIC_FILES` (15 Sep)
+
+Một hộp production chạy Rails 8 + Propshaft, biến `RAILS_SERVE_STATIC_FILES` **chưa
+bật**, nginx proxy toàn bộ về Rails và không có `location` tĩnh nào. Đo trên đó:
+
+```
+/assets/login_sidebar_background-06f0600f.png   200      asset của gem, đã băm
+/brand/admin_login.png                          404      file thường dưới public/
+/robots.txt                                     404      file thường dưới public/
+```
+
+Cùng một máy, cùng một request cycle, hai kết quả khác nhau. Propshaft cắm middleware
+phục vụ riêng cho `/assets`, nên đường dẫn đó sống độc lập với
+`config.public_file_server.enabled`. Cờ `RAILS_SERVE_STATIC_FILES` chỉ chi phối những
+file nằm thẳng trong `public/`.
+
+### Vì sao điều này làm lỗi im lặng
+
+Màn hình đăng nhập admin đọc `ENV["ADMIN_LOGIN_IMAGE"]` rồi rơi về asset của gem.
+Trên hộp đó ảnh riêng nằm ở `public/brand/`, nên khi thiếu cờ:
+
+- ảnh riêng **404**
+- ảnh mặc định vẫn **200** và vẫn vẽ ra đẹp
+
+Trang không hỏng, không có panel trắng, không có lỗi trong log. Nó hiện **đúng** giao
+diện của một shop chưa từng được gửi ảnh. Triệu chứng đọc ra thành "file bị mất",
+trong khi file đã nằm trên đĩa ba tuần.
+
+### Bài học
+
+Khi một tài sản 404 mà trang vẫn đẹp, đừng kiểm đường dẫn ấy một mình. **Xin một file
+thường dưới `public/` làm đối chứng**, ví dụ `/robots.txt`: nếu nó cũng 404 thì vấn
+đề là cái cờ chứ không phải cái file. Một `/assets/...` trả 200 **không** chứng minh
+rằng máy đang phục vụ file tĩnh.
+
+## 57. Ảnh đăng nhập mặc định của Spree đã mang sẵn thương hiệu Spree (15 Sep)
+
+`spree_admin` 5.6.1 ship `app/assets/images/login_sidebar_background.png`, 1192x1600,
+RGB. Copy khỏi container và **mở ra nhìn**: chính giữa ảnh là logo giỏ hàng và chữ
+`spree`.
+
+Điều này đáng ghi vì nó đổi kết luận. Khi yêu cầu là "làm cho ảnh mặc định mang
+thương hiệu nền tảng", việc phải làm không phải là dựng ảnh mới, mà là chứng minh
+rằng bỏ trống biến môi trường đã cho đúng kết quả đó. Đo bằng trình duyệt ở 1440 trên
+hai stack khác nhau, một bản dev sạch và một shop production, cả hai ra cùng một
+digest `06f0600f` và cùng một panel 720x900 có logo hiện rõ.
+
+### Bài học
+
+Một tên file như `login_sidebar_background.png` nghe như ảnh nền chung chung, và suốt
+nhiều tuần nó được đọc đúng theo nghĩa đó. Nó không phải. **Tài sản mặc định của một
+gem là một quyết định thiết kế, nên phải mở ra xem chứ không suy từ tên.**
+
+## 58. Cùng một URL ảnh, hai bản cache, và probe hỏi nhầm bản (15 Sep)
+
+Thay một file trong `public/`, restart server, kiểm bằng curl thấy bytes mới,
+nhưng **trình duyệt vẫn hiện bản cũ**. Đo cả hai phía trên cùng một URL:
+
+```
+curl không Accept                     → image/jpeg   pixel giữa (129,145,134)  MỚI
+curl Accept: image/avif,image/webp    → image/webp   pixel giữa (210,210,206)  CŨ
+```
+
+`next/image` cache theo **format đã thương lượng**, nên một URL có nhiều entry.
+Trình duyệt luôn gửi `Accept: image/avif,image/webp,*/*` và nhận webp; curl mặc
+định không gửi gì và nhận jpeg. Bản jpeg chưa từng được cache nên nó luôn được
+sinh mới, tức là **probe tự tạo ra kết quả "đã tươi"** cho một đường dẫn mà
+người dùng không bao giờ đi.
+
+Đọc pixel đã decode ngay trong trang mới thấy sự thật:
+
+```js
+const c = document.createElement('canvas');
+c.getContext('2d').drawImage(img, 0, 0);   // → (210,210,206), bản cũ
+```
+
+### Và chỗ xoá cache cũng sai
+
+```
+/app/.next/cache/images        ← không tồn tại, lệnh rm không báo gì
+/app/.next/dev/cache/images    ← chỗ thật, 652 KB
+```
+
+Next 16 dev để cache ảnh dưới `.next/dev/`. `rm -rf` một đường dẫn không tồn tại
+thoát 0 và không in gì, nên nó trông y hệt một lần xoá thành công.
+
+### Bài học
+
+Hai cái, và cái nào một mình cũng đủ làm mất buổi chiều:
+
+1. **Probe phải gửi đúng header mà đường thật gửi.** curl không phải trình duyệt.
+   Với ảnh, `Accept` quyết định entry cache nào được trả về, nên bỏ nó đi là đo
+   một đường dẫn khác.
+2. **`rm -rf` vào đường dẫn sai thì im lặng.** Xoá cache xong phải `du` hoặc `ls`
+   để xác nhận có gì đó thật sự biến mất, không thì "đã xoá cache" chỉ là một câu
+   nói.
+
+## 59. `next/link` từ chối prefetch href không phải URL, mỗi trang 15 lỗi console (17 Sep)
+
+Footer shop business có 8 icon mạng xã hội và vài link cột trỏ `https://#`, đúng
+yêu cầu của khách: "Just do https://# for missing". Chúng được render bằng
+`<Link>`.
+
+Router của Next cố prefetch từng cái và từ chối:
+
+```
+Cannot prefetch 'https://#' because it cannot be converted to a URL.
+```
+
+15 lần trên một lần tải trang chủ.
+
+### Vì sao không ai thấy
+
+Trang vẫn đúng: link hiện, icon hiện, bấm vào vẫn đi đúng chỗ. Không có gì đỏ
+trong test, không có gì sai trong markup. Chỉ mở trình duyệt và đọc console mới
+thấy. Playwright bắt được vì probe lắng nghe `pageerror`.
+
+### Kết luận
+
+Link ra ngoài site không cần router. `<Link>` chỉ dành cho đường dẫn nội bộ;
+`http`/`https` thì dùng thẻ `<a>`. Đã sửa cả cột link lẫn hàng icon trong
+`BusinessFooter.tsx`.
+
+## 60. Ảnh lazy nằm trong nhánh `display:none` không bao giờ tải, và probe đọc nhầm thành ảnh hỏng (17 Sep)
+
+Probe đếm ảnh hỏng bằng `naturalWidth === 0` báo 11 ảnh hỏng ở khổ 390 và 360,
+0 ảnh hỏng ở 1440. Cả 11 URL đều trả 200 khi curl.
+
+Đo tiếp trong trình duyệt, chia làm hai nhóm:
+
+| Nhóm | Nguyên nhân |
+|---|---|
+| 8 icon mạng xã hội | `loading="lazy"`, nằm dưới màn hình, chưa cuộn tới nên chưa tải |
+| 3 ảnh còn lại | nằm trong nhánh `display:none` ở khổ điện thoại (utility bar và bộ chọn quốc gia chỉ hiện từ `md`/`lg`) |
+
+Chromium không tải ảnh lazy trong nhánh không render. Đó là hành vi đúng, không
+phải lỗi trang.
+
+### Cách đo cho đúng
+
+Ba điều kiện, thiếu một là báo nhầm:
+
+1. Cuộn hết trang rồi mới đếm, để ảnh lazy có cơ hội tải.
+2. Chờ `load`/`error` của từng ảnh, nhưng phải có hạn giờ, không thì probe treo.
+3. Chỉ tính ảnh đang hiển thị: `!img.complete && img.offsetParent`. Ảnh trong
+   nhánh ẩn không phải ảnh hỏng.
+
+Ảnh hỏng thật là `img.complete && !img.naturalWidth`, đó mới là file 404 hoặc
+file lỗi.
+
+## 61. Spree 6.0.0.beta1: đo thử trên chính codebase này, và những gì vỡ (17 Sep)
+
+Khách báo 6.0.0.beta1 ra ngày 15/9 và ước "khoảng 2 tuần nữa là chạy được". Đây
+là số liệu đo, không phải đọc thông cáo.
+
+### Gem nào đã có 6.0, gem nào chưa
+
+| Gem | Bản mới nhất | Ghi chú |
+|---|---|---|
+| spree, spree_core, spree_api, spree_emails | 6.0.0.beta1 (15/9) | có |
+| spree_dashboard | 6.0.0.beta1 | chỉ phục vụ dashboard React (SPA) |
+| spree_stripe | 6.0.0.beta1 | có |
+| **spree_admin** | **5.6.1** | **không có bản 6.0** |
+| **spree_paypal_checkout** | **0.7.1** | **không có bản 6.0, PayPal đang bật thật trên shop bán lẻ** |
+| spree_adyen | 0.11.0 | không có 6.0, và làm app không boot được trên 6.0 |
+| spree_i18n | 5.3.3 | không có 6.0, nhưng yêu cầu `>= 5.4.0.alpha` nên vẫn giải được |
+
+`spree` 6.0.0.beta1 chỉ phụ thuộc spree_core + spree_api. Trong bộ gem 6.0 không
+có thư mục admin nào: không `app/views/spree/admin`, không controller admin. Admin
+của 6.0 là dashboard React chạy trên Admin API v3.
+
+Rails: 6.0 yêu cầu `>= 8.1, < 8.2`. Mình đang chạy 8.1.3, khớp.
+
+### Hai tính năng khách chờ đều có thật
+
+- B2B: `Spree::Company`, `CompanyMembership`, `CompanyInvitation`, `Catalog`,
+  `CatalogPrice`, `CatalogAssignment`, `CatalogOrderMinimum`, `CatalogQuantityRule`.
+- Multi vendor: `Spree::Seller`, `commission_rate`, `commission_rule`,
+  `commission_line`, `seller_transfers`, và API `v3/seller`.
+
+### Cách đo
+
+Bản sao repo tại HEAD + bản sao database shop nz (dump cutover 30/8) nạp vào một
+postgres tạm. Không đụng gì tới shop thật. Chạy `bin/rails db:migrate` rồi sửa
+từng lỗi trên bản nháp để lòi ra lỗi kế tiếp.
+
+### Những gì vỡ, theo thứ tự chúng xuất hiện
+
+| # | Vỡ ở đâu | 5.6.1 | 6.0 |
+|---|---|---|---|
+| 1 | spree_adyen | boot được | `Spree::PermittedAttributes` không còn, gem chết ngay khi boot |
+| 2 | spree_stripe 1.8.1 | boot được | decorate `Spree::Shipment` bằng `state_machine`, chết. Phải dùng spree_stripe 6.0.0.beta1 |
+| 3 | `app/mailers/spree/reimbursement_mailer_decorator.rb` | `Spree::ReimbursementMailer` | đổi tên thành `Spree::ReturnMailer` |
+| 4 | `config/initializers/spree.rb` | `Spree::Order.number_generator.prefix =` | tiền tố là preference của store: `preferred_order_number_prefix`, và số đơn thành dãy tuần tự, bảng mới `spree_number_sequences` |
+| 5 | `config/initializers/spree.rb` | `Spree::PermittedAttributes.user_attributes` | registry toàn cục bị bỏ, model tự khai `additional_permitted_attributes` |
+| 6 | `config/initializers/spree.rb` | `Spree.permissions.assign(...)` với `PermissionSets` | bỏ hẳn, role là DATA. 6.0 raise kèm câu hướng dẫn |
+| 7 | `config/initializers/spree.rb` | `Spree.admin.partials...` | `Spree.admin` không còn (đi cùng việc không có gem admin) |
+| 8 | `config/initializers/spree.rb` | `ShipmentEmailSubscriber`, `ReimbursementEmailSubscriber` | `FulfillmentEmailSubscriber`, `ReturnEmailSubscriber` |
+| 9 | `config/routes.rb` | `Spree.admin_user_class` | trả nil, route devise của admin gãy |
+
+Cảnh báo deprecation (còn chạy tới 6.1): `Spree.user_class=` → `customer_class=`,
+`Spree::UserMethods` → `CustomerMethods`, `queues.stock_location_stock_items=` →
+`stock_location_stock_levels=`.
+
+`Spree::Shipment` vẫn còn, nhưng chỉ là alias của `Spree::Fulfillment` và ghi rõ
+"remove in 6.1". `Spree::Reimbursement` thì không có alias.
+
+### Những gì KHÔNG vỡ
+
+- 9/9 lớp Spree mà app này prepend hoặc include đều còn trong 6.0.
+- Mọi endpoint Store API storefront đang gọi đều còn: products, categories,
+  carts, customers, auth, channel, markets, locales, policies,
+  newsletter_subscribers. (`newsletter_signups` là của mình.)
+- Trong 7 template mailer mình ghi đè, 4 cái upstream không đổi; 3 cái text đổi
+  đúng một dòng: thêm partial `spree/shared/po_number`.
+
+### Số migration
+
+173 (5.6.1) → 281 (6.0.0.beta1). Chưa chạy được lần nào vì app phải boot xong
+mới tới migrate, và 9 điểm trên chặn trước đó.
+
+### Một chi tiết đáng nói
+
+Chính gem trỏ tới hướng dẫn nâng cấp tại
+`spreecommerce.org/docs/developer/upgrades/5.6-to-6.0`. Mở ra: **404**. Trang
+chưa xuất bản.

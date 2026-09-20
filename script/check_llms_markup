@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""
+The llms files are copy, and nothing was checking them.
+
+── why this exists ─────────────────────────────────────────────────────────────
+
+check_copy_markup guards the words on the storefront's pages, because a bold run
+or a link the copy never closes prints `[text](url)` to a customer. The llms
+files are the same kind of thing, written by hand, one per shop, served publicly
+at /llms.txt and /llms-full.txt and read by AI crawlers. No gate looked at them.
+
+Measured on 8 Sep, on the files live at that moment:
+
+    one shop     a heading line of 378 characters, the entire distributor
+                 paragraph swallowed into a `##`
+    two others   the same heading left with a trailing colon and a space,
+                 its paragraph sitting on the line below
+
+A heading with a paragraph inside it is not a small thing here. These files exist
+to be parsed by something that reads structure, and a section whose whole body is
+its own title has no body at all.
+
+── what it checks, and why each one ───────────────────────────────────────────
+
+Every rule below is one that has already been broken in these files or in his
+page copy, not a general tidiness preference.
+
+Run with --fix to repair the two mechanical ones. Everything else it only
+reports: an unbalanced marker can be repaired in more than one way and guessing
+which is how a fix becomes a rewrite of somebody's words.
+"""
+
+import argparse
+import glob
+import os
+import re
+import sys
+
+# A heading is a title. Past this it is a paragraph wearing a hash, and the
+# longest legitimate heading in these files today is 46 characters.
+MAX_HEADING = 110
+
+
+def problems(path, lines):
+    out = []
+    for i, line in enumerate(lines, 1):
+        if not line.startswith("#"):
+            continue
+        m = re.match(r"^(#{1,6})\s*(.*)$", line)
+        if not m:
+            continue
+        text = m.group(2)
+
+        if len(line) > MAX_HEADING:
+            out.append(
+                (
+                    i,
+                    "glued",
+                    f"heading is {len(line)} characters, so the body is inside it",
+                    line,
+                )
+            )
+        elif text.rstrip().endswith(":"):
+            # The residue of the same fault: the colon says the sentence was
+            # meant to carry on, and the text it introduced is on the next line.
+            out.append(
+                (i, "trailing-colon", "heading ends in a colon", line)
+            )
+
+        if text.strip() == "":
+            out.append((i, "empty", "heading with no text", line))
+
+    body = "\n".join(lines)
+    # Bold runs, counted per paragraph rather than per file: an odd total across
+    # a whole document says nothing about where the fault is.
+    for n, para in enumerate(body.split("\n\n"), 1):
+        if para.count("**") % 2:
+            first = para.strip().split("\n")[0][:70]
+            out.append(
+                (
+                    lines.index(para.strip().split("\n")[0]) + 1
+                    if para.strip().split("\n")[0] in lines
+                    else 0,
+                    "unclosed-bold",
+                    f"paragraph {n} has an odd number of ** markers",
+                    first,
+                )
+            )
+
+    # A link label that never closes prints its own markup to the reader. This
+    # is the fault his page copy already had, where a paragraph break inside a
+    # label split the marker in two.
+    for i, line in enumerate(lines, 1):
+        if line.count("[") != line.count("]") or line.count("](") and line.count(
+            ")"
+        ) < line.count("]("):
+            out.append((i, "broken-link", "unbalanced link markup", line[:70]))
+
+    # I18n does not raise on an unfilled placeholder, it prints it.
+    for i, line in enumerate(lines, 1):
+        if re.search(r"%\{[a-z_]+\}", line):
+            out.append((i, "placeholder", "an unfilled %{...} placeholder", line[:70]))
+
+    return out
+
+
+def fix(lines):
+    """Only the two mechanical faults. Nothing that rewrites his words."""
+    changed = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r"^(#{1,6})\s*(.*)$", line) if line.startswith("#") else None
+        if m:
+            hashes, text = m.group(1), m.group(2)
+            if len(line) > MAX_HEADING:
+                # Split at the first ": " — that is where the title ended and the
+                # paragraph began, and it is the same separator the two shops
+                # that are NOT glued still carry as a trailing colon.
+                sep = text.find(": ")
+                if sep > 0:
+                    title = text[:sep].rstrip()
+                    rest = text[sep + 2 :].strip()
+                    lines[i] = f"{hashes} {title}"
+                    lines.insert(i + 1, "")
+                    lines.insert(i + 2, rest)
+                    changed.append(("split", i + 1, title))
+                    i += 3
+                    continue
+            elif text.rstrip().endswith(":"):
+                lines[i] = f"{hashes} {text.rstrip().rstrip(':').rstrip()}"
+                changed.append(("decolon", i + 1, lines[i]))
+        i += 1
+    return changed
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--fix", action="store_true")
+    ap.add_argument(
+        "--root",
+        default="tmp/client/shop_public",
+        help="where the per-shop staged files live",
+    )
+    args = ap.parse_args()
+
+    paths = sorted(glob.glob(os.path.join(args.root, "*", "llms*.txt")))
+    if not paths:
+        print(f"no llms files under {args.root}/*/ — nothing to check")
+        return 0
+
+    total = 0
+    fixed = 0
+    for path in paths:
+        text = open(path, encoding="utf-8").read()
+        lines = text.split("\n")
+
+        if args.fix:
+            changed = fix(lines)
+            if changed:
+                open(path, "w", encoding="utf-8").write("\n".join(lines))
+                fixed += len(changed)
+                for kind, ln, what in changed:
+                    print(f"  fixed  {path}:{ln}  {kind}  {what[:70]}")
+
+        found = problems(path, lines)
+        for ln, kind, why, snippet in found:
+            total += 1
+            print(f"  {kind:15} {path}:{ln}")
+            print(f"  {'':15} {why}")
+            print(f"  {'':15} {snippet[:100]}")
+
+    print()
+    if args.fix:
+        print(f"{fixed} mechanical fix(es) applied")
+    if total:
+        print(f"{total} problem(s) in {len(paths)} llms file(s).")
+        print()
+        print("These files are served publicly and read by crawlers. A heading with")
+        print("a paragraph inside it has no body; an unclosed marker prints itself.")
+        print("Run with --fix for the two mechanical ones; the rest need his words.")
+        return 1
+
+    print(f"ok — {len(paths)} llms file(s), headings are headings and every marker closes")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

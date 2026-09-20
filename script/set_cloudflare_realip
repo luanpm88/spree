@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+#
+# Make the shops log the customer's IP address instead of Cloudflare's.
+#
+#   script/set_cloudflare_realip            show what would change, write nothing
+#   script/set_cloudflare_realip --apply    write the include, test, reload, verify
+#
+# ── the fault this fixes ─────────────────────────────────────────────────────
+#
+# Measured 11 September, on completed orders:
+#
+#   one shop   383 orders carried an IP, across 37 DISTINCT addresses,
+#              with a single address on 105 of them
+#   another    171 orders across 77 addresses
+#
+# Every one of those addresses is inside a range Cloudflare publishes, checked
+# against Cloudflare's own list. So spree_orders.last_ip_address has been
+# recording the edge, not the shopper, since the shops went behind Cloudflare.
+#
+# Two things follow. Any fraud matching on IP would fuse a hundred unrelated
+# customers into one person. And the payment provider's dispute evidence form has
+# a field for the IP the order was placed from, which cannot be filled honestly
+# today: that is evidence not submitted, on the exact kind of dispute where the
+# cardholder claims somebody else used their card.
+#
+# ── why a script and not the paste ──────────────────────────────────────────
+#
+# The client sent the fix himself, correctly, as a list of fourteen IPv4 ranges.
+# Two reasons this fetches them instead of pasting them.
+#
+# Cloudflare changes the list. A pasted copy is right on the day and silently
+# wrong later, and the failure is invisible: a range that has been added is
+# simply not trusted, so those visitors keep being logged as the edge.
+#
+# And the vhosts listen on IPv6, `listen [::]:443 ssl`, while the paste covers
+# only IPv4. Cloudflare publishes seven IPv6 ranges as well. Without them a v6
+# visitor is still recorded as Cloudflare, which is the same bug for a subset of
+# customers and harder to notice because it only affects some of them.
+#
+# ── the part to be careful about ────────────────────────────────────────────
+#
+# set_real_ip_from is a statement of trust. Any range named here is allowed to
+# tell nginx what the client's address is, by way of the CF-Connecting-IP header.
+# Name a range that is not Cloudflare and anyone in it can put whatever they like
+# in the log, and in the dispute evidence.
+#
+# So the ranges are fetched from Cloudflare over TLS, and this refuses to write
+# anything if either list comes back implausible. An empty or truncated fetch
+# must not be allowed to become a permissive config, and equally must not be
+# allowed to blank an existing working one.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || cd "$(dirname "$0")/.." || exit 2
+
+C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_DIM=$'\e[2m'; C_OFF=$'\e[0m'
+[ -t 1 ] || { C_RED=""; C_GRN=""; C_YEL=""; C_DIM=""; C_OFF=""; }
+step() { printf '\n%s==>%s %s\n' "$C_DIM" "$C_OFF" "$*"; }
+ok()   { printf '    %s✓%s %s\n' "$C_GRN" "$C_OFF" "$*"; }
+warn() { printf '    %s!%s %s\n' "$C_YEL" "$C_OFF" "$*"; }
+die()  { printf '\n%sFAILED:%s %s\n\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+
+APPLY=""
+[ "${1:-}" = "--apply" ] && APPLY=1
+
+[ -f .estate.env ] || die "no .estate.env, so this cannot reach the server"
+# shellcheck disable=SC1091
+. ./.estate.env
+: "${SSH_KEY:?}" "${SSH_HOST:?}" "${SSH_PORT:=22}"
+rsh() { ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" "$@"; }
+
+REMOTE_CONF=/etc/nginx/conf.d/cloudflare-realip.conf
+
+step "Fetching Cloudflare's published ranges"
+V4=$(curl -fsS --max-time 30 https://www.cloudflare.com/ips-v4) || die "could not fetch the IPv4 list"
+V6=$(curl -fsS --max-time 30 https://www.cloudflare.com/ips-v6) || die "could not fetch the IPv6 list"
+
+n4=$(printf '%s\n' "$V4" | grep -cE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$')
+n6=$(printf '%s\n' "$V6" | grep -cE '^[0-9a-fA-F:]+/[0-9]+$')
+
+# Plausibility, not decoration. Cloudflare has published about 14 IPv4 and about
+# 7 IPv6 ranges for years. A fetch that comes back with two of them is a captive
+# portal or a truncated response, and writing it would quietly stop trusting most
+# of Cloudflare while looking like it worked.
+[ "$n4" -ge 10 ] || die "only $n4 IPv4 range(s) came back, expected about 14. Refusing to write."
+[ "$n6" -ge 5 ]  || die "only $n6 IPv6 range(s) came back, expected about 7. Refusing to write."
+ok "$n4 IPv4 and $n6 IPv6 range(s), both plausible"
+
+CONF=$(
+  printf '# Written by script/set_cloudflare_realip. Do not edit by hand.\n'
+  printf '#\n'
+  printf '# Every range below is allowed to tell nginx the client IP through the\n'
+  printf '# CF-Connecting-IP header. They are fetched from cloudflare.com/ips-v4 and\n'
+  printf '# ips-v6, so re-run the script rather than adding a range here.\n'
+  printf '#\n'
+  printf '# Without this, spree_orders.last_ip_address records the Cloudflare edge:\n'
+  printf '# measured on one shop, 383 orders across 37 addresses, 105 of them sharing\n'
+  printf '# one. See the script for the rest.\n\n'
+  printf '%s\n' "$V4" | grep -E '^[0-9]' | sed 's/^/set_real_ip_from /; s/$/;/'
+  printf '%s\n' "$V6" | grep -E '^[0-9a-fA-F:]' | sed 's/^/set_real_ip_from /; s/$/;/'
+  printf '\n'
+  printf '# CF-Connecting-IP, not X-Forwarded-For. Cloudflare sets it to a single\n'
+  printf '# address, so there is no chain to walk and no question of which hop to\n'
+  printf '# believe. real_ip_recursive is therefore irrelevant and left off.\n'
+  printf 'real_ip_header CF-Connecting-IP;\n'
+  printf 'real_ip_recursive off;\n'
+)
+
+step "What would be written to $REMOTE_CONF"
+printf '%s\n' "$CONF" | sed 's/^/    /' | head -12
+printf '    %s… %s line(s) in total%s\n' "$C_DIM" "$(printf '%s\n' "$CONF" | wc -l | tr -d ' ')" "$C_OFF"
+
+if [ -z "$APPLY" ]; then
+  step "Nothing written"
+  printf '    Add --apply to write it, test the config and reload.\n\n'
+  exit 0
+fi
+
+step "Backing up anything already there"
+rsh "if [ -f $REMOTE_CONF ]; then cp -a $REMOTE_CONF $REMOTE_CONF.bak-\$(date -u +%Y%m%d-%H%M%S) && echo backed-up; else echo none-yet; fi" </dev/null | sed 's/^/    /'
+
+step "Writing it"
+# No </dev/null here, and that is the whole point.
+#
+# Every other rsh call in this file redirects stdin from /dev/null so that ssh
+# cannot swallow the caller's input. On THIS call the input is the payload, and
+# the first version kept the redirect: ssh discarded the piped config and wrote a
+# zero byte file. It then reported "written", nginx -t passed because an empty
+# file is valid config, and the reload succeeded. Everything was green and
+# nothing had been configured.
+#
+# The only reason it was caught is the verification below, which asks the access
+# log what it actually recorded rather than asking nginx what it was told.
+printf '%s\n' "$CONF" | rsh "cat > $REMOTE_CONF && chmod 644 $REMOTE_CONF && wc -c < $REMOTE_CONF" | sed 's/^/    bytes written: /'
+
+# And confirm it arrived, rather than trusting the byte count we just printed.
+got=$(rsh "grep -c '^set_real_ip_from' $REMOTE_CONF 2>/dev/null || echo 0" </dev/null | tr -d ' \r')
+[ "${got:-0}" -ge 15 ] || die "only ${got:-0} set_real_ip_from line(s) landed on the server, expected $((n4 + n6)). Nothing reloaded."
+ok "$got set_real_ip_from line(s) on the server"
+
+step "Testing the config before reloading"
+# nginx -t, and the reload only happens if it passes. A bad include here would
+# take every shop down, so this is the one step that must not be skipped.
+rsh "nginx -t" </dev/null 2>&1 | sed 's/^/    /' || die "nginx rejected the config. Nothing was reloaded; the file is still on disk for inspection."
+
+step "Reloading"
+rsh "systemctl reload nginx && echo reloaded" </dev/null | sed 's/^/    /' || die "reload failed"
+
+step "Verifying with a real request through Cloudflare"
+# The only verification that counts: make a request from here, through
+# Cloudflare, and see whether the access log recorded THIS machine's address
+# rather than an edge address. Asking nginx what it is configured to do proves
+# nothing about what it records.
+MINE=$(curl -fsS --max-time 20 https://api.ipify.org 2>/dev/null || echo "")
+[ -n "$MINE" ] || warn "could not determine this machine's public address, skipping the log check"
+HOST=$(awk -F'|' '!/^#/ && NF>7 { print $8; exit }' .estate | sed 's|^https*://||')
+if [ -n "$MINE" ] && [ -n "$HOST" ]; then
+  before=$(rsh "wc -l < /var/log/nginx/access.log" </dev/null | tr -d ' \r')
+  curl -fsS -o /dev/null --max-time 25 "https://$HOST/robots.txt" || warn "the test request failed"
+  sleep 2
+  hit=$(rsh "awk 'NR>$before' /var/log/nginx/access.log | grep -c '^$MINE '" </dev/null | tr -d ' \r')
+  if [ "${hit:-0}" -gt 0 ]; then
+    ok "the access log recorded this machine's own address, not the edge"
+  else
+    warn "the log did not show this machine's address in the new lines."
+    warn "that can be a caching layer answering robots.txt without reaching nginx."
+    warn "check by hand: tail /var/log/nginx/access.log"
+  fi
+fi
+
+step "Done"
+printf '    Existing order rows are not changed by this. It affects what is recorded\n'
+printf '    from now on, so the IP field is worth trusting only for orders placed\n'
+printf '    after today.\n\n'

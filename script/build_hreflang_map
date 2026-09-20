@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+#
+# The same product on the other shops, matched by SKU, as a map the storefront can read.
+#
+#   script/build_hreflang_map              read every shop, report, write nothing
+#   script/build_hreflang_map --write      write the map file as well
+#
+# ── what he asked for ────────────────────────────────────────────────────────
+#
+# On 8 Sep: understand hreflang and build it. What exists already, alternates.ts,
+# works from markets and each shop has exactly one, so it emits nothing at all.
+# That is not what he means. He means a product on one shop pointing at the same
+# product on the others, which is a list that crosses shops and no shop holds.
+#
+# ── matched on the SKU, never on the slug or the name ───────────────────────
+#
+# The slugs differ per shop, which is the whole reason a name or path match was
+# never going to work: measured, the same product is at a different address on
+# each shop. The master variant's SKU is the code he uses himself.
+#
+# Measured before writing any of this, so the value is known rather than hoped
+# for. Across the five retail shops there are 397 product pages: 330 carry the
+# same SKU on all five, 40 on four, 18 on two, and 9 exist on one shop only.
+# So 388 of 397, 98%, get at least one sibling.
+#
+# The other two shops are excluded, and that is measured too: they share zero
+# SKUs with the five. One is a different brand and the other keeps carton codes.
+#
+# ── the hreflang value itself is his decision, not this script's ────────────
+#
+# A map of SKU to shop to URL is a fact. Which hreflang code names each shop is
+# not: two of his shops run on plain `en`, and hreflang cannot carry the same
+# code twice. So the codes come from config/hreflang_shops if it exists, and
+# without it this reports what it WOULD use and refuses to write. Guessing
+# en-US for one shop and x-default for another would be inventing his SEO.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+C_CY=$'\033[36m'; C_R=$'\033[0m'; C_B=$'\033[1m'
+C_GR=$'\033[32m'; C_YE=$'\033[33m'; C_RE=$'\033[31m'; C_DIM=$'\033[2m'
+[ -t 1 ] || { C_CY=""; C_R=""; C_B=""; C_GR=""; C_YE=""; C_RE=""; C_DIM=""; }
+step() { printf '\n%s==>%s %s%s%s\n' "$C_CY" "$C_R" "$C_B" "$*" "$C_R"; }
+info() { printf '    %s%s%s\n' "$C_DIM" "$*" "$C_R"; }
+ok()   { printf '    %s✓%s %s\n' "$C_GR" "$C_R" "$*"; }
+warn() { printf '    %s!%s %s\n' "$C_YE" "$C_R" "$*"; }
+die()  { printf '\n%sFAILED:%s %s\n\n' "$C_RE" "$C_R" "$*" >&2; exit 1; }
+
+WRITE=""
+[ "${1:-}" = "--write" ] && WRITE=1
+
+[ -f .estate ] || die "no .estate in this checkout"
+[ -f .estate.env ] || die "no .estate.env, so this cannot reach the box"
+# shellcheck disable=SC1091
+. ./.estate.env
+: "${SSH_KEY:?}" "${SSH_HOST:?}" "${SSH_PORT:=22}"
+rsh() {
+  ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 \
+      -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" "$@"
+}
+
+WORK="tmp/client/hreflang"
+mkdir -p "$WORK"
+
+# Which shops take part. Read from a tracked config so it is reviewable, but the
+# shop NAMES live in .estate because they are his brands and this file is
+# tracked in a public repository.
+SHOPS=$(awk -F'|' '!/^#/ && NF>7 { print $1 }' .estate | paste -sd' ' -)
+
+step "Reading every shop"
+for shop in $SHOPS; do
+  # slug AND sku, per product, from the shop that serves it. The slug is what
+  # the sibling URL is built from and the previous export did not carry it.
+  rsh "docker exec ${shop}_web bin/rails runner '
+    require %q{json}
+    puts %q{<<MAP}
+    Spree::Product.where(deleted_at: nil).find_each do |p|
+      sku = p.master&.sku
+      next if sku.blank? || p.slug.blank?
+      puts({ sku: sku, slug: p.slug, status: p.status.to_s }.to_json)
+    end
+    puts %q{MAP>>}
+  ' 2>/dev/null" </dev/null | tr -d '\r' | sed -n '/^<<MAP$/,/^MAP>>$/p' \
+    | grep -v '^<<MAP$' | grep -v '^MAP>>$' > "$WORK/$shop.jsonl"
+  n=$(wc -l < "$WORK/$shop.jsonl" | tr -d ' ')
+  [ "$n" -gt 0 ] || { warn "$shop returned nothing, left out"; continue; }
+  info "$(printf '%-9s %s product(s) with a SKU and a slug' "$shop" "$n")"
+done
+
+step "Building the map"
+python3 - "$WORK" "$(printf '%s' "$SHOPS")" "${WRITE:-}" <<'PY'
+import json, os, sys, collections, glob
+
+work, shops_raw, write = sys.argv[1], sys.argv[2], sys.argv[3]
+shops = shops_raw.split()
+
+# Each shop's live url, and its hreflang code if one has been decided.
+estate = {}
+for line in open(".estate", encoding="utf-8"):
+    line = line.strip()
+    if not line or line.startswith("#") or "|" not in line:
+        continue
+    c = line.split("|")
+    if len(c) > 7 and c[7].strip() and c[7].strip() != "-":
+        estate[c[0].strip()] = c[7].strip().rstrip("/")
+
+codes = {}
+CODES_FILE = "config/hreflang_shops"
+if os.path.exists(CODES_FILE):
+    for line in open(CODES_FILE, encoding="utf-8"):
+        line = line.split("#")[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            codes[parts[0]] = parts[1]
+
+catalogue = {}
+for shop in shops:
+    f = os.path.join(work, f"{shop}.jsonl")
+    if not os.path.exists(f):
+        continue
+    rows = [json.loads(l) for l in open(f, encoding="utf-8")]
+    # An archived or draft product must not be advertised as an alternate: a
+    # hreflang pointing at a page that is not for sale is worse than none.
+    live = {r["sku"]: r["slug"] for r in rows if r.get("status") == "active"}
+    catalogue[shop] = live
+    if len(live) != len(rows):
+        print(f"    {shop:9} {len(rows) - len(live)} product(s) not active, left out of the map")
+
+# Which shops actually share SKUs with each other. Measured, not listed: a shop
+# that shares nothing has no place in a sibling list, and both of his other
+# brands are in that position.
+participating = []
+for a in catalogue:
+    if any(a != b and (catalogue[a].keys() & catalogue[b].keys()) for b in catalogue):
+        participating.append(a)
+print(f"\n    {len(participating)} shop(s) share SKUs with another and take part")
+for shop in catalogue:
+    if shop not in participating:
+        print(f"    {shop:9} shares no SKU with any other shop, excluded")
+
+by_sku = collections.defaultdict(dict)
+for shop in participating:
+    for sku, slug in catalogue[shop].items():
+        by_sku[sku][shop] = f"{estate[shop]}/products/{slug}"
+
+hist = collections.Counter(len(v) for v in by_sku.values())
+pages = sum(len(v) for v in by_sku.values())
+alone = sum(n for k, n in hist.items() if k == 1)
+print(f"\n    {len(by_sku)} distinct SKU(s), {pages} product page(s) across those shops")
+for n in sorted(hist):
+    print(f"      on {n} shop(s): {hist[n]:4} SKU(s)")
+with_sibling = pages - alone
+print(f"    {with_sibling} of {pages} pages ({100 * with_sibling / pages:.0f}%) would carry at least one sibling")
+
+missing_codes = [s for s in participating if s not in codes]
+if missing_codes:
+    print(f"\n    NO hreflang code decided for: {' '.join(missing_codes)}")
+    print("    A map of SKU to URL is a fact; which code names each shop is not.")
+    print(f"    Two of his shops run on plain en and hreflang cannot carry one code")
+    print(f"    twice, so this needs his answer. Put one line per shop in")
+    print(f"    {CODES_FILE}:  <shop> <hreflang>")
+    if write:
+        print("\n    Refusing to write a map that would name a shop by a guess.")
+        sys.exit(4)
+
+if not write:
+    print("\n    Nothing written. Add --write once the codes are decided.")
+    sys.exit(0)
+
+out = {
+    "generated_for": "cross-shop hreflang alternates, matched on master SKU",
+    "shops": {s: {"url": estate[s], "hreflang": codes[s]} for s in participating},
+    "by_sku": {sku: v for sku, v in by_sku.items() if len(v) > 1},
+}
+dest = "storefront/src/lib/blocks/hreflang.json"
+with open(dest, "w", encoding="utf-8") as fh:
+    json.dump(out, fh, ensure_ascii=False, indent=2, sort_keys=True)
+print(f"\n    wrote {dest}: {len(out['by_sku'])} SKU(s) with a sibling")
+PY
+rc=$?
+[ "$rc" = "4" ] && die "no hreflang code decided for one or more shops. Nothing was written."
+
+if [ -n "$WRITE" ]; then
+  step "Next"
+  info "storefront/src/lib/blocks/hreflang.json is gitignored client material:"
+  info "it names his shops and their product paths. It has to be listed in"
+  info "CLIENT_ASSETS and checked by check_deploy_assets, or the deploy leaves"
+  info "it behind and every page silently loses its alternates."
+fi

@@ -1,0 +1,384 @@
+#!/usr/bin/env bash
+#
+# Copy one shop's product meta title and description onto the others, matched by SKU.
+#
+#   script/sync_product_meta                       what would change, and nothing else
+#   script/sync_product_meta --apply               dump each shop, then write
+#   script/sync_product_meta --from au --to ca,us  a different source or subset
+#   script/sync_product_meta --show <SKU>          both sides of one product, in full
+#
+# ── why this exists ──────────────────────────────────────────────────────────
+#
+# He asked for it on 8 Sep. Someone on his side had rewritten one shop's product
+# meta titles and descriptions, and he wanted the same text on the other four,
+# matched by SKU rather than by name.
+#
+# ── it does not write by default, and that is not politeness ────────────────
+#
+# These are seven live shops on one Postgres, and the thing being written is the
+# text search engines show for every product. A dry run prints the same table
+# the apply would act on, so the decision is made against numbers rather than
+# against a hope. --apply is the only way anything changes.
+#
+# ── what it refuses ──────────────────────────────────────────────────────────
+#
+# A SKU that names two products on either side. Matching would be a coin toss,
+# and picking one silently is how the wrong description lands on a product that
+# nobody thinks to check.
+#
+# A source product with an empty title or description. Copying a blank over
+# text that is already there is a loss, not a sync, and it looks identical to
+# success in any count of "rows updated".
+#
+# ── the country words ────────────────────────────────────────────────────────
+#
+# Measured on the source shop: none of its titles name a country, and four of
+# its descriptions say Australia. Copied verbatim, a Canadian search result
+# would read Australia. So that substitution is a separate flag, off unless
+# asked for, because rewording his copy is his decision and not this script's.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+C_CY=$'\033[36m'; C_R=$'\033[0m'; C_B=$'\033[1m'
+C_GR=$'\033[32m'; C_YE=$'\033[33m'; C_RE=$'\033[31m'; C_DIM=$'\033[2m'
+[ -t 1 ] || { C_CY=""; C_R=""; C_B=""; C_GR=""; C_YE=""; C_RE=""; C_DIM=""; }
+step() { printf '\n%s==>%s %s%s%s\n' "$C_CY" "$C_R" "$C_B" "$*" "$C_R"; }
+info() { printf '    %s%s%s\n' "$C_DIM" "$*" "$C_R"; }
+ok()   { printf '    %s✓%s %s\n' "$C_GR" "$C_R" "$*"; }
+warn() { printf '    %s!%s %s\n' "$C_YE" "$C_R" "$*"; }
+die()  { printf '\n%sFAILED:%s %s\n\n' "$C_RE" "$C_R" "$*" >&2; exit 1; }
+
+SOURCE="au"
+TARGETS=""
+APPLY=""
+SWAP_COUNTRY=""
+SHOW=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --from) SOURCE="$2"; shift 2 ;;
+    --to) TARGETS="$2"; shift 2 ;;
+    --apply) APPLY=1; shift ;;
+    --swap-country) SWAP_COUNTRY=1; shift ;;
+    --show) SHOW="$2"; shift 2 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[ -f .estate ] || die "no .estate in this checkout, so this does not know which shops exist"
+[ -f .estate.env ] || die "no .estate.env, so this cannot reach the box"
+# shellcheck disable=SC1091
+. ./.estate.env
+: "${SSH_KEY:?}" "${SSH_HOST:?}" "${SSH_PORT:=22}"
+
+rsh() {
+  ssh -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 \
+      -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" "$@"
+}
+
+# Shops and their country names come out of .estate, never a list written here:
+# this file is tracked and the repository is public.
+shop_country() {
+  awk -F'|' -v s="$1" '!/^#/ && $1==s { print $8 }' .estate \
+    | sed 's|^https*://||' | cut -d. -f1
+}
+all_shops() { awk -F'|' '!/^#/ && NF>7 { print $1 }' .estate; }
+
+if [ -z "$TARGETS" ]; then
+  TARGETS=$(all_shops | grep -v "^${SOURCE}$" | paste -sd, -)
+fi
+
+WORK="tmp/client/meta-sync"
+mkdir -p "$WORK"
+
+# ── read the source ─────────────────────────────────────────────────────────
+#
+# The master variant's SKU is the product level code, which is what he means by
+# "the SKU code". Read with the product, so a SKU belonging to a soft deleted
+# product cannot match anything: the source shop has more master variants than
+# products, and the difference is exactly those.
+#
+# Emitted as one JSON object per line rather than one big document, so a
+# truncated transfer is a short file and not a parse error that says nothing
+# about where it stopped. Wrapped in a sentinel because bin/rails runner writes
+# Spree's boot banner to stdout and it has landed in the middle of a reading
+# here before.
+step "Reading $SOURCE"
+rsh "docker exec ${SOURCE}_web bin/rails runner '
+  require %q{json}
+  puts %q{<<META}
+  Spree::Product.where(deleted_at: nil).find_each do |p|
+    sku = p.master&.sku
+    next if sku.blank?
+    puts({
+      sku: sku,
+      name: p.name,
+      meta_title: p.meta_title,
+      meta_description: p.meta_description
+    }.to_json)
+  end
+  puts %q{META>>}
+' 2>/dev/null" </dev/null | tr -d '\r' | sed -n '/^<<META$/,/^META>>$/p' \
+  | grep -v '^<<META$' | grep -v '^META>>$' > "$WORK/$SOURCE.jsonl"
+
+SRC_ROWS=$(wc -l < "$WORK/$SOURCE.jsonl" | tr -d ' ')
+[ "$SRC_ROWS" -gt 0 ] || die "read nothing from $SOURCE. The sentinel found no rows, which is a broken reading and not an empty shop."
+info "$SRC_ROWS product(s) with a master SKU"
+
+# A SKU naming two products makes every match a guess. Refuse rather than pick.
+DUPES=$(python3 - "$WORK/$SOURCE.jsonl" <<'PY'
+import json, sys, collections
+c = collections.Counter()
+for line in open(sys.argv[1]):
+    c[json.loads(line)["sku"]] += 1
+print(" ".join(s for s, n in c.items() if n > 1))
+PY
+)
+[ -z "$DUPES" ] || die "these SKUs name more than one product on $SOURCE: $DUPES
+Matching would be a guess. Fix the duplicates first."
+
+BLANKS=$(python3 - "$WORK/$SOURCE.jsonl" <<'PY'
+import json, sys
+n = 0
+for line in open(sys.argv[1]):
+    r = json.loads(line)
+    if not (r.get("meta_title") or "").strip() or not (r.get("meta_description") or "").strip():
+        n += 1
+print(n)
+PY
+)
+if [ "$BLANKS" != "0" ]; then
+  warn "$BLANKS product(s) on $SOURCE have an empty title or description"
+  info "those are skipped: copying a blank over text already there is a loss, not a sync"
+fi
+
+if [ -n "$SHOW" ]; then
+  step "SKU $SHOW"
+  python3 - "$WORK/$SOURCE.jsonl" "$SHOW" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    r = json.loads(line)
+    if r["sku"] == sys.argv[2]:
+        print(f"    name        {r['name']}")
+        print(f"    meta_title  {r['meta_title']}")
+        print(f"    meta_desc   {r['meta_description']}")
+        break
+else:
+    print("    not on the source shop")
+PY
+  exit 0
+fi
+
+# ── compare each target ─────────────────────────────────────────────────────
+SRC_COUNTRY=$(shop_country "$SOURCE")
+TOTAL_CHANGES=0
+
+for shop in ${TARGETS//,/ }; do
+  step "$shop"
+  rsh "docker exec ${shop}_web bin/rails runner '
+    require %q{json}
+    puts %q{<<META}
+    Spree::Product.where(deleted_at: nil).find_each do |p|
+      sku = p.master&.sku
+      next if sku.blank?
+      puts({ sku: sku, meta_title: p.meta_title, meta_description: p.meta_description }.to_json)
+    end
+    puts %q{META>>}
+  ' 2>/dev/null" </dev/null | tr -d '\r' | sed -n '/^<<META$/,/^META>>$/p' \
+    | grep -v '^<<META$' | grep -v '^META>>$' > "$WORK/$shop.jsonl"
+
+  TGT_ROWS=$(wc -l < "$WORK/$shop.jsonl" | tr -d ' ')
+  [ "$TGT_ROWS" -gt 0 ] || { warn "read nothing from $shop, skipped"; continue; }
+
+  TGT_COUNTRY=$(shop_country "$shop")
+  python3 - "$WORK/$SOURCE.jsonl" "$WORK/$shop.jsonl" "$WORK/$shop.plan.jsonl" \
+           "$SRC_COUNTRY" "$TGT_COUNTRY" "${SWAP_COUNTRY:-}" <<'PY'
+import json, sys, collections, re
+
+src_path, tgt_path, out_path, src_country, tgt_country, swap = sys.argv[1:7]
+
+# The country words to swap, and only when asked. Built from the two shops'
+# own names rather than a table in the code: a table would name his brands.
+COUNTRY_WORDS = {
+    "au": ["Australia", "Australian"],
+    "nz": ["New Zealand"],
+    "ca": ["Canada", "Canadian"],
+    "us": ["United States", "USA"],
+}
+
+src = {}
+for line in open(src_path):
+    r = json.loads(line)
+    src[r["sku"]] = r
+
+tgt = {}
+dupes = collections.Counter()
+for line in open(tgt_path):
+    r = json.loads(line)
+    dupes[r["sku"]] += 1
+    tgt[r["sku"]] = r
+
+dup = [s for s, n in dupes.items() if n > 1]
+
+def reword(text):
+    if not swap or not text:
+        return text, False
+    words = COUNTRY_WORDS.get(src_country, [])
+    repl = COUNTRY_WORDS.get(tgt_country, [])
+    if not words or not repl:
+        return text, False
+    out = text
+    for w in words:
+        out = re.sub(rf"\b{re.escape(w)}\b", repl[0], out)
+    return out, out != text
+
+plan = []
+identical = 0
+missing_on_target = []
+missing_on_source = []
+skipped_blank = 0
+reworded = 0
+
+for sku, s in src.items():
+    title = (s.get("meta_title") or "").strip()
+    desc = (s.get("meta_description") or "").strip()
+    if not title or not desc:
+        skipped_blank += 1
+        continue
+    if sku not in tgt:
+        missing_on_target.append(sku)
+        continue
+    t = tgt[sku]
+    new_title, c1 = reword(title)
+    new_desc, c2 = reword(desc)
+    if c1 or c2:
+        reworded += 1
+    if (t.get("meta_title") or "").strip() == new_title and \
+       (t.get("meta_description") or "").strip() == new_desc:
+        identical += 1
+        continue
+    plan.append({"sku": sku, "meta_title": new_title, "meta_description": new_desc})
+
+for sku in tgt:
+    if sku not in src:
+        missing_on_source.append(sku)
+
+with open(out_path, "w") as fh:
+    for row in plan:
+        fh.write(json.dumps(row) + "\n")
+
+print(f"    on this shop            {len(tgt)} product(s) with a master SKU")
+print(f"    matched by SKU          {len(tgt) - len(missing_on_source)}")
+print(f"    would change            {len(plan)}")
+print(f"    already identical       {identical}")
+if skipped_blank:
+    print(f"    skipped, blank source   {skipped_blank}")
+if swap and reworded:
+    print(f"    country word swapped    {reworded}")
+if missing_on_target:
+    print(f"    on {src_country} and not here      {len(missing_on_target)}: {' '.join(sorted(missing_on_target)[:6])}{' …' if len(missing_on_target) > 6 else ''}")
+if missing_on_source:
+    print(f"    here and not on {src_country}      {len(missing_on_source)}: {' '.join(sorted(missing_on_source)[:6])}{' …' if len(missing_on_source) > 6 else ''}")
+if dup:
+    print(f"    REFUSED, duplicate SKU  {' '.join(dup)}")
+    sys.exit(3)
+PY
+  rc=$?
+  [ "$rc" = "3" ] && die "$shop has a SKU naming two products. Fix that before syncing it."
+
+  CHANGES=$(wc -l < "$WORK/$shop.plan.jsonl" | tr -d ' ')
+  TOTAL_CHANGES=$((TOTAL_CHANGES + CHANGES))
+
+  if [ -z "$APPLY" ] || [ "$CHANGES" = "0" ]; then
+    continue
+  fi
+
+  # ── dump before writing, and prove the dump opens ─────────────────────────
+  #
+  # Not "take a backup". A dump nobody has opened is a file, and the rule here
+  # is that it has to be read back before the thing it protects is touched.
+  DB="${shop}_shop"
+  STAMP=$(date +%Y%m%d-%H%M%S)
+  REMOTE_DUMP="/tmp/${DB}-before-meta-sync-${STAMP}.sql.gz"
+  info "dumping $DB before writing"
+  rsh "docker exec estate-postgres pg_dump -U postgres -d $DB | gzip -9 > $REMOTE_DUMP" </dev/null \
+    || die "pg_dump of $DB failed. Nothing was written."
+  SIZE=$(rsh "stat -c %s $REMOTE_DUMP" </dev/null | tr -d '\r')
+  [ "${SIZE:-0}" -gt 10000 ] || die "the dump of $DB is only ${SIZE:-0} bytes. Nothing was written."
+  # Read it back. gzip -t proves the archive, and grepping for the table proves
+  # it is this database and not an empty file with a valid header.
+  rsh "gzip -t $REMOTE_DUMP && zcat $REMOTE_DUMP | grep -qm1 'CREATE TABLE public.spree_products'" </dev/null \
+    || die "the dump of $DB does not open, or does not contain spree_products. Nothing was written."
+  ok "dump verified: $REMOTE_DUMP ($SIZE bytes)"
+
+  # The plan travels as a file rather than inline, so nothing depends on how
+  # much text a shell will carry.
+  rsh "cat > /tmp/${shop}-meta-plan.jsonl" < "$WORK/$shop.plan.jsonl"
+  rsh "docker cp /tmp/${shop}-meta-plan.jsonl ${shop}_web:/tmp/meta-plan.jsonl" </dev/null >/dev/null
+
+  info "writing $CHANGES product(s)"
+  rsh "docker exec ${shop}_web bin/rails runner '
+    require %q{json}
+    rows = File.readlines(%q{/tmp/meta-plan.jsonl}).map { |l| JSON.parse(l) }
+    changed = 0
+    missing = []
+    # One transaction: a half applied sync is worse than none, because the next
+    # run would report the remainder as the only difference and look complete.
+    ActiveRecord::Base.transaction do
+      rows.each do |r|
+        v = Spree::Variant.find_by(sku: r[%q{sku}], is_master: true)
+        p = v&.product
+        if p.nil? || p.deleted_at
+          missing << r[%q{sku}]
+          next
+        end
+        # update_columns, deliberately. These two fields are text a person
+        # wrote; running validations and callbacks would fire the whole
+        # touch/reindex/webhook chain for every row, and one product failing an
+        # unrelated validation would take the transaction down with it.
+        p.update_columns(
+          meta_title: r[%q{meta_title}],
+          meta_description: r[%q{meta_description}],
+          updated_at: Time.current
+        )
+        changed += 1
+      end
+    end
+    puts %q{<<RESULT}
+    puts({ changed: changed, missing: missing }.to_json)
+    puts %q{RESULT>>}
+  ' 2>/dev/null" </dev/null | tr -d '\r' | sed -n '/^<<RESULT$/,/^RESULT>>$/p' \
+    | grep -v RESULT | python3 -c "
+import json, sys
+r = json.loads(sys.stdin.read().strip() or '{}')
+print(f\"    wrote {r.get('changed', 0)} product(s)\")
+if r.get('missing'):
+    print(f\"    could not match at write time: {' '.join(r['missing'])}\")
+"
+
+  # Read it back from the shop rather than trusting the count. The write path
+  # and the read path are different code, and a report of what was written is
+  # not evidence of what is there.
+  info "reading it back"
+  rsh "cat > /tmp/${shop}-meta-plan.jsonl" < "$WORK/$shop.plan.jsonl"
+  rsh "docker exec ${shop}_web bin/rails runner '
+    require %q{json}
+    rows = File.readlines(%q{/tmp/meta-plan.jsonl}).map { |l| JSON.parse(l) }
+    wrong = rows.reject do |r|
+      p = Spree::Variant.find_by(sku: r[%q{sku}], is_master: true)&.product
+      p && p.meta_title == r[%q{meta_title}] && p.meta_description == r[%q{meta_description}]
+    end
+    puts %q{<<VERIFY} + wrong.length.to_s + %q{:} + wrong.first(5).map { |r| r[%q{sku}] }.join(%q{,}) + %q{:VERIFY>>}
+  ' 2>/dev/null" </dev/null | tr -d '\r' | sed -n 's/.*<<VERIFY\(.*\):VERIFY>>.*/\1/p' \
+    | { IFS=: read -r n skus; if [ "${n:-1}" = "0" ]; then ok "$CHANGES product(s) read back matching"; else die "$n product(s) do not match what was sent: $skus"; fi; }
+done
+
+step "Summary"
+if [ -z "$APPLY" ]; then
+  info "nothing was written. $TOTAL_CHANGES product(s) across $(echo "${TARGETS//,/ }" | wc -w | tr -d ' ') shop(s) would change."
+  info "add --apply to write, and --swap-country to reword the country in the descriptions."
+else
+  ok "$TOTAL_CHANGES product(s) written and read back"
+fi

@@ -201,3 +201,5 @@ storefront/src/lib/blocks/retired-urls.json
 # Backblaze B2 credentials the client pasted on the tracker. Rotate after use.
 .b2.env
 storefront/.env.business.local
+docs/.risk_list.build.html
+docs/.risk_network.build.html
