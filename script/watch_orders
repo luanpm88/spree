@@ -215,13 +215,50 @@ printf '\n%b' "$ALERTS"
 # is already wrong. ALERT_TO and ALERT_FROM_SHOP are set in /root/.estate-alert
 # on the server, out of this public repository.
 if [ "$NOTIFY" -eq 1 ]; then
+  # Load the address FIRST. The suppression below records that a shop has been
+  # reported, and doing that before knowing whether the mail can even be sent
+  # would swallow the first real alert and say nothing.
   CONF=/root/.estate-alert
   # shellcheck disable=SC1090
-  if [ "$ON_SERVER" -eq 1 ] && [ -f "$CONF" ]; then . "$CONF"; fi
+  [ -f "$CONF" ] && . "$CONF"
   if [ -z "${ALERT_TO:-}" ]; then
     echo "not sending: no ALERT_TO in $CONF"
     exit 1
   fi
+
+  # ── do not say the same thing every six hours ──────────────────────────────
+  #
+  # A shop that is stuck stays stuck, and cron would send the identical mail four
+  # times a day until it is fixed. That is how an alert becomes a filter rule.
+  # One mail per shop per day, and the clock resets once the shop recovers, so
+  # the next real outage is reported straight away.
+  SEEN=/root/.estate-alert-sent
+  touch "$SEEN" 2>/dev/null || SEEN=/tmp/.estate-alert-sent
+  FRESH=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    s_name=$(printf '%s' "$line" | awk '{print $1}')
+    last=$(awk -v s="$s_name" '$1 == s { print $2 }' "$SEEN" 2>/dev/null | tail -1)
+    if [ -z "$last" ] || [ $(( NOW - last )) -ge 86400 ]; then
+      FRESH="${FRESH}${line}\n"
+      printf '%s %s\n' "$s_name" "$NOW" >> "$SEEN"
+    fi
+  done <<< "$(printf '%b' "$ALERTS")"
+
+  # Shops that are fine again lose their entry, so a repeat outage is not muted.
+  for shop in $SHOPS; do
+    case "$(printf '%b' "$REPORT")" in
+      *"  $shop  STUCK"*) ;;
+      *) grep -v "^$shop " "$SEEN" > "$SEEN.tmp" 2>/dev/null && mv "$SEEN.tmp" "$SEEN" ;;
+    esac
+  done
+
+  if [ -z "$FRESH" ]; then
+    echo "already reported in the last 24 hours, not sending again"
+    exit 1
+  fi
+  ALERTS="$FRESH"
+
   SHOP_FOR_MAIL="${ALERT_FROM_SHOP:-nolocal}"
   BODY=$(printf '%b' "$ALERTS")
   run "docker exec -e ALERT_TO='$ALERT_TO' -e ALERT_BODY=$(printf '%q' "$BODY") ${SHOP_FOR_MAIL}_web bin/rails runner '
