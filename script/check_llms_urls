@@ -125,15 +125,32 @@ for shop in "${shops[@]}"; do
 # The address answered 200 on all five shops when asked by hand. It is the fourth
 # time this shape has produced a false red on this project, in a fourth script.
 # See DISCOVERIES 15.
+# Three attempts, not two, and only ever for a request that did not COMPLETE.
+#
+# A status code is an answer and is never retried: a 404 twice is still a 404.
+# What is retried is curl returning nothing at all, which means the request did
+# not finish rather than that the page is wrong.
+#
+# Two attempts were not enough. On 10 Sep this gate turned check_all red with
+# `ours 000` on one ca address, and on a second run with 000 on two DIFFERENT ca
+# addresses. Every one of them was then measured by hand: 200 with -L in about a
+# second, three times running, and 20 rapid sequential requests across four of
+# those paths returned 200 twenty times out of twenty. The pages are fine.
+#
+# So a red here was reporting the network between this laptop and his shop, on a
+# run that makes about 250 requests, and calling it a broken page. That is worse
+# than not checking: a red that is wrong teaches people to ignore the gate, and
+# this file's own header already records three earlier false reds of this shape.
 status_of() {
-  local url="$1" code
-  code=$(curl -sS -o /dev/null -L --max-time 45 -w '%{http_code}' "$url" 2>/dev/null)
-  if [[ -z "$code" ]] || ! [[ "$code" =~ ^[0-9]{3}$ ]]; then
-    sleep 2
-    code=$(curl -sS -o /dev/null -L --max-time 60 -w '%{http_code}' "$url" 2>/dev/null)
-    [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
-  fi
-  printf '%s' "$code"
+  local url="$1" code attempt
+  for attempt in 1 2 3; do
+    code=$(curl -sS -o /dev/null -L --max-time 45 -w '%{http_code}' "$url" 2>/dev/null)
+    [[ "$code" =~ ^[0-9]{3}$ ]] && { printf '%s' "$code"; return; }
+    # Backing off rather than hammering: if something upstream is briefly
+    # unhappy, asking again immediately is the least useful thing to do.
+    sleep $(( attempt * 3 ))
+  done
+  printf '000'
 }
 
   bad=0; checked=0; outside_bad=0; outside=0

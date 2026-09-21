@@ -53,16 +53,49 @@ while IFS='|' read -r shop _rest; do
   [[ -n "$shop" ]] || continue
   case "$shop" in \#*) continue;; esac
 
-  db_key=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
-    "docker exec estate-postgres psql -U postgres -At -d ${shop}_shop -c \"
-       SELECT token FROM spree_api_keys
-       WHERE key_type='publishable' AND revoked_at IS NULL ORDER BY id LIMIT 1\"" 2>/dev/null | tr -d '\r')
+  # Every remote read carries its own exit status back, and the value is only
+  # believed when that status is 0.
+  #
+  # This is not defensive plumbing, it is a fault this gate actually produced.
+  # On 13 Sep it reported "b2b: the storefront was built without a key" and
+  # failed the run. Measured straight afterwards, the container answered
+  # pk_gFySuT6Z8ry9h... with exit 0 and it MATCHED the database. One ssh in a
+  # forty minute sweep had failed, `2>/dev/null` ate the reason, and an empty
+  # string became a finding about a live shop.
+  #
+  # Same shape as the `</dev/null` fault in DISCOVERIES 45 and the rclone
+  # `--max-depth` one: a transport failure wearing the clothes of a measurement.
+  # An empty answer now has to prove it came back empty rather than not at all.
+  remote() {
+    ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 \
+        -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
+        "$1; echo \"__rc=\$?\"" 2>/dev/null | tr -d '\r'
+  }
 
-  sf_key=$(ssh -n -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" \
-    "docker exec ${shop}_storefront printenv SPREE_PUBLISHABLE_KEY" 2>/dev/null | tr -d '\r')
+  db_out=$(remote "docker exec estate-postgres psql -U postgres -At -d ${shop}_shop -c \"
+       SELECT token FROM spree_api_keys
+       WHERE key_type='publishable' AND revoked_at IS NULL ORDER BY id LIMIT 1\"")
+  db_rc=$(printf '%s\n' "$db_out" | sed -n 's/^__rc=//p')
+  db_key=$(printf '%s\n' "$db_out" | grep -v '^__rc=' | head -1)
+
+  sf_out=$(remote "docker exec ${shop}_storefront printenv SPREE_PUBLISHABLE_KEY")
+  sf_rc=$(printf '%s\n' "$sf_out" | sed -n 's/^__rc=//p')
+  sf_key=$(printf '%s\n' "$sf_out" | grep -v '^__rc=' | head -1)
+
+  # No status at all means the ssh never ran the command. That is this machine's
+  # network, not his shop, and it must never be reported as a shop fault.
+  if [[ -z "$db_rc" || -z "$sf_rc" ]]; then
+    printf '  %-10s %s(could not reach the box, not a finding about this shop)%s\n' "$shop" "$YE" "$R"
+    continue
+  fi
+  if [[ "$db_rc" != "0" || "$sf_rc" != "0" ]]; then
+    printf '  %-10s %s(a container did not answer: db rc=%s storefront rc=%s)%s\n' \
+      "$shop" "$YE" "$db_rc" "$sf_rc" "$R"
+    continue
+  fi
 
   if [[ -z "$db_key" && -z "$sf_key" ]]; then
-    printf '  %-10s %s(neither container answered)%s\n' "$shop" "$YE" "$R"
+    printf '  %-10s %s(both answered and both are empty)%s\n' "$shop" "$YE" "$R"
     continue
   fi
   checked=$((checked + 1))

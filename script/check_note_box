@@ -211,7 +211,29 @@ try {
   // which clearing never did the other way round.
   out("OK", `${Math.round(bb.width)}x${Math.round(bb.height)}, saved and read back`);
 } catch (e) {
-  out("FAIL", e.message.slice(0, 90));
+  const msg = e.message || String(e);
+  // A browser that never reached the shop is THIS machine's network, and it must
+  // not be reported as a fault in his checkout.
+  //
+  // On 13 Sep this gate printed "6 of 7 shop(s) have no working message box at
+  // checkout" and under it, six times, net::ERR_INTERNET_DISCONNECTED. The error
+  // text was honest and the conclusion drawn from it was not: two of those shops
+  // were re-tested minutes later and answered 200 with 5,579 and 5,079 characters
+  // of their own copy. Nothing was wrong with any of them.
+  //
+  // The verdict has to follow the kind of failure. A page that loads and has no
+  // note box is a finding. A page that never loaded is not a measurement at all,
+  // and the gate already has SKIP for that.
+  const unreachable =
+    /ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|ERR_ADDRESS_UNREACHABLE|ERR_CONNECTION_(REFUSED|RESET|CLOSED|TIMED_OUT|FAILED)|ERR_NETWORK_CHANGED|ERR_PROXY_CONNECTION_FAILED|ERR_SOCKET_NOT_CONNECTED/i.test(
+      msg,
+    );
+  out(
+    unreachable ? "SKIP" : "FAIL",
+    unreachable
+      ? `could not reach the shop from here, not measured: ${msg.slice(0, 60)}`
+      : msg.slice(0, 90),
+  );
 }
 await b.close();
 EOF
