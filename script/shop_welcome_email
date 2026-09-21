@@ -97,6 +97,11 @@ while IFS='|' read -r shop dir _rest; do
   got=$(rsh "docker exec ${shop}_web bin/rails runner 'print \"<<V:\" + Spree.user_class.send_welcome_emails.to_s + \":V>>\"' 2>/dev/null" \
         | tr -d '\r' | sed -n 's/.*<<V:\(.*\):V>>.*/\1/p')
 
+  # Written down where an investigation will look for it. On 21 Sep the question
+  # "what changed around the 15th" took an afternoon to answer from git, image
+  # dates and file mtimes, none of which record a setting being flipped.
+  script/note_change "welcome email ${ACTION}" "$shop" "SEND_WELCOME_EMAILS=$want, web recreated" >/dev/null 2>&1 || true
+
   if [[ -z "$healthy" ]]; then
     printf '%snever came back healthy%s\n' "$R" "$O"; bad=$((bad+1))
   elif [[ "$got" != "$want" ]]; then

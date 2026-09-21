@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# Write down what was changed on the estate, when, and by which command.
+#
+#   script/note_change "welcome email on" nz "SEND_WELCOME_EMAILS=true, web recreated"
+#   script/note_change --show                 # the last 40 entries
+#   script/note_change --since 2026-09-14     # everything since a date
+#
+# ── why this exists ─────────────────────────────────────────────────────────
+#
+# On 21 Sep the question was "what changed around the 15th", and answering it
+# took an afternoon: git log for commits, docker image creation dates, file
+# mtimes in /srv, and container start times, none of which agree with each other
+# and none of which record a change that touched no file, such as a container
+# being restarted or a setting flipped in the admin.
+#
+# The client asked the same question of himself and answered "nothing else has
+# changed that I am aware of", which is the best anyone can do from memory.
+#
+# So every command here that changes the estate appends one line, and the log
+# lives ON THE SERVER next to the thing it describes rather than in this
+# checkout, because a laptop is not where the shops run and a git history only
+# records the changes that happened to be commits.
+#
+# It is deliberately plain text, append only, one line each. Anything cleverer
+# is a thing that can break on the day it is needed.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+LOG=/srv/.estate-changes.log
+
+set -a; . ./.estate.env; set +a
+SSH_KEY="${SSH_KEY/#\~/$HOME}"; SSH_KEY="${SSH_KEY/\$HOME/$HOME}"
+rsh() { ssh -n -i "$SSH_KEY" -p "${SSH_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" "$@"; }
+
+case "${1:-}" in
+  --show)
+    rsh "tail -n ${2:-40} $LOG 2>/dev/null || echo '(nothing logged yet)'"
+    exit 0 ;;
+  --since)
+    [ -n "${2:-}" ] || { echo "usage: script/note_change --since YYYY-MM-DD"; exit 2; }
+    rsh "awk -v d='$2' '\$1 >= d' $LOG 2>/dev/null || echo '(nothing logged yet)'"
+    exit 0 ;;
+  "")
+    echo "usage: script/note_change <what> [shop] [detail]"
+    echo "       script/note_change --show [n]"
+    echo "       script/note_change --since YYYY-MM-DD"
+    exit 2 ;;
+esac
+
+WHAT="$1"; SHOP="${2:--}"; DETAIL="${3:-}"
+WHO="${USER:-unknown}"
+
+# Tabs, so a column stays a column when the detail has spaces in it. The shop
+# name is its own field because the first question after "what changed" is
+# always "on which shop".
+LINE="$(date -u '+%Y-%m-%d %H:%M')	${SHOP}	${WHAT}	${DETAIL}	(${WHO})"
+rsh "mkdir -p \$(dirname $LOG) && printf '%s\n' $(printf '%q' "$LINE") >> $LOG"
+echo "logged: $LINE"

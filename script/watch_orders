@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+#
+# A shop that keeps taking carts and stops finishing them.
+#
+#   script/watch_orders                 # how every shop looks right now
+#   script/watch_orders --backtest      # replay the last 45 days
+#   script/watch_orders --notify        # and send the email if anything is stuck
+#
+# Runs from this checkout over ssh, and unchanged on the server from cron. That
+# matters: the first version was JavaScript and the server has no node, so it
+# could never have been the thing that actually ran. One implementation, in the
+# language both ends already have.
+#
+# ── the fault this exists for ───────────────────────────────────────────────
+#
+# Between 15 and 21 Sep the shops took no orders for 5 days and nothing said so.
+# The client noticed, from his own sales, and asked us.
+#
+# Every gate was green throughout. check_order_completes drove a real browser to
+# the card on every shop on the 18th, in the middle of the gap, and Stripe
+# answered. That check is right and it cannot catch this, because pressing the
+# button worked the whole time. Something stopped real people finishing, and no
+# probe that drives itself will ever see that.
+#
+# The signal that WOULD have shown it is in the shop's own two numbers: carts
+# kept being started and orders stopped being finished.
+#
+# ── how it decides ──────────────────────────────────────────────────────────
+#
+# Not a fixed threshold. One shop finishes 1 to 4 orders a day and a quiet day
+# means nothing; another can go a fortnight and that is simply how busy it is.
+# So each shop is measured against ITSELF: it is called out when the current gap
+# since its last completed order runs past twice its own median gap, AND carts
+# are still being started.
+#
+# Both halves matter. The gap alone fires on every quiet weekend. Carts alone say
+# nothing, because bots make carts. Together they say people are still shopping
+# here and none of them can finish.
+#
+# Two days is the floor and that is arithmetic, not tuning. A shop that finishes
+# an order every 19 to 26 hours cannot be shown to have stopped in an evening,
+# because one quiet evening looks identical.
+#
+# ── not counting ourselves ──────────────────────────────────────────────────
+#
+# Three passes were needed and the first two were wrong in his favour, which is
+# the dangerous direction:
+#
+#   email only      misses probe runs that stopped before the address step, so
+#                   one shop looked like it had 18 shoppers when it had about 4
+#   plus a window   catches those, and still counted the free-product probe
+#                   carts, which hold one line at 0.00
+#   plus zero-total 15 of 20 carts left sitting on one shop turned out to be ours
+#
+# A customer who really does put one free sample in a basket is rare. Reading a
+# few of those as quiet is a far smaller error than reading our own probes as his
+# customers, which is the mistake this file exists to avoid.
+set -uo pipefail
+
+ON_SERVER=0
+[ -d /srv ] && [ ! -f .estate ] && ON_SERVER=1
+
+if [ "$ON_SERVER" -eq 0 ]; then
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+  [ -f .estate ] || { echo "no .estate on this machine"; exit 1; }
+  set -a; . ./.estate.env; set +a
+  SSH_KEY="${SSH_KEY/#\~/$HOME}"; SSH_KEY="${SSH_KEY/\$HOME/$HOME}"
+fi
+
+# Every database read goes through here, so there is one place that knows whether
+# it is talking to a local docker or a remote one.
+run() {
+  if [ "$ON_SERVER" -eq 1 ]; then bash -c "$1"
+  else ssh -n -i "$SSH_KEY" -p "${SSH_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 \
+        -o ServerAliveInterval=15 "$SSH_HOST" "$1"; fi
+}
+
+SHOPS_FILE=/root/.estate-shops
+if [ "$ON_SERVER" -eq 1 ]; then
+  SHOPS=$(grep -vE '^\s*(#|$)' "$SHOPS_FILE" 2>/dev/null | cut -d'|' -f1 | tr -d ' ')
+else
+  SHOPS=$(grep -vE '^\s*(#|$)' .estate | grep -v '^LIVE_DOMAINS=' | cut -d'|' -f1 | tr -d ' ')
+fi
+[ -n "$SHOPS" ] || { echo "no shops to check"; exit 1; }
+
+BACKTEST=0; NOTIFY=0
+for a in "$@"; do
+  case "$a" in
+    --backtest) BACKTEST=1 ;;
+    --notify)   NOTIFY=1 ;;
+    *) echo "unknown flag: $a"; exit 2 ;;
+  esac
+done
+
+DAYS=45
+PROBE_EMAIL='probe@example.test'
+PROBE_WINDOW='20 minutes'
+
+# Real carts and real completions, with our own traffic taken out in SQL so the
+# window is applied to the same rows the count comes from.
+#
+# One line, because a newline inside psql -c survives as a literal \n and psql
+# answers "invalid command \n".
+fetch() {
+  local db="$1" what="$2" q
+  if [ "$what" = orders ]; then
+    q="SELECT extract(epoch from completed_at)::bigint FROM spree_orders
+       WHERE completed_at > now() - interval '$((DAYS + 10)) days'
+         AND coalesce(email,'') <> '$PROBE_EMAIL' ORDER BY completed_at"
+  else
+    q="SELECT extract(epoch from o.created_at)::bigint FROM spree_orders o
+       WHERE o.created_at > now() - interval '$((DAYS + 10)) days'
+         AND coalesce(o.email,'') <> '$PROBE_EMAIL'
+         AND NOT (o.item_total = 0 AND (SELECT count(*) FROM spree_line_items li WHERE li.order_id = o.id) <= 1)
+         AND NOT EXISTS (SELECT 1 FROM spree_orders p WHERE p.email = '$PROBE_EMAIL'
+                         AND p.created_at BETWEEN o.created_at - interval '$PROBE_WINDOW'
+                                              AND o.created_at + interval '$PROBE_WINDOW')
+       ORDER BY o.created_at"
+  fi
+  q=$(printf '%s' "$q" | tr '\n' ' ' | tr -s ' ')
+  run "docker exec estate-postgres psql -U postgres -At -d ${db} -c \"${q//\"/\\\"}\"" 2>/dev/null
+}
+
+# BSD date takes -r, GNU date takes -d @. This runs on both.
+fmt_day() { date -u -r "$1" +%m-%d 2>/dev/null || date -u -d "@$1" +%m-%d; }
+
+NOW=$(date -u +%s)
+ALERTS=""
+REPORT=""
+
+for shop in $SHOPS; do
+  orders=$(fetch "${shop}_shop" orders)
+  carts=$(fetch "${shop}_shop" carts)
+
+  # awk -v cannot carry a newline, and passing the cart list that way silently
+  # produced "ok" for every shop while one of them had been stuck for 148 hours.
+  # Commas instead, split on a comma.
+  carts_csv=$(printf '%s' "$carts" | tr '\n' ',')
+
+  read -r verdict message <<EOF
+$(printf '%s\n' "$orders" | awk -v carts="$carts_csv" -v now="$NOW" -v shop="$shop" -v days="$DAYS" -v backtest="$BACKTEST" '
+  BEGIN { n = 0; nc = split(carts, C, ",") }
+  /^[0-9]+$/ { O[++n] = $1 }
+  function median(a, len,   i, j, t, m) {
+    for (i = 1; i < len; i++) for (j = i + 1; j <= len; j++)
+      if (a[i] > a[j]) { t = a[i]; a[i] = a[j]; a[j] = t }
+    m = int((len + 1) / 2); return a[m]
+  }
+  function judge(at,   i, last, g, gc, gaps, med, still, trig, cs) {
+    last = 0; for (i = 1; i <= n; i++) if (O[i] <= at && O[i] > last) last = O[i]
+    if (last == 0) return ""
+    gc = 0
+    # BOTH ends inside the window. Counting a gap that straddles the edge pulls
+    # in a quiet spell from before the period being measured, and it made this
+    # disagree with the reference implementation by a day on two shops.
+    for (i = 2; i <= n; i++)
+      if (O[i] <= at && O[i-1] > at - days * 86400) { gaps[++gc] = (O[i] - O[i-1]) / 3600 }
+    if (gc < 5) return ""
+    med = median(gaps, gc)
+    still = (at - last) / 3600
+    trig = (2 * med > 24) ? 2 * med : 24
+    cs = 0; for (i = 1; i <= nc; i++) if (C[i] + 0 > last && C[i] + 0 <= at) cs++
+    if (still > trig && cs >= 3) return sprintf("%d|%d|%d", still, cs, med)
+    return ""
+  }
+  END {
+    if (backtest) {
+      # Ask the question as it stood each morning, using only what was known
+      # then. A rule tuned on data it has already seen always looks like it works.
+      out = ""
+      for (d = days; d >= 0; d--) {
+        at = now - d * 86400
+        r = judge(at)
+        # Epoch out, formatted in the shell. awk on macOS has no strftime and
+        # this file has to run unchanged on the laptop and on the server.
+        if (r != "") { out = out sprintf("%d ", at) }
+      }
+      if (out == "") print "ok"
+      else printf "STUCK %s\n", out
+      exit
+    }
+    r = judge(now)
+    if (r == "") { print "ok" ; exit }
+    split(r, p, "|")
+    printf "STUCK %s has taken no order for %d hours. %d carts have been started in that time. It normally takes one every %d hours.\n", shop, p[1], p[2], p[3]
+  }')
+EOF
+
+  if [ "${verdict:-ok}" = "STUCK" ] && [ "$BACKTEST" -eq 1 ]; then
+    days_fired=""
+    for e in $message; do days_fired="$days_fired $(fmt_day "$e")"; done
+    REPORT="${REPORT}  ${shop}  would have fired on:${days_fired}\n"
+  elif [ "${verdict:-ok}" = "STUCK" ]; then
+    ALERTS="${ALERTS}${message}\n"
+    REPORT="${REPORT}  ${shop}  STUCK\n"
+  else
+    REPORT="${REPORT}  ${shop}  ok\n"
+  fi
+done
+
+printf '\nCarts started against orders finished\n\n'
+printf '%b' "$REPORT"
+
+if [ -z "$ALERTS" ]; then
+  printf '\nevery shop is finishing orders at its own normal rate\n'
+  exit 0
+fi
+
+printf '\n%b' "$ALERTS"
+
+# ── sending ─────────────────────────────────────────────────────────────────
+#
+# Through a shop's own Rails, so it uses the Maileroo account that is already
+# working rather than a second mail path that is only exercised when something
+# is already wrong. ALERT_TO and ALERT_FROM_SHOP are set in /root/.estate-alert
+# on the server, out of this public repository.
+if [ "$NOTIFY" -eq 1 ]; then
+  CONF=/root/.estate-alert
+  # shellcheck disable=SC1090
+  if [ "$ON_SERVER" -eq 1 ] && [ -f "$CONF" ]; then . "$CONF"; fi
+  if [ -z "${ALERT_TO:-}" ]; then
+    echo "not sending: no ALERT_TO in $CONF"
+    exit 1
+  fi
+  SHOP_FOR_MAIL="${ALERT_FROM_SHOP:-nolocal}"
+  BODY=$(printf '%b' "$ALERTS")
+  run "docker exec -e ALERT_TO='$ALERT_TO' -e ALERT_BODY=$(printf '%q' "$BODY") ${SHOP_FOR_MAIL}_web bin/rails runner '
+    ActionMailer::Base.mail(
+      to: ENV.fetch(\"ALERT_TO\"),
+      from: Spree::Store.default.mail_from_address,
+      subject: \"Shop alert: an order has not completed in a while\",
+      body: ENV.fetch(\"ALERT_BODY\") + \"\n\nSent by the order watch on the shop server.\"
+    ).deliver_now
+    puts \"sent\"
+  '" 2>/dev/null | grep -q sent && echo "alert emailed" || echo "the alert could not be sent"
+fi
+
+exit 1
