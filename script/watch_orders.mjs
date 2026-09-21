@@ -65,6 +65,14 @@ const DAYS = 45;
 // So a cart is also ours when a probe order exists on the same shop within this
 // many minutes of it. Probes run in bursts; real customers do not arrive in
 // bursts around our bursts.
+//
+// The window is still not enough on its own. The free product probe leaves carts
+// holding one line at 0.00, and on one shop fifteen of twenty carts left sitting
+// in `cart` state were ours by that signature. A real shopper's cart has a price
+// on it, so a single line totalling zero is treated as litter too. A customer
+// who really does put only a free sample in a basket is rare, and counting a
+// handful of those as quiet is a far smaller error than reading our own probes
+// as his customers, which is the mistake this file exists to avoid making.
 const PROBE_EMAIL = "probe@example.test";
 const PROBE_WINDOW_MIN = 20;
 
@@ -198,6 +206,7 @@ for (const shop of shops) {
     carts = sql(
       db,
       `SELECT extract(epoch from o.created_at), (o.email = '${PROBE_EMAIL}')
+         OR (o.item_total = 0 AND (SELECT count(*) FROM spree_line_items li WHERE li.order_id = o.id) <= 1)
          OR EXISTS (SELECT 1 FROM spree_orders p
                     WHERE p.email = '${PROBE_EMAIL}'
                       AND p.created_at BETWEEN o.created_at - interval '${PROBE_WINDOW_MIN} minutes'
