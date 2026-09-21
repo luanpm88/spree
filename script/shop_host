@@ -867,9 +867,72 @@ NGINX
 # add the TLS block and the redirect. Rewriting it would throw that away.
 cmd_public() {
   lookup "$1"
+  shift || true
+  # Flags in any order, and both usable together. Parsed rather than read off $2
+  # so that --force does not have to displace --live: the shop whose live file
+  # somebody else edited is exactly the shop you may need to overwrite.
+  local live="" force=""
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --live)  live=1 ;;
+      --force) force=1 ;;
+      *) die "cmd_public: unknown argument $a" ;;
+    esac
+  done
   local src="tmp/client/shop_public/$S_NAME"
   [[ -d "$src" ]] || die "no files staged in $src — pull them from the old server first"
+
+  # Which hostname these files have to answer on.
+  #
+  # The review name by default, and the shop's real name with --live. The review
+  # names were retired after cutover and are NXDOMAIN from the box itself, so the
+  # verification at the end of this function cannot reach them: measured 8 Sep,
+  # getent on the server returns nothing for every one of them. The live vhost
+  # already carries the include, so publishing on the live name needs the upload
+  # and the reload and nothing else.
+  local site_host="$S_DOMAIN"
+  if [[ -n "$live" ]]; then
+    [[ -n "${S_LIVE:-}" && "$S_LIVE" != "-" ]] \
+      || die "$S_NAME has no live url in .estate. Nothing to publish against."
+    site_host="${S_LIVE#https://}"; site_host="${site_host%%/*}"
+    warn "publishing $S_NAME on its REAL name: $site_host"
+  fi
+
   step "Publishing $S_NAME's own robots.txt, llms files and icons"
+
+  # ── refuse to publish over somebody else's newer file ─────────────────────
+  #
+  # This is the guard for a fault that came within one command of happening on
+  # 8 Sep. The client updated two shops' llms files himself, and the staged
+  # copies here were still the ones pulled on 26 August: 9366 bytes staged
+  # against 10750 live, 7861 against 9658, and a third shop's robots.txt 431
+  # against 2267. Publishing would have uploaded the whole staged directory over
+  # the top and silently reverted every word he had written, with nothing in the
+  # output to say so, because this function reports what it UPLOADS and never
+  # what it replaced.
+  #
+  # Content alone cannot tell you which side is newer, so it is not guessed. A
+  # manifest is written after each successful publish recording what this
+  # checkout put there; if what is live no longer matches that, somebody else
+  # changed it and this refuses. --force is the deliberate override.
+  local manifest="$src/.published.md5"
+  if [[ -z "$force" && -f "$manifest" ]]; then
+    local f live_md5 known_md5 drifted=""
+    for f in robots.txt llms.txt llms-full.txt; do
+      [[ -f "$src/$f" ]] || continue
+      known_md5=$(awk -v n="$f" '$2 == n { print $1 }' "$manifest")
+      [[ -n "$known_md5" ]] || continue
+      live_md5=$(rsh "curl -fsS https://$site_host/$f 2>/dev/null | md5sum | cut -d' ' -f1" </dev/null | tr -d '\r')
+      [[ -n "$live_md5" ]] || continue
+      if [[ "$live_md5" != "$known_md5" ]]; then
+        warn "$f on $site_host is not what this checkout last published"
+        drifted="$drifted $f"
+      fi
+    done
+    [[ -z "$drifted" ]] || die "live has changed since the last publish:$drifted
+Pull those down into $src first, or re-run with --force to overwrite them."
+  fi
 
   # This uploads the WHOLE staged directory, robots.txt included, so publishing a
   # new llms file also replaces the shop's crawler policy. On 26 August that
@@ -910,15 +973,15 @@ location = /.well-known/apple-developer-merchantid-domain-association {
 NGINX
 
   # Idempotent: only insert the include if it is not already there.
-  local vhost="/etc/nginx/sites-available/$S_DOMAIN"
-  rsh "grep -q 'nginx-public.conf' $vhost || sed -i 's|^\(\s*server_name $S_DOMAIN;\)|\1\n    include /srv/$S_DIR/nginx-public.conf;|' $vhost"
+  local vhost="/etc/nginx/sites-available/$site_host"
+  rsh "grep -q 'nginx-public.conf' $vhost || sed -i 's|^\(\s*server_name $site_host;\)|\1\n    include /srv/$S_DIR/nginx-public.conf;|' $vhost"
 
   # sed exits 0 when its pattern matches nothing, so "the include was added" and
   # "the server_name line was not in the shape we expected" are the same exit
   # status. nz spent three days serving 404 for its own llms.txt on the strength
   # of that silence, with the file sitting on disk the whole time. Ask the file.
   rsh "grep -q 'nginx-public.conf' $vhost" \
-    || die "could not add the include to $vhost — no line matched 'server_name $S_DOMAIN;'"
+    || die "could not add the include to $vhost — no line matched 'server_name $site_host;'"
   rsh "nginx -t" >/dev/null 2>&1 || die "nginx rejected the config after adding the include"
 
   # Publishing has just replaced this shop's robots.txt with whatever is staged,
@@ -926,17 +989,30 @@ NGINX
   # that has to be answered by the noindex header, so assert it here rather than
   # rely on somebody remembering the order. Idempotent, and it verifies the
   # header on the way out.
-  if [[ "$S_DOMAIN" == new* || "$S_DOMAIN" == *.local ]]; then
+  # Not when publishing on the live name.
+  #
+  # This exists because publishing replaces the shop's robots.txt with the LIVE
+  # crawler policy, which on a temporary review host has to be countered by the
+  # noindex header. On the live host that policy is the whole point, and the
+  # review names were retired after cutover: re-asserting noindex there fails
+  # outright, because the address no longer resolves from the box.
+  if [[ -z "$live" && ( "$S_DOMAIN" == new* || "$S_DOMAIN" == *.local ) ]]; then
     cmd_noindex "$S_NAME"
   fi
   rsh "systemctl reload nginx"
 
   local f code
+  : > "$manifest"
   for f in robots.txt llms.txt llms-full.txt icon.png; do
     [[ -f "$src/$f" ]] || continue
-    code=$(rsh "curl -s -o /dev/null -w '%{http_code}' https://$S_DOMAIN/$f" </dev/null | tr -d '\r')
-    [[ "$code" == "200" ]] || die "https://$S_DOMAIN/$f returned $code"
-    ok "https://$S_DOMAIN/$f"
+    code=$(rsh "curl -s -o /dev/null -w '%{http_code}' https://$site_host/$f" </dev/null | tr -d '\r')
+    [[ "$code" == "200" ]] || die "https://$site_host/$f returned $code"
+    # What is live now, recorded, so the guard above can tell next time whether a
+    # change came from this checkout or from him. Read back off the SERVER rather
+    # than hashed locally: the point is what is actually being served.
+    rsh "md5sum /srv/$S_DIR/public/$f 2>/dev/null | cut -d' ' -f1" </dev/null \
+      | tr -d '\r' | awk -v n="$f" 'NF { print $1, n }' >> "$manifest"
+    ok "https://$site_host/$f"
   done
 }
 
@@ -997,7 +1073,7 @@ NGINX
   # sed exits 0 when nothing matched, so ask the file, for the same reason
   # cmd_public does. Three days of 404s bought that lesson once already.
   rsh "grep -q 'nginx-noindex.conf' $vhost" \
-    || die "could not add the include to $vhost — no line matched 'server_name $S_DOMAIN;'"
+    || die "could not add the include to $vhost — no line matched 'server_name $site_host;'"
   rsh "nginx -t" >/dev/null 2>&1 || die "nginx rejected the config after adding the include"
   rsh "systemctl reload nginx"
 
@@ -1906,7 +1982,30 @@ cmd_storefront() {
     print %q{<<W:} + (e ? e.secret_key.to_s : %q{}) + %q{:W>>}
   ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<W:\(.*\):W>>.*/\1/p')
 
-  info "key ${key:0:8}…, store \"$name\", webhook secret $([[ -n "$webhook_secret" ]] && echo "present" || echo "not provisioned yet")"
+  # The locale this shop's product translations are actually written in.
+  #
+  # Read off the shop rather than assumed, because assuming it is exactly what
+  # broke search on two of the seven shops for weeks. Their stores declare a
+  # default_locale of en-AU and en-NZ, their products carry translations for
+  # that locale and none for plain `en`, and the storefront was sending `en`
+  # because that is the locale segment in its URLs. Measured on the live shop,
+  # the same query with one header changed: `en` returned 0 and `en-AU`
+  # returned 65.
+  #
+  # Nothing else showed it. Browsing works, because a listing falls back to the
+  # base columns, so the shop rendered, answered 200 and sold the whole time.
+  #
+  # Emitted only when it differs from what the URL carries. On the five shops
+  # whose default_locale is already `en` the variable is absent and the
+  # storefront behaves exactly as before, so this cannot change a shop that is
+  # working.
+  local api_locale
+  api_locale=$(rsh "docker exec ${S_NAME}_web bin/rails runner '
+    print %q{<<L:} + Spree::Store.default.default_locale.to_s + %q{:L>>}
+  ' 2>/dev/null" 2>/dev/null | tr -d '\r' | sed -n 's/.*<<L:\(.*\):L>>.*/\1/p')
+  [[ "$api_locale" == "en" ]] && api_locale=""
+
+  info "key ${key:0:8}…, store \"$name\", webhook secret $([[ -n "$webhook_secret" ]] && echo "present" || echo "not provisioned yet"), api locale ${api_locale:-en (default)}"
 
   step "Writing the override file"
   rput "/srv/$S_DIR/docker-compose.override.yml" <<YAML
@@ -1937,6 +2036,20 @@ services:
       # Provisioned by script/provision_webhook, which reads the value Spree
       # generated rather than inventing one, because Spree signs with its own.
       SPREE_WEBHOOK_SECRET: ${webhook_secret:-}
+      # The locale the API is asked in, when it is not the one in the URL.
+      #
+      # RUNTIME, like the two above, and deliberately so: this is what corrects
+      # a shop whose search returns nothing, and correcting it should not need
+      # the image rebuilt. See the note where api_locale is read.
+      #
+      # Empty on a shop whose translations are in plain \`en\`, which is five of
+      # the seven, and empty means the URL locale is used exactly as before.
+      #
+      # Quoted, so an unset locale is an explicit empty string rather than a
+      # YAML null. Compose reads a null value as "inherit this from the host
+      # environment", which would let a stray variable on the box reach five
+      # shops that must not have one.
+      SPREE_API_LOCALE: "${api_locale:-}"
     ports:
       - "127.0.0.1:$S_SPORT:3001"
     networks: [estate]
