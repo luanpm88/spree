@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+#
+# Turn the welcome email on or off, per shop or across the estate.
+#
+#   script/shop_welcome_email status              # every shop, reads the runtime value
+#   script/shop_welcome_email on nz               # one shop
+#   script/shop_welcome_email on                  # all of them, one at a time
+#   script/shop_welcome_email off                 # the import day switch
+#
+# ── what it is switching ────────────────────────────────────────────────────
+#
+# SEND_WELCOME_EMAILS is read once, in config/initializers/spree.rb, into
+# Spree.user_class.send_welcome_emails. The callback behind it is
+# after_create_commit, so it fires on EVERY user row that gets created and never
+# on an existing one. That is why it defaults to false: an import of a customer
+# list would mail everybody on it, and the first anyone would know is the replies.
+#
+# He agreed on 21 Sep: on for every new account, off for the day any import runs.
+# `off` is that switch. Run it before an import, run `on` after.
+#
+# ── why a container has to be recreated ─────────────────────────────────────
+#
+# The value is read at boot and the shop reads its variables from env_file, so
+# the process has to start again to see a change. `up -d` recreates only the
+# service named, and only the shop named, so one shop is out at a time for as
+# long as it takes to come back healthy.
+#
+# Measured before this was first run: the estate serves about 2,600 requests an
+# hour at 06:00 UTC across all shops, and about 1,000 at 14:00, which is the
+# quiet window if a restart needs one.
+#
+# ── the part that is not optional ───────────────────────────────────────────
+#
+# The .env is copied before it is touched, and the runtime value is read back out
+# of the running container afterwards. Writing the variable is not evidence that
+# the shop picked it up: on 18 Aug a sed that matched nothing left a container
+# without a value it was reported as having.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+ESTATE_FILE=.estate
+[ -f "$ESTATE_FILE" ] || { echo "no $ESTATE_FILE on this machine"; exit 1; }
+set -a; . ./.estate.env; set +a
+SSH_KEY="${SSH_KEY/#\~/$HOME}"; SSH_KEY="${SSH_KEY/\$HOME/$HOME}"
+rsh() { ssh -n -i "$SSH_KEY" -p "${SSH_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 \
+        -o ServerAliveInterval=15 -o ServerAliveCountMax=40 "$SSH_HOST" "$@"; }
+
+R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'; O=$'\033[0m'
+ACTION="${1:-status}"
+ONLY="${2:-}"
+case "$ACTION" in status|on|off) ;; *) echo "usage: script/shop_welcome_email status|on|off [shop]"; exit 2 ;; esac
+
+bad=0
+while IFS='|' read -r shop dir _rest; do
+  shop="$(echo "$shop" | tr -d ' ')"; dir="$(echo "$dir" | tr -d ' ')"
+  [[ -n "$shop" ]] || continue
+  case "$shop" in \#*) continue;; esac
+  [[ -z "$ONLY" || "$ONLY" == "$shop" ]] || continue
+
+  if [[ "$ACTION" == "status" ]]; then
+    v=$(rsh "docker exec ${shop}_web bin/rails runner 'print \"<<V:\" + Spree.user_class.send_welcome_emails.to_s + \":V>>\"' 2>/dev/null" \
+        | tr -d '\r' | sed -n 's/.*<<V:\(.*\):V>>.*/\1/p')
+    case "$v" in
+      true)  printf '  %-10s %son%s\n' "$shop" "$G" "$O" ;;
+      false) printf '  %-10s %soff%s\n' "$shop" "$Y" "$O" ;;
+      *)     printf '  %-10s %scould not read it%s\n' "$shop" "$R" "$O"; bad=$((bad+1)) ;;
+    esac
+    continue
+  fi
+
+  want=$([[ "$ACTION" == "on" ]] && echo true || echo false)
+  printf '  %-10s ' "$shop"
+
+  # Copy first. Same naming as the cutover copies already in these directories.
+  rsh "cp -a /srv/$dir/.env /srv/$dir/.env.pre-welcome-\$(date +%Y%m%d-%H%M%S)" >/dev/null 2>&1
+
+  # Replace the line if it is there, append it if it is not. Both branches, so
+  # running this twice does not leave two of them.
+  rsh "cd /srv/$dir && \
+    if grep -q '^SEND_WELCOME_EMAILS=' .env; then \
+      sed -i 's|^SEND_WELCOME_EMAILS=.*|SEND_WELCOME_EMAILS=$want|' .env; \
+    else \
+      printf '\n# Welcome email. Off for the day any customer import runs.\nSEND_WELCOME_EMAILS=$want\n' >> .env; \
+    fi" >/dev/null 2>&1
+
+  rsh "cd /srv/$dir && docker compose up -d web" >/dev/null 2>&1
+
+  # Wait for it to answer again before moving to the next shop, so the estate is
+  # never missing two at once.
+  healthy=""
+  for _ in $(seq 1 30); do
+    h=$(rsh "docker inspect -f '{{.State.Health.Status}}' ${shop}_web 2>/dev/null" | tr -d '\r')
+    [[ "$h" == "healthy" ]] && { healthy=1; break; }
+    sleep 5
+  done
+
+  got=$(rsh "docker exec ${shop}_web bin/rails runner 'print \"<<V:\" + Spree.user_class.send_welcome_emails.to_s + \":V>>\"' 2>/dev/null" \
+        | tr -d '\r' | sed -n 's/.*<<V:\(.*\):V>>.*/\1/p')
+
+  if [[ -z "$healthy" ]]; then
+    printf '%snever came back healthy%s\n' "$R" "$O"; bad=$((bad+1))
+  elif [[ "$got" != "$want" ]]; then
+    printf '%sthe container still reads %s%s\n' "$R" "${got:-nothing}" "$O"; bad=$((bad+1))
+  else
+    printf '%s%s%s, healthy\n' "$G" "$got" "$O"
+  fi
+done < <(grep -vE '^\s*(#|$)' "$ESTATE_FILE" | grep -v '^LIVE_DOMAINS=')
+
+echo
+[[ $bad -eq 0 ]] && { echo "ok"; exit 0; }
+printf '%s%d shop(s) did not take it%s\n' "$R" "$bad" "$O"; exit 1
