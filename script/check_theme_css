@@ -102,9 +102,41 @@ def main():
         )
 
     # 3. A theme with tokens but no utilities, or the other way round.
+    #
+    # "Tokens" here means tokens that PAINT. It used to mean any custom property
+    # in the block, and that made this rule accuse a shop that was correct: his
+    # business shop's theme sets one declaration, --logo-h: 40px, because his
+    # artwork specifies a 40px header mark. A logo height repaints nothing, so
+    # there is no matching set of utilities it could be missing, and the gate
+    # was reporting half a palette where there was no palette at all.
+    #
+    # Decided by the VALUE rather than by a list of property names, so a token
+    # nobody here has thought of yet still counts the moment it holds a colour.
+    # If that shop later gains a real --primary with no utilities beside it, this
+    # fires exactly as it was written to.
+    def paints(body):
+        for decl in re.finditer(r"(--[\w-]+)\s*:\s*([^;}]+)", body):
+            value = decl.group(2).strip().lower()
+            if re.match(
+                r"^(#[0-9a-f]{3,8}|rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color-mix|"
+                r"transparent|currentcolor|white|black)\b",
+                value,
+            ):
+                return True
+            # A token pointing at another token is a colour if the thing it
+            # points at is: --card: var(--primary) paints.
+            m = re.match(r"^var\(\s*(--[\w-]+)", value)
+            if m and re.search(
+                r"^\s*" + re.escape(m.group(1)) + r"\s*:\s*(#|rgb|hsl|oklch|color-mix)",
+                body,
+                re.M,
+            ):
+                return True
+        return False
+
     named = set(re.findall(r'\[data-theme="([^"]+)"\]', text))
     for name in sorted(named):
-        has_tokens = bool(theme_blocks(text).get(name))
+        has_tokens = any(paints(b) for b in theme_blocks(text).get(name, []))
         has_utilities = bool(
             re.search(r'\[data-theme="' + re.escape(name) + r'"\]\s+\.', text)
         )
@@ -129,11 +161,28 @@ def main():
             print(f"      ... and {len(findings) - 12} more")
         return 1
 
+    # Say which themes actually paint, rather than claiming both halves are
+    # present for all of them. One of these three sets no colour at all: it
+    # carries a logo height and nothing else, because only the header and footer
+    # of that shop have been designed so far. Reporting it as a complete theme
+    # would be this gate telling a comfortable story about a shop whose body
+    # still wears another brand's palette.
     themes = sorted(named)
-    print(
-        f"      ok — {len(themes)} theme(s) ({', '.join(themes)}), "
-        "tokens and utilities both present, no inert scale overrides"
+    painting = sorted(
+        n for n in themes if any(paints(b) for b in theme_blocks(text).get(n, []))
     )
+    silent = [n for n in themes if n not in painting]
+    print(
+        f"      ok — {len(themes)} theme(s) ({', '.join(themes)}); "
+        f"{len(painting)} paint and each overrides utilities too, "
+        "no inert scale overrides"
+    )
+    if silent:
+        print(
+            f"      note — {', '.join(silent)} set no colour at all, so nothing here\n"
+            "             checks their palette. Whatever those shops render in their\n"
+            "             body is whichever palette they inherit."
+        )
     return 0
 
 

@@ -75,8 +75,23 @@ REQUIRED = [
 # is not wearing another brand's identity, so requiring it there would fail the
 # sixth shop for something that is correct. Measured: it has a theme and an
 # announcement of its own, and no SIGN_IN or SUBSCRIBE_FIELDS entry, on purpose.
+# The second element is a set of alternatives, and one of them is enough.
+#
+# It was a single map name, and that made this gate wrong the day the sixth
+# shop's design arrived. His business shop puts something else in that position:
+# not one centred sentence but three groups on one line, which is a different
+# component reading a different map, UTILITY_BAR_BY_SHOP. The shop has its own
+# words across the top of every page and always did; what it does not have is an
+# ANNOUNCEMENT_BY_SHOP entry, because it deliberately renders no announcement
+# bar at all.
+#
+# So the gate failed a shop that was correct. The requirement it is actually
+# there to enforce is that a themed shop owns the strip above its header, not
+# that it owns one particular map, and a gate which insists on the map rather
+# than the property is a gate that has to be edited every time the design gains
+# a shape.
 THEMED_MUST_OWN = [
-    ("THEME_BY_SHOP", "ANNOUNCEMENT_BY_SHOP"),
+    ("THEME_BY_SHOP", ("ANNOUNCEMENT_BY_SHOP", "UTILITY_BAR_BY_SHOP")),
 ]
 
 # Shops with no storefront of their own are skipped, and the estate already says
@@ -146,27 +161,39 @@ def main():
 
     # The narrower rule: a shop that declares its own theme must not inherit a
     # shared identity line.
-    for driver_map, identity_map in THEMED_MUST_OWN:
+    for driver_map, identity_maps in THEMED_MUST_OWN:
         themed = keys_of(source, driver_map)
-        owned = keys_of(source, identity_map)
-        if themed is None or owned is None:
-            missing.append((identity_map, "MAP NOT FOUND", ""))
+        if themed is None:
+            missing.append((driver_map, "MAP NOT FOUND", ""))
+            continue
+        # Every alternative has to exist as a map. One of them missing entirely
+        # is a rename nobody carried through, and silently treating it as "this
+        # shop has no strip" is how a gate stops testing anything.
+        found = {}
+        for name in identity_maps:
+            keys = keys_of(source, name)
+            if keys is None:
+                missing.append((name, "MAP NOT FOUND", ""))
+            else:
+                found[name] = keys
+        if not found:
             continue
         for shop in sorted(themed):
-            if shop not in owned:
-                missing.append(
-                    (
-                        identity_map,
-                        shop,
-                        f"has its own {driver_map} but falls back to a shared {identity_map}",
-                    )
+            if any(shop in keys for keys in found.values()):
+                continue
+            missing.append(
+                (
+                    " or ".join(identity_maps),
+                    shop,
+                    f"has its own {driver_map} but no strip of its own above the header",
                 )
+            )
 
     print(f"  {len(shops)} shop(s) with a storefront, {len(REQUIRED)} content maps")
 
     if not missing:
         print("\n  ok — every shop has its own copy in every map,")
-        print("       and every themed shop has its own announcement")
+        print("       and every themed shop owns the strip above its header")
         return 0
 
     print()
