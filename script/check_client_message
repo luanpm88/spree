@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+#
+# A draft the client will read, checked before it is handed over.
+#
+#   script/check_client_message tmp/urgent/reply-3.md
+#   script/check_client_message tmp/urgent/*.md
+#   script/check_client_message --tracker tmp/client/ac-task-19.md
+#
+# ── why this exists ─────────────────────────────────────────────────────────
+#
+# docs/VOICE.md is 500 lines and ends with an 18 item checklist, and the drafts
+# still go out wrong. Two faults, both of them repeats:
+#
+#   21 Aug  a draft went over hard wrapped. The lesson was written down.
+#   21 Sep  a draft went over hard wrapped again. The note from 21 Aug was
+#           never listed in MEMORY.md, so nothing loaded it, and the VOICE.md
+#           checklist had no line for wrapping either.
+#
+# A rule that lives only in prose is a rule that holds until the day somebody is
+# busy. Everything mechanical in VOICE.md is here instead, so the prose can go
+# back to being about judgement: what to say, what to cut, what he has to answer.
+#
+# What this CANNOT check is the part that matters most: whether the first line is
+# the answer, whether there is exactly one decision, and whether the message is
+# true. Read it once at speed after this passes.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" 2>/dev/null || true
+
+TRACKER=0
+FILES=()
+for a in "$@"; do
+  case "$a" in
+    --tracker) TRACKER=1 ;;
+    -*) echo "unknown flag: $a" >&2; exit 2 ;;
+    *) FILES+=("$a") ;;
+  esac
+done
+[ ${#FILES[@]} -gt 0 ] || { echo "usage: script/check_client_message <draft.md> [...]"; exit 2; }
+
+R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'; D=$'\033[2m'; O=$'\033[0m'
+total_bad=0
+
+# Rule 5. Already at zero across the whole corpus, kept there.
+BANNED='sorry|apolog(y|ies|ise|ize)|unfortunate(ly)?|inconvenience|however|moreover|additionally|in summary|happy to|feel free|do not hesitate|hesitate|kindly|rest assured|please note|leverage|robust|seamless|crucial'
+# Rule 15. Effort is time. Anything that reads as money changes what the message is about.
+MONEY='\bquote[ds]?\b|\bpricing\b|\bcheaper\b|\bexpensive\b|\bbudget\b|\bcosts?\b|worth it'
+# Rule 4. Zero verb contractions across the last sixteen messages. Possessives are fine.
+CONTRACTIONS="\b(I'm|I've|I'll|I'd|don't|doesn't|didn't|won't|wouldn't|can't|cannot've|couldn't|shouldn't|isn't|aren't|wasn't|weren't|haven't|hasn't|hadn't|it's|that's|there's|here's|we're|we've|we'll|we'd|you're|you've|you'll|you'd|they're|they've|let's)\b"
+
+for f in "${FILES[@]}"; do
+  [ -f "$f" ] || { printf '%s  no such file%s\n' "$R" "$O"; total_bad=$((total_bad+1)); continue; }
+  bad=0
+  printf '\n%s%s%s\n' "$D" "$f" "$O"
+
+  say() { printf '  %sFAIL%s  %s\n' "$R" "$O" "$1"; bad=$((bad+1)); }
+  note() { printf '  %swarn%s  %s\n' "$Y" "$O" "$1"; }
+
+  # ── hard wrap, rule added 21 Sep ──────────────────────────────────────────
+  #
+  # One line per paragraph, one line per bullet. He pastes the draft straight
+  # into WhatsApp, which re-flows to the phone width, so a wrap that looked tidy
+  # in a terminal arrives as a break in the middle of a sentence.
+  #
+  # A block of several lines is only allowed when every line in it is a bullet.
+  wrapped=$(awk '
+    /^[[:space:]]*$/ { blk = ""; n = 0; allb = 1; next }
+    {
+      n++
+      if ($0 !~ /^[[:space:]]*([-*+]|[0-9]+\.)[[:space:]]/) allb = 0
+      if (n == 2 && !allb) print NR
+      if (n > 1 && !allb) last = NR
+    }
+  ' "$f")
+  if [ -n "$wrapped" ]; then
+    say "hard wrapped. One line per paragraph (first wrap at line $(echo "$wrapped" | head -1))"
+  fi
+
+  # ── the flat bans ─────────────────────────────────────────────────────────
+  hit=$(grep -n -- '—' "$f" || true)
+  [ -n "$hit" ] && say "em dash: $(echo "$hit" | head -1 | cut -c1-70)"
+
+  hit=$(grep -niE "$BANNED" "$f" || true)
+  [ -n "$hit" ] && say "banned word (rule 5): $(echo "$hit" | head -1 | cut -c1-70)"
+
+  hit=$(grep -niE "$MONEY" "$f" || true)
+  [ -n "$hit" ] && say "reads as money, not time (rule 15): $(echo "$hit" | head -1 | cut -c1-70)"
+
+  hit=$(grep -nE "$CONTRACTIONS" "$f" || true)
+  [ -n "$hit" ] && say "verb contraction (rule 4): $(echo "$hit" | head -1 | cut -c1-70)"
+
+  # ── the ones that differ by channel ───────────────────────────────────────
+  if [ "$TRACKER" -eq 0 ]; then
+    # Rule 7. 0 of 34 WhatsApp files use bold or headings.
+    hit=$(grep -nE '(\*\*|^#{1,6} |`|^[[:space:]]*[-*+][[:space:]])' "$f" || true)
+    [ -n "$hit" ] && say "markdown in a WhatsApp message (rule 7): line $(echo "$hit" | head -1 | cut -d: -f1)"
+
+    words=$(wc -w < "$f" | tr -d ' ')
+    if [ "$words" -gt 150 ]; then
+      say "$words words, over 150. Cut a whole paragraph, never tighten sentences (rule 1, 7)"
+    elif [ "$words" -gt 70 ]; then
+      note "$words words. Under 70 is where the best ones land (rule 7)"
+    fi
+  fi
+
+  # Rule 6. Both of these became tics. One per message lands.
+  for tic in "rather than" "One thing" "Two things" "worth noting"; do
+    n=$(grep -oiE "$tic" "$f" | wc -l | tr -d ' ')
+    [ "$n" -gt 1 ] && say "\"$tic\" $n times, one per message (rule 6)"
+  done
+
+  # Rule 5. There is not one signoff in 34 messages.
+  hit=$(grep -niE '^[[:space:]]*(regards|best|thanks,|cheers|sincerely|luan)[[:space:],.!]*$' "$f" || true)
+  [ -n "$hit" ] && say "signoff or name (rule 5): $(echo "$hit" | head -1 | cut -c1-50)"
+
+  # Rule 3. The last line is the ask. Not forced into a question: 24 of 33 files
+  # have no question mark at all, so this only says when there is nothing there.
+  lastline=$(grep -v '^[[:space:]]*$' "$f" | tail -1)
+  lastwords=$(echo "$lastline" | wc -w | tr -d ' ')
+  [ "$lastwords" -lt 4 ] && note "last line is $lastwords words. It should carry the ask and what it unblocks (rule 3)"
+
+  if [ "$bad" -eq 0 ]; then
+    printf '  %sok%s    %s words, nothing mechanical wrong. Now read it once at speed.\n' "$G" "$O" "$(wc -w < "$f" | tr -d ' ')"
+  fi
+  total_bad=$((total_bad + bad))
+done
+
+echo
+if [ "$total_bad" -eq 0 ]; then
+  printf '%sok%s — every draft passes the mechanical rules in docs/VOICE.md\n' "$G" "$O"
+  exit 0
+fi
+printf '%s%d problem(s). docs/VOICE.md has the reasoning behind each rule.%s\n' "$R" "$total_bad" "$O"
+exit 1

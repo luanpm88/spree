@@ -67,6 +67,29 @@ function validate(plan) {
 
   const has = (id) => ids.has(id)
 
+  // ── a lesson has to be readable, and it has to be acted on ────────────────
+  //
+  // The renderer writes `**${l.title}**` then `${l.detail}`, both through a
+  // helper that turns undefined into an empty string. So 50 entries written
+  // with a `note` field instead produced 50 empty bold lines in PLAN.md, and
+  // PLAN.md is the file CLAUDE.md says to read before anything else.
+  //
+  // One of those 50, written 12 Aug, said SEND_WELCOME_EMAILS was off on the
+  // live shops and that it needed a decision. Nobody asked him. On 21 Sep he
+  // asked us why customers were not getting the welcome email. The knowledge
+  // was in the file the whole time and rendered as four asterisks.
+  for (const l of plan.learnings ?? []) {
+    if (!l.title) errors.push(`learning ${l.id}: no title, so it renders as an empty heading in PLAN.md`)
+    if (!l.detail) errors.push(`learning ${l.id}: no detail, so it renders as a blank line in PLAN.md`)
+    // A lesson that says it is waiting on him is not a lesson yet, it is a
+    // question, and a question belongs in waiting_on_client where status
+    // shows it. Warned rather than failed: the wording is a heuristic.
+    if (/needs? (a )?decision|needs his|waiting on him|ask him/i.test(l.detail ?? '')) {
+      const open = (plan.waiting_on_client ?? []).some((w) => (w.related ?? []).includes(l.id))
+      if (!open) warnings.push(`learning ${l.id} says it needs a decision but no open question references it`)
+    }
+  }
+
   for (const t of plan.tasks ?? []) {
     if (!TASK_STATUS.includes(t.status)) errors.push(`task ${t.id}: status "${t.status}" not one of ${TASK_STATUS.join(', ')}`)
     for (const b of t.blocked_by ?? []) {
