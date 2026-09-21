@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+#
+# Record how long the shops take to answer.
+#
+#   script/shop_timing_log status     # is it on, and what has it caught
+#   script/shop_timing_log on         # add it, test the config, reload
+#   script/shop_timing_log off        # take it back out
+#   script/shop_timing_log slow 2     # every buyer request over 2 seconds
+#
+# ── why this exists ─────────────────────────────────────────────────────────
+#
+# On 21 Sep the client asked whether his hosting company's two weeks of slowness
+# explained five days with no orders. His uptime monitor flags a site as down
+# when it cannot connect within 5000ms, and 2 of his 4 servers were alerting for
+# a fortnight.
+#
+# The question could not be answered. nginx here runs the built-in `combined`
+# format, which has no $request_time, so response latency was never recorded on
+# any of the 29 sites on this box. Everything else was there: 13,000 to 22,000
+# buyer requests a day through the whole period, no hour below 200 requests, zero
+# 499, zero 503, zero 504. What could not be shown either way was whether the
+# answers were FAST.
+#
+# ── why it is a second log rather than a wider format ───────────────────────
+#
+# All 29 vhosts share /var/log/nginx/access.log and 28 of them are the client's
+# other sites, nothing to do with this project. Changing the global format would
+# rewrite every line of a log that other things may read. This adds one line to
+# the LIVE shop vhosts only, writing to a file of its own. The existing log keeps
+# its exact shape.
+#
+# ── what it does not do ─────────────────────────────────────────────────────
+#
+# It cannot see a request that never arrived. If the box is unreachable there is
+# nothing to log, which is precisely what an external uptime monitor is for and
+# why his data and this are complementary rather than redundant.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+set -a; . ./.estate.env; set +a
+SSH_KEY="${SSH_KEY/#\~/$HOME}"; SSH_KEY="${SSH_KEY/\$HOME/$HOME}"
+rsh() { ssh -n -i "$SSH_KEY" -p "${SSH_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" "$@"; }
+
+R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'; O=$'\033[0m'
+ACTION="${1:-status}"
+LOG=/var/log/nginx/shops-timing.log
+MARK='# spree: buyer timing'
+
+# The live customer-facing names, read out of .estate rather than written here.
+#
+# Two reasons. This repository is public and the shop domains are the client's,
+# so check_no_client_data refuses a file that names them. And .estate is already
+# the one list of what exists, so a shop added there is covered without anybody
+# remembering to edit this.
+#
+# Columns 7 and 8 are the storefront domain and the live shop url. The review
+# names in column 6 are left alone: nobody buys on them.
+live_vhosts() {
+  awk -F'|' '
+    /^[[:space:]]*(#|$)/ { next }
+    /^LIVE_DOMAINS=/ { next }
+    {
+      gsub(/^[ \t]+|[ \t]+$/, "", $7); gsub(/^[ \t]+|[ \t]+$/, "", $8)
+      sub(/^https?:\/\//, "", $8); sub(/\/.*$/, "", $8)
+      if ($8 != "" && $8 != "-") print $8
+      if ($7 != "" && $7 != "-") print $7
+    }' .estate | sort -u
+}
+
+case "$ACTION" in
+  status)
+    printf 'vhosts carrying the timing log:\n'
+    for v in $(live_vhosts); do
+      if rsh "grep -q '$MARK' /etc/nginx/sites-enabled/$v" 2>/dev/null; then
+        printf '  %-28s %son%s\n' "$v" "$G" "$O"
+      else
+        printf '  %-28s %soff%s\n' "$v" "$Y" "$O"
+      fi
+    done
+    printf '\nlog: %s\n' "$(rsh "ls -la $LOG 2>/dev/null || echo 'not created yet'" | tr -d '\r')"
+    ;;
+
+  on|off)
+    # nginx.conf is edited too, and a rollback that only restores the vhosts
+    # would leave a broken main config behind for whoever reloads next.
+    rsh "cp -a /etc/nginx/nginx.conf /etc/nginx/.nginx.conf.pre-timing" >/dev/null 2>&1
+    for v in $(live_vhosts); do
+      printf '  %-28s ' "$v"
+      rsh "cp -a /etc/nginx/sites-enabled/$v /etc/nginx/sites-enabled/.$v.pre-timing" >/dev/null 2>&1
+      if [ "$ACTION" = on ]; then
+        # Inserted after the first server_name inside the 443 block, which every
+        # one of these files has. Skipped when already present, so running twice
+        # does not stack two of them.
+        rsh "grep -q '$MARK' /etc/nginx/sites-enabled/$v || \
+             sed -i '0,/^\s*server_name/s|^\(\s*server_name.*\)$|\1\n\n    $MARK\n    access_log $LOG timing;|' /etc/nginx/sites-enabled/$v" >/dev/null 2>&1
+      else
+        rsh "sed -i '/$MARK/,+1d' /etc/nginx/sites-enabled/$v" >/dev/null 2>&1
+      fi
+      rsh "grep -q '$MARK' /etc/nginx/sites-enabled/$v" >/dev/null 2>&1 \
+        && printf '%s%s%s\n' "$G" "$([ "$ACTION" = on ] && echo added || echo 'STILL THERE')" "$O" \
+        || printf '%s%s%s\n' "$G" "$([ "$ACTION" = on ] && echo 'NOT ADDED' || echo removed)" "$O"
+    done
+
+    if [ "$ACTION" = on ]; then
+      # The format itself, defined once in the http block. A definition on its own
+      # changes nothing until an access_log names it.
+      rsh "grep -q 'log_format timing' /etc/nginx/nginx.conf || \
+           sed -i '0,/access_log \/var\/log\/nginx\/access.log;/s||log_format timing '\''\$remote_addr \$host \"\$request\" \$status \$body_bytes_sent rt=\$request_time urt=\$upstream_response_time \"\$http_user_agent\"'\'';\n\taccess_log /var/log/nginx/access.log;|' /etc/nginx/nginx.conf" >/dev/null 2>&1
+    fi
+
+    # ── the part that is not optional ─────────────────────────────────────────
+    #
+    # 29 vhosts share this nginx. A reload without a passing test takes every one
+    # of them down, including 28 sites that have nothing to do with this project.
+    printf '\nnginx -t: '
+    if out=$(rsh "nginx -t 2>&1"); then
+      printf '%sok%s\n' "$G" "$O"
+      rsh "systemctl reload nginx" >/dev/null 2>&1 && printf 'reloaded\n' || { printf '%sreload failed%s\n' "$R" "$O"; exit 1; }
+      script/note_change "shop timing log ${ACTION}" "-" "access_log $LOG on the live shop vhosts" >/dev/null 2>&1 || true
+    else
+      printf '%sFAILED, nothing reloaded%s\n%s\n' "$R" "$O" "$out"
+      printf 'restoring nginx.conf and every vhost from its copy\n'
+      rsh "[ -f /etc/nginx/.nginx.conf.pre-timing ] && mv /etc/nginx/.nginx.conf.pre-timing /etc/nginx/nginx.conf" >/dev/null 2>&1
+      for v in $(live_vhosts); do
+        rsh "[ -f /etc/nginx/sites-enabled/.$v.pre-timing ] && mv /etc/nginx/sites-enabled/.$v.pre-timing /etc/nginx/sites-enabled/$v" >/dev/null 2>&1
+      done
+      # And prove the restore actually restored something nginx accepts, rather
+      # than reporting a rollback that left the box unable to reload.
+      if rsh "nginx -t" >/dev/null 2>&1; then
+        printf 'rolled back, nginx -t passes again\n'
+      else
+        printf '%snginx -t STILL fails after the rollback. Do not reload. Copies are at /etc/nginx/.nginx.conf.pre-timing and /etc/nginx/sites-enabled/.<vhost>.pre-timing%s\n' "$R" "$O"
+      fi
+      exit 1
+    fi
+    ;;
+
+  slow)
+    OVER="${2:-2}"
+    printf 'Buyer requests slower than %ss\n\n' "$OVER"
+    rsh "awk -v lim=$OVER '\$0 ~ /(checkout|\\/cart|api\\/v2\\/storefront|api\\/v3\\/store)/ { if (match(\$0, /rt=[0-9.]+/)) { t = substr(\$0, RSTART+3, RLENGTH-3) + 0; if (t > lim) print t, \$0 } }' $LOG 2>/dev/null | sort -rn | head -25" \
+      || echo "(no timing log yet, run: script/shop_timing_log on)"
+    ;;
+
+  *) echo "usage: script/shop_timing_log status|on|off|slow [seconds]"; exit 2 ;;
+esac
