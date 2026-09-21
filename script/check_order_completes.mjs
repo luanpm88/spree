@@ -88,6 +88,7 @@ for (const [shop, opensOn, pick, city, state, postal, phone] of readTable("confi
 
 const argv = process.argv.slice(2);
 const keep = argv.includes("--keep");
+const video = argv.includes("--video");
 const only = argv.filter((a) => !a.startsWith("--"));
 const codes = (only.length ? only : Object.keys(ADDR)).filter((c) => SHOPS[c] && SHOPS[c].url);
 
@@ -163,7 +164,13 @@ async function walk(code) {
   let slug = null;
 
   const browser = await chromium.launch();
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
+  // --video when the run has to be shown to somebody. A line of output saying
+  // Stripe answered is the proof for us; a film of a card going in is the
+  // proof for the person who asked whether his shop can sell.
+  const ctx = await browser.newContext({
+    viewport: { width: 1440, height: 1100 },
+    ...(video ? { recordVideo: { dir: join(OUT, code), size: { width: 1440, height: 1100 } } } : {}),
+  });
   const page = await ctx.newPage();
   page.setDefaultTimeout(45000);
   const errs = [];

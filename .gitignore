@@ -203,3 +203,4 @@ storefront/src/lib/blocks/retired-urls.json
 storefront/.env.business.local
 docs/.risk_list.build.html
 docs/.risk_network.build.html
+config/checkout_probe_addresses
