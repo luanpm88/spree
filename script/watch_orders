@@ -5,6 +5,10 @@
 #   script/watch_orders                 # how every shop looks right now
 #   script/watch_orders --backtest      # replay the last 45 days
 #   script/watch_orders --notify        # and send the email if anything is stuck
+#   script/watch_orders --test          # send one now, whatever the shops are doing
+#
+# ALERT_CONF and ALERT_SEEN point it at a different address and a different
+# record, for rehearsing without writing to the client.
 #
 # Runs from this checkout over ssh, and unchanged on the server from cron. That
 # matters: the first version was JavaScript and the server has no node, so it
@@ -83,11 +87,15 @@ else
 fi
 [ -n "$SHOPS" ] || { echo "no shops to check"; exit 1; }
 
-BACKTEST=0; NOTIFY=0
+BACKTEST=0; NOTIFY=0; TEST=0
 for a in "$@"; do
   case "$a" in
     --backtest) BACKTEST=1 ;;
     --notify)   NOTIFY=1 ;;
+    # Proving the pipe works must not require waiting for an outage. --test sends
+    # one mail now, marked as a test, carrying the real state of every shop, and
+    # it skips the once-a-day suppression so it can be run twice while setting up.
+    --test)     TEST=1; NOTIFY=1 ;;
     *) echo "unknown flag: $a"; exit 2 ;;
   esac
 done
@@ -201,7 +209,7 @@ done
 printf '\nCarts started against orders finished\n\n'
 printf '%b' "$REPORT"
 
-if [ -z "$ALERTS" ]; then
+if [ -z "$ALERTS" ] && [ "$TEST" -eq 0 ]; then
   printf '\nevery shop is finishing orders at its own normal rate\n'
   exit 0
 fi
@@ -214,16 +222,86 @@ printf '\n%b' "$ALERTS"
 # working rather than a second mail path that is only exercised when something
 # is already wrong. ALERT_TO and ALERT_FROM_SHOP are set in /root/.estate-alert
 # on the server, out of this public repository.
+#
+# The ruby is written to a FILE and copied in. The first version passed it as a
+# quoted argument through ssh, then bash, then docker exec, then rails runner,
+# and the escaping broke silently: the script reported "could not be sent" while
+# the same three lines worked by hand. Four layers of quoting is three too many.
+#
+# ActionMailer::Base.mail does not exist as a class method on Rails 8. Mail with
+# ActionMailer's own smtp_settings is the same credentials and one fewer thing to
+# get wrong.
+send_mail() {
+  local subject="$1" body="$2"
+  local shop_for_mail="${ALERT_FROM_SHOP:-nolocal}"
+  # Not mktemp. GNU mktemp wants the X characters at the END of the template, so
+  # `mktemp /tmp/alertmail.XXXXXX.rb` fails, and without set -e the empty result
+  # was passed to docker cp, which copied nothing and left rails runner to say
+  # "cannot load such file". Our own server, our own path.
+  local rb="/tmp/alertmail.$$.rb"
+  cat > "$rb" <<'RUBY'
+m = Mail.new
+m.from    = Spree::Store.default.mail_from_address
+m.to      = ENV.fetch('ALERT_TO')
+m.subject = ENV.fetch('ALERT_SUBJECT')
+m.body    = ENV.fetch('ALERT_BODY')
+m.delivery_method(ActionMailer::Base.delivery_method, ActionMailer::Base.smtp_settings)
+m.deliver!
+puts 'SENT'
+RUBY
+
+  if [ "$ON_SERVER" -eq 0 ]; then
+    scp -q -i "$SSH_KEY" -P "${SSH_PORT:-22}" "$rb" "$SSH_HOST:$rb" || { echo "could not copy the mailer to the server" >&2; return 1; }
+  fi
+  # Proved landed, not assumed. The whole reason this failed the first time was a
+  # copy that did nothing and said nothing.
+  run "docker cp $rb ${shop_for_mail}_web:/tmp/alertmail.rb" >/dev/null 2>&1
+  if ! run "docker exec ${shop_for_mail}_web test -s /tmp/alertmail.rb" >/dev/null 2>&1; then
+    echo "the mailer script never reached ${shop_for_mail}_web" >&2
+    return 1
+  fi
+  local out
+  out=$(run "docker exec -e ALERT_TO=$(printf '%q' "$ALERT_TO") -e ALERT_SUBJECT=$(printf '%q' "$subject") -e ALERT_BODY=$(printf '%q' "$body") ${shop_for_mail}_web bin/rails runner /tmp/alertmail.rb 2>&1" | tr -d '\r')
+  run "rm -f $rb; docker exec -u root ${shop_for_mail}_web rm -f /tmp/alertmail.rb" >/dev/null 2>&1
+  rm -f "$rb"
+  case "$out" in
+    *SENT*) return 0 ;;
+    *) printf 'the mail was refused: %s\n' "$(printf '%s' "$out" | grep -viE 'spree events|jwt secret' | head -2)" >&2; return 1 ;;
+  esac
+}
+
 if [ "$NOTIFY" -eq 1 ]; then
   # Load the address FIRST. The suppression below records that a shop has been
   # reported, and doing that before knowing whether the mail can even be sent
   # would swallow the first real alert and say nothing.
-  CONF=/root/.estate-alert
+  # ALERT_CONF overrides where the address is read from, so a rehearsal cannot
+  # reach him by accident.
+  #
+  # On 21 Sep a scratch copy of this file was made to test the failure path, with
+  # sed pointing it at a throwaway config. The sed anchored on ^CONF= and the line
+  # is indented, so it matched nothing, the real address was loaded, and a bogus
+  # alert naming three shops as stopped went to the client. A test that has to
+  # edit the script in order to be safe is a test that will one day not edit it.
+  CONF="${ALERT_CONF:-/root/.estate-alert}"
   # shellcheck disable=SC1090
   [ -f "$CONF" ] && . "$CONF"
   if [ -z "${ALERT_TO:-}" ]; then
     echo "not sending: no ALERT_TO in $CONF"
     exit 1
+  fi
+
+  if [ "$TEST" -eq 1 ]; then
+    BODY_TEXT="This is the test message for the new shop alert. Nothing is wrong because of this email.
+
+Here is how every shop reads right now.
+
+$(printf '%b' "$REPORT")
+$(printf '%b' "${ALERTS:-Every shop is finishing orders at its own normal rate.}")
+From here it only writes when a shop stops converting, at most once a day per shop, and it goes quiet again by itself when that shop starts selling again."
+    if send_mail "Shop alert: test message" "$BODY_TEXT"; then
+      echo "test email sent to $ALERT_TO"; exit 0
+    fi
+    echo "the test email could not be sent"; exit 1
   fi
 
   # ── do not say the same thing every six hours ──────────────────────────────
@@ -232,7 +310,7 @@ if [ "$NOTIFY" -eq 1 ]; then
   # times a day until it is fixed. That is how an alert becomes a filter rule.
   # One mail per shop per day, and the clock resets once the shop recovers, so
   # the next real outage is reported straight away.
-  SEEN=/root/.estate-alert-sent
+  SEEN="${ALERT_SEEN:-/root/.estate-alert-sent}"
   touch "$SEEN" 2>/dev/null || SEEN=/tmp/.estate-alert-sent
   FRESH=""
   while IFS= read -r line; do
@@ -249,7 +327,11 @@ if [ "$NOTIFY" -eq 1 ]; then
   for shop in $SHOPS; do
     case "$(printf '%b' "$REPORT")" in
       *"  $shop  STUCK"*) ;;
-      *) grep -v "^$shop " "$SEEN" > "$SEEN.tmp" 2>/dev/null && mv "$SEEN.tmp" "$SEEN" ;;
+      # Not `grep && mv`. grep -v exits 1 when it prints nothing, which is
+      # exactly what happens when the line being removed is the last one, so the
+      # mv was skipped and the entry survived. A recovered shop stayed muted and
+      # its next outage would have gone unreported.
+      *) grep -v "^$shop " "$SEEN" > "$SEEN.tmp" 2>/dev/null; mv -f "$SEEN.tmp" "$SEEN" ;;
     esac
   done
 
@@ -259,17 +341,20 @@ if [ "$NOTIFY" -eq 1 ]; then
   fi
   ALERTS="$FRESH"
 
-  SHOP_FOR_MAIL="${ALERT_FROM_SHOP:-nolocal}"
   BODY=$(printf '%b' "$ALERTS")
-  run "docker exec -e ALERT_TO='$ALERT_TO' -e ALERT_BODY=$(printf '%q' "$BODY") ${SHOP_FOR_MAIL}_web bin/rails runner '
-    ActionMailer::Base.mail(
-      to: ENV.fetch(\"ALERT_TO\"),
-      from: Spree::Store.default.mail_from_address,
-      subject: \"Shop alert: an order has not completed in a while\",
-      body: ENV.fetch(\"ALERT_BODY\") + \"\n\nSent by the order watch on the shop server.\"
-    ).deliver_now
-    puts \"sent\"
-  '" 2>/dev/null | grep -q sent && echo "alert emailed" || echo "the alert could not be sent"
-fi
+  BODY="$BODY
 
+Sent by the order watch on the shop server. It writes at most once a day per shop and goes quiet by itself when that shop starts selling again."
+  if send_mail "Shop alert: a shop has stopped completing orders" "$BODY"; then
+    echo "alert emailed to $ALERT_TO"
+  else
+    # The record of having reported it is rolled back, so the next run tries
+    # again rather than treating an unsent alert as delivered.
+    # Same trap as above: the removal of the last line makes grep exit 1.
+    for line in $(printf '%b' "$FRESH" | awk '{print $1}'); do
+      grep -v "^$line $NOW\$" "$SEEN" > "$SEEN.tmp" 2>/dev/null; mv -f "$SEEN.tmp" "$SEEN"
+    done
+    echo "the alert could not be sent, and it has not been marked as reported"
+  fi
+fi
 exit 1
