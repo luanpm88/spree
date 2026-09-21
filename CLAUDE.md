@@ -197,6 +197,23 @@ The gates it runs, and the failure each one already caught here:
 | `check_storefront_e2e.mjs` | A shop that renders and cannot sell. It clicks: images decoded, row links, add to cart, the cart, formatting, old addresses |
 | `bin/rails emails:smoke` | Per shop, on the box. Every transactional email is built, and the rendered body is checked for raw `**` and for an unfilled `%{...}`, which I18n does not raise on and prints to the customer |
 
+**Before handing over any message the client will read:**
+
+```bash
+script/check_client_message tmp/urgent/<draft>.md      # WhatsApp
+script/check_client_message --tracker <draft>.md       # ActiveCollab
+```
+
+It fails on hard wrapping, em dashes, the banned words, verb contractions,
+markdown in a chat message, anything that reads as money, a signoff, and over 150
+words. `docs/VOICE.md` carries the reasoning and the part no script can check:
+whether the first line is the answer, whether there is one decision, and whether
+it is true.
+
+It exists because a draft went over hard wrapped on 21 Sep and the lesson had
+been written down on 21 Aug. A rule that lives only in prose holds until the day
+somebody is busy.
+
 **Measure, never infer.** Every claim in a message to the client is something that
 was run, not something the code implies. Twice on 17 Aug a measurement was wrong
 and the conclusion drawn from it was wrong with it: two different categories were
