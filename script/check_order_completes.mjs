@@ -82,7 +82,7 @@ const dash = (v) => (v && v !== "-" ? v : null);
 const SHOPS = {};
 for (const r of readTable(".estate")) SHOPS[r[0]] = { dir: r[1], url: r[7] };
 const ADDR = {};
-for (const [shop, opensOn, pick, city, state, postal, phone] of readTable("config/checkout_probe_addresses")) {
+for (const [shop, opensOn, pick, city, state, postal, phone] of readTable(".checkout_probes")) {
   ADDR[shop] = { country: dash(pick) ?? dash(opensOn), city, state: dash(state), postal, phone };
 }
 

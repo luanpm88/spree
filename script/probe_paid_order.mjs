@@ -20,7 +20,7 @@ const ADDR = {};
 // Reading them as 6 put "Ontario" into the postal box, and the resulting
 // "zipcode is invalid" looked exactly like the fault being investigated.
 const dash = (v) => (v === "-" || !v ? undefined : v);
-for (const [shop, opensOn, pick, city, state, postal, phone] of rows("config/checkout_probe_addresses")) {
+for (const [shop, opensOn, pick, city, state, postal, phone] of rows(".checkout_probes")) {
   ADDR[shop] = { country: dash(pick) ?? dash(opensOn), city, state: dash(state), postal, phone };
 }
 const SHOPS = {};

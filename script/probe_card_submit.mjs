@@ -17,7 +17,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const rows = f => readFileSync(join(ROOT, f), "utf8").split("\n")
   .filter(l => l.trim() && !l.startsWith("#")).map(l => l.split("|").map(s => s.trim()));
 const dash = v => (v === "-" || !v ? undefined : v);
-const A = {}; for (const [s,o,p,c,st,po,ph] of rows("config/checkout_probe_addresses"))
+const A = {}; for (const [s,o,p,c,st,po,ph] of rows(".checkout_probes"))
   A[s] = { country: dash(p) ?? dash(o), city: c, state: dash(st), postal: po, phone: ph };
 const S = {}; for (const r of rows(".estate")) S[r[0]] = { url: r[7] };
 

@@ -203,4 +203,13 @@ storefront/src/lib/blocks/retired-urls.json
 storefront/.env.business.local
 docs/.risk_list.build.html
 docs/.risk_network.build.html
-config/checkout_probe_addresses
+
+# One deliverable address per shop, for the checkout probes. Gitignored because
+# the rows are real addresses in the client's own countries.
+#
+# At the root, not under config/, and that is the point rather than a preference:
+# check_deploy_assets reads anything gitignored under config/ as a file the
+# running application will look for and not find, and it failed the run when
+# this lived there. It is right to. Nothing on the server reads this, only the
+# browser probes on this laptop, so it belongs beside .estate and .shopauth.
+.checkout_probes

@@ -30,7 +30,7 @@ const rows = (f) => readFileSync(join(ROOT, f), "utf8").split("\n")
 
 const dash = (v) => (v === "-" || !v ? undefined : v);
 const ADDR = {};
-for (const [shop, opensOn, pick, city, state, postal, phone] of rows("config/checkout_probe_addresses")) {
+for (const [shop, opensOn, pick, city, state, postal, phone] of rows(".checkout_probes")) {
   ADDR[shop] = { country: dash(pick) ?? dash(opensOn), city, state: dash(state), postal, phone };
 }
 const SHOPS = {};

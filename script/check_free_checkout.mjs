@@ -33,7 +33,7 @@ import { chromium } from "playwright";
 // Two tables, both gitignored, both read rather than typed here.
 //
 //   .estate                          which shops exist and their live urls
-//   config/checkout_probe_addresses  an address each shop's country accepts
+//   .checkout_probes  an address each shop's country accepts
 //
 // They are not in this file because they name the client and this repository is
 // public: check_no_client_data refused the file twice while they were, once for
@@ -111,7 +111,7 @@ const freeProductOn = (shop) => {
 
 const ADDRESSES = {};
 for (const [shop, opensOn, pick, city, state, postal, phone] of readTable(
-  "config/checkout_probe_addresses",
+  ".checkout_probes",
 )) {
   ADDRESSES[shop] = {
     country: dash(opensOn),
@@ -342,7 +342,7 @@ for (const name of names) {
 }
 
 for (const name of only ? [] : unwalked) {
-  console.log(`${name.padEnd(8)} skipped  no address for it in config/checkout_probe_addresses`);
+  console.log(`${name.padEnd(8)} skipped  no address for it in .checkout_probes`);
   skipped++;
 }
 
