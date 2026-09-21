@@ -44,13 +44,41 @@ bad=0
 checked=0
 
 # Status and content type, without following anything. A redirect is an answer.
+#
+# ── why this asks more than once ────────────────────────────────────────────
+#
+# On 21 Sep this gate failed the run with
+#
+#   ca  /contact:markdown-request-gave-text/plain; charset=UTF-8
+#
+# and the same request by hand, twice, one minute later, answered
+# `text/markdown; charset=utf-8` with 200. So did /pages/about. Nothing was
+# wrong with that shop: text/plain is what a momentary error page in front of it
+# looks like, and one such answer in a 14 request sweep became a sentence saying
+# his storefront was built without the feature, with a rebuild as the remedy.
+#
+# Same family as the three gates fixed earlier the same day. A wrong red is worse
+# than no check: it costs a rebuild of a live shop to chase nothing, and it
+# teaches people to skim past this gate.
+#
+# So an answer that is neither of the two representations, or that did not come
+# back at all, is asked again before it is believed. A 404 is an answer and is
+# not retried; text/html when markdown was asked for is also an answer, and is
+# the real fault this gate is for, so that is not retried either.
 answer() {
   local url="$1" accept="${2:-}"
-  local head
-  head=$(curl -s -o /dev/null -D - --max-time 40 ${accept:+-H "$accept"} "$url" 2>/dev/null)
-  local code ct
-  code=$(printf '%s' "$head" | grep -oE '^HTTP/[0-9.]+ [0-9]+' | tail -1 | awk '{print $2}')
-  ct=$(printf '%s' "$head" | grep -i '^content-type:' | tail -1 | tr -d '\r' | sed 's/^[Cc]ontent-[Tt]ype: //')
+  local head code ct attempt
+  for attempt in 1 2 3; do
+    head=$(curl -s -o /dev/null -D - --max-time 40 ${accept:+-H "$accept"} "$url" 2>/dev/null)
+    code=$(printf '%s' "$head" | grep -oE '^HTTP/[0-9.]+ [0-9]+' | tail -1 | awk '{print $2}')
+    ct=$(printf '%s' "$head" | grep -i '^content-type:' | tail -1 | tr -d '\r' | sed 's/^[Cc]ontent-[Tt]ype: //')
+    case "${code:-000}|${ct:-none}" in
+      # Nothing came back, or the body is neither representation. Ask again.
+      000\|*|*\|none|*text/plain*)
+        [[ $attempt -eq 3 ]] || { sleep $(( attempt * 3 )); continue; } ;;
+    esac
+    break
+  done
   printf '%s|%s' "${code:-000}" "${ct:-none}"
 }
 
