@@ -98,6 +98,29 @@ namespace :emails do
     ok = 0
     failures = []
 
+    # Does this box carry the shop's own email wording at all?
+    #
+    # Asked once, of the app, rather than per key — see the long note below. If
+    # none of these resolve then no locale file for these templates is installed
+    # here, and every `translation missing` that follows says that one thing.
+    # If any of them resolves, the wording is here and a missing key is a key
+    # this shop does not have, which prints to the customer.
+    #
+    # Three sentinels rather than one, and from three different scopes, so a
+    # partially copied file cannot make the whole run skip.
+    wording_installed = %w[
+      spree.user_emails.common.greeting
+      spree.user_emails.order_confirm.order_received
+      spree.user_emails.common.the_team
+    ].any? { |key| I18n.exists?(key, :en) || I18n.exists?(key, Spree::Store.default.default_locale.to_s.to_sym) }
+
+    unless wording_installed
+      puts '  note  no email wording is installed on this box, so missing keys below are'
+      puts '        reported as SKIP rather than as a fault. On a shop, that itself is'
+      puts '        the fault: run script/check_shop_locales.'
+      puts
+    end
+
     cases.each do |name, build, record|
       if record.nil?
         puts format('  SKIP  %-42s nothing on this shop to build it from', name)
@@ -142,6 +165,46 @@ namespace :emails do
         # which of the locale roots the key fell through.
         missing = (html + text).scan(/translation missing: ([^"<\n]+)/).flatten.uniq
 
+        # ── and which kind of missing it is ──────────────────────────────────
+        #
+        # Two very different things produce the same marker, and failing on both
+        # makes this task permanently red on any box that has not had the
+        # client's wording files copied onto it. That is the "a wrong red
+        # teaches people to ignore the gate" fault, and it would land on the
+        # every-shop check.
+        #
+        #   no wording installed   this box has none of the shop's email wording
+        #                          at all. A development machine, or a shop
+        #                          whose locale file has not been deployed. Not
+        #                          a finding about the email
+        #   a real gap             the wording IS installed and this key is not
+        #                          in it. That prints to the customer
+        #
+        # The discriminator is the APP, not the key, and the first version got
+        # that wrong. It compared the shop's locale against plain :en, on the
+        # theory that a key present in :en and absent in en-CA was the fault.
+        # Measured: I18n.fallbacks[:'en-CA'] is [:'en-CA', :en], so a key
+        # defined in :en RENDERS on an en-CA shop and never produces a marker at
+        # all. That made the failure branch unreachable — a gate that could only
+        # ever skip. Proven by adding one key to :en and watching the missing
+        # count drop by one rather than a failure appear.
+        #
+        # (The other half of that fault — wording that falls back to :en and so
+        # sends another brand's words with no marker anywhere — is invisible to
+        # a rendered-body check by construction. script/check_shop_locales
+        # exists for it and reads the files.)
+        gaps = missing.filter_map do |raw|
+          # The marker carries the interpolation arguments after the key.
+          parts = raw.split(',').first.to_s.strip.split('.')
+          parts.shift # the locale prefix
+          key = parts.join('.')
+          next if key.empty?
+
+          key
+        end.uniq
+        real_gaps = wording_installed ? gaps : []
+        no_wording = wording_installed ? [] : gaps
+
         if html.strip.empty?
           failures << [name, 'rendered an empty body']
           puts format('  FAIL  %-42s empty body', name)
@@ -151,9 +214,14 @@ namespace :emails do
         elsif unfilled.any?
           failures << [name, "unfilled placeholder(s) printed to the customer: #{unfilled.join(' ')}"]
           puts format('  FAIL  %-42s unfilled %s', name, unfilled.join(' '))
-        elsif missing.any?
-          failures << [name, "missing translation(s) printed to the customer: #{missing.join(' ')}"]
-          puts format('  FAIL  %-42s missing %s', name, missing.first(3).join(' '))
+        elsif real_gaps.any?
+          failures << [name, "key(s) this shop's locale does not have, printed to the customer: #{real_gaps.join(' ')}"]
+          puts format('  FAIL  %-42s missing in this locale: %s', name, real_gaps.first(3).join(' '))
+        elsif no_wording.any?
+          # Loud, and not a failure. Saying "SKIP" without saying why is how a
+          # box with no wording gets read as a shop with no problem.
+          puts format('  SKIP  %-42s %d key(s) would print as "translation missing", but no wording is installed here',
+                      name, no_wording.size)
         else
           ok += 1
           if dump

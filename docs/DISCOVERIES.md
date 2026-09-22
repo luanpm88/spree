@@ -6688,3 +6688,32 @@ in nó lên thanh trên khung, nên không cần ai phải grep body.
 Bài học chung hơn: một cổng kiểm tra nội dung email phải đo **trên body đã
 render**, không phải trên file locale — vì body là thứ khách đọc, và không quan
 trọng key rơi qua root locale nào.
+
+**Bổ sung (cùng ngày): lần sửa đầu tạo ra một cổng không bao giờ đỏ được.**
+
+Khi thêm kiểm tra vào `emails:smoke`, nó lập tức đỏ 6/7 trên máy dev — nơi
+không hề có file wording của khách. Đó đúng là kiểu "đỏ sai" đã ghi ở bài học
+khác: một cổng đỏ vì môi trường sẽ dạy người ta bỏ qua nó.
+
+Bản sửa đầu phân biệt theo **key**: key có trong `:en` mà thiếu ở locale của
+shop thì là lỗi thật, thiếu ở cả hai thì là môi trường. Nghe hợp lý, và sai.
+
+Đo được: `I18n.fallbacks[:'en-CA']` là `[:'en-CA', :en]`. Nghĩa là một key có
+trong `:en` **render bình thường** trên shop en-CA và không bao giờ sinh ra
+marker nào cả. Nhánh "lỗi thật" vì thế không bao giờ chạy tới được — một cổng
+chỉ có thể skip, không bao giờ có thể trượt.
+
+Phát hiện ra bằng cách thêm đúng một key vào `:en` rồi chạy lại: số key thiếu
+**giảm đi 1**, thay vì xuất hiện một FAIL. Nếu chỉ nhìn code thì nó vẫn đọc
+như đúng.
+
+Bản đúng hỏi một câu về **cả app**, một lần, chứ không hỏi từng key: máy này có
+wording của shop hay không (ba key mồi, từ ba scope khác nhau). Không có thì mọi
+marker đều là một câu duy nhất "máy này chưa cài wording" và in ra SKIP kèm lý
+do. Có thì mọi key thiếu đều là lỗi in ra cho khách và trượt. Cả hai nhánh đều
+đã được chứng minh chạy trước khi tin.
+
+Còn nửa kia của lỗi wording — file rơi xuống `:en` và gửi đi lời của thương
+hiệu khác, **không sinh marker nào cả** — thì một cổng đọc body đã render không
+bao giờ thấy được, theo đúng cấu tạo. `script/check_shop_locales` tồn tại cho
+việc đó và nó đọc file.
