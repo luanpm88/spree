@@ -43,7 +43,13 @@ total_bad=0
 # Rule 5. Already at zero across the whole corpus, kept there.
 BANNED='sorry|apolog(y|ies|ise|ize)|unfortunate(ly)?|inconvenience|however|moreover|additionally|in summary|happy to|feel free|do not hesitate|hesitate|kindly|rest assured|please note|leverage|robust|seamless|crucial'
 # Rule 15. Effort is time. Anything that reads as money changes what the message is about.
+#
+# "Request a Quote" is exempt because it is the NAME OF A PAGE on his site, not
+# us putting a number on work. The rule is about the second thing. Caught as a
+# false positive on 22 Sep by this gate flagging a message that was asking him
+# how that page should behave.
 MONEY='\bquote[ds]?\b|\bpricing\b|\bcheaper\b|\bexpensive\b|\bbudget\b|\bcosts?\b|worth it'
+SAFE='Request a Quote'
 # Rule 4. Zero verb contractions across the last sixteen messages. Possessives are fine.
 CONTRACTIONS="\b(I'm|I've|I'll|I'd|don't|doesn't|didn't|won't|wouldn't|can't|cannot've|couldn't|shouldn't|isn't|aren't|wasn't|weren't|haven't|hasn't|hadn't|it's|that's|there's|here's|we're|we've|we'll|we'd|you're|you've|you'll|you'd|they're|they've|let's)\b"
 
@@ -82,7 +88,7 @@ for f in "${FILES[@]}"; do
   hit=$(grep -niE "$BANNED" "$f" || true)
   [ -n "$hit" ] && say "banned word (rule 5): $(echo "$hit" | head -1 | cut -c1-70)"
 
-  hit=$(grep -niE "$MONEY" "$f" || true)
+  hit=$(grep -vF "$SAFE" "$f" | grep -niE "$MONEY" || true)
   [ -n "$hit" ] && say "reads as money, not time (rule 15): $(echo "$hit" | head -1 | cut -c1-70)"
 
   hit=$(grep -nE "$CONTRACTIONS" "$f" || true)
