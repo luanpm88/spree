@@ -11,6 +11,23 @@ Rails.application.routes.draw do
       resources :orders, only: [] do
         resource :invoice, only: [:show], controller: 'invoices'
       end
+
+      # Every email this shop sends, and what each one looks like.
+      #
+      # The id is a view path with its slashes swapped for tildes, because
+      # 'spree/order_mailer/confirm_email' in a path segment would be read as
+      # three segments. A dash was the obvious choice and is wrong: the actions
+      # themselves contain dashes once humanised and, more to the point,
+      # 'password_reset_email' round-trips through a dash ambiguously. Tilde is
+      # unreserved in RFC 3986 and appears in none of the 26 keys. It is
+      # reversed in the controller and never stored, so nothing depends on the
+      # spelling.
+      resources :emails, only: %i[index show], constraints: { id: /[^\/]+/ } do
+        member do
+          get :preview
+          get :envelope
+        end
+      end
     end
 
     # Newsletter signup that keeps the name the visitor typed.

@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+#
+# The /admin/emails screen must not be able to send mail.
+#
+#   script/check_admin_emails
+#
+# ── why a grep and not just a test ──────────────────────────────────────────
+#
+# script/check_admin_emails.mjs drives the screen in a browser and counts the
+# messages at the SMTP endpoint before and after. That is the measurement, and
+# it is the stronger of the two.
+#
+# It is not enough on its own, and the reason is specific. A delivery call that
+# the happy path never reaches sends nothing during the walk and ships anyway:
+# an error branch, a rescue, a line behind a condition that is false on the
+# machine the check ran on. The browser check can only see the lines it ran.
+# This one sees every line.
+#
+# ── the trap this exists for ────────────────────────────────────────────────
+#
+#   Spree::OrderMailer.confirm_email(order)     -> ActionMailer::MessageDelivery
+#
+# MessageDelivery is a Delegator. `.deliver` on it is not a typo Ruby rejects —
+# Delegator forwards it to Mail::Message#deliver and the mail goes out. `.deliver`
+# reads like a build word. It is not. So the rule is stronger than "do not call
+# deliver": no MessageDelivery is created at all. Spree::EmailSamples builds
+# through `Mailer.new` + `#process` + `#message`, which is what MessageDelivery
+# does internally, minus the proxy.
+#
+# The screen renders a real customer's order confirmation. One click that
+# delivered would post that order's confirmation to that customer a second time.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+FILES=(
+  app/models/spree/email_catalogue.rb
+  app/models/spree/email_samples.rb
+  app/controllers/spree/admin/emails_controller.rb
+  app/helpers/spree/admin/emails_helper.rb
+  app/views/spree/admin/emails/index.html.erb
+  app/views/spree/admin/emails/_script.html.erb
+)
+
+fails=0
+note() { printf '  %s\n' "$1"; }
+bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
+
+echo "1. every file is present"
+for f in "${FILES[@]}"; do
+  [ -f "$f" ] || bad "missing $f"
+done
+
+echo "2. nothing on this path can deliver"
+# Comments are stripped first, so the prose above — which has to name these
+# methods to explain them — cannot fail its own gate. Ruby and ERB comments
+# both go.
+for f in "${FILES[@]}"; do
+  [ -f "$f" ] || continue
+  code=$(sed -e 's/#.*$//' -e 's|//.*$||' "$f")
+
+  # The four ways a message leaves, and `.deliver` on a Delegator, which is the
+  # one that does not look like one.
+  if printf '%s' "$code" | grep -nE '\.deliver(_now|_later)?!?\b' >/dev/null; then
+    bad "$f calls a delivery method:"
+    printf '%s' "$code" | grep -nE '\.deliver(_now|_later)?!?\b' | sed 's/^/        /'
+  fi
+
+  # Creating a MessageDelivery at all. `Spree::OrderMailer.confirm_email(...)`
+  # on the class is exactly that, so the samples file must reach the mailer only
+  # through .new and #process.
+  if [ "$f" = app/models/spree/email_samples.rb ]; then
+    if printf '%s' "$code" | grep -nE '(Spree::[A-Za-z]*Mailer|Devise::Mailer)\.[a-z_]+\(' >/dev/null; then
+      bad "$f calls a mailer action on the CLASS, which returns a MessageDelivery:"
+      printf '%s' "$code" | grep -nE '(Spree::[A-Za-z]*Mailer|Devise::Mailer)\.[a-z_]+\(' | sed 's/^/        /'
+    fi
+  fi
+done
+[ "$fails" -eq 0 ] && note "no delivery call, no MessageDelivery"
+
+echo "3. it is built through the mailer instance, and switched off after"
+grep -q 'mailer_class\.new' app/models/spree/email_samples.rb \
+  || bad 'email_samples.rb does not build through Mailer.new'
+grep -q 'mailer\.process' app/models/spree/email_samples.rb \
+  || bad 'email_samples.rb does not use #process'
+grep -q 'message\.perform_deliveries = false' app/models/spree/email_samples.rb \
+  || bad 'email_samples.rb does not set perform_deliveries = false'
+
+echo "4. it arranges no state it is supposed to be measuring"
+# The 19 Aug lesson: a probe opened with I18n.locale = ... , the mailer never
+# does that, and the missing locale switch was the entire bug. Three shops
+# shipped green. A preview that wraps the build in a locale does the same thing
+# — it makes a broken mailer look right in the admin.
+for f in "${FILES[@]}"; do
+  [ -f "$f" ] || continue
+  code=$(sed -e 's/#.*$//' "$f")
+  if printf '%s' "$code" | grep -nE 'I18n\.(locale *=|with_locale)|Spree::Current\.[a-z_]+ *=|Mobility\.' >/dev/null; then
+    bad "$f sets locale or request state, which would hide the fault it is showing:"
+    printf '%s' "$code" | grep -nE 'I18n\.(locale *=|with_locale)|Spree::Current\.[a-z_]+ *=|Mobility\.' | sed 's/^/        /'
+  fi
+done
+
+echo "5. the screen is gated on the store, not on a symbol nobody grants"
+# BaseController#authorize_admin does `authorize! :admin, :emails` against the
+# bare controller symbol. No permission set in config/initializers/spree.rb
+# grants that, so adding a second check underneath it leaves a page that 403s
+# silently the moment anyone assigns ConfigurationManagement to :manager. It has
+# to be OVERRIDDEN.
+grep -q 'def authorize_admin' app/controllers/spree/admin/emails_controller.rb \
+  || bad 'emails_controller.rb does not override authorize_admin'
+grep -qE 'before_action :authorize' app/controllers/spree/admin/emails_controller.rb \
+  && bad 'emails_controller.rb adds an authorize before_action instead of overriding authorize_admin'
+
+echo "6. the preview body cannot run in the admin's origin"
+# This app has no CSP — config/initializers/content_security_policy.rb is
+# commented out end to end — and these bodies include templates ported off the
+# client's live site, with merchant-authored HTML to come.
+grep -q 'id="email-frame"' app/views/spree/admin/emails/index.html.erb || bad 'no preview frame in the view'
+grep -E 'id="email-frame"' app/views/spree/admin/emails/index.html.erb | grep -q 'sandbox' \
+  || bad 'the preview iframe is not sandboxed'
+grep -E 'id="email-frame"' app/views/spree/admin/emails/index.html.erb | grep -q 'allow-same-origin' \
+  && bad 'the preview iframe allows same-origin, which defeats the sandbox'
+grep -q "response.headers\['Cache-Control'\] = 'no-store'" app/controllers/spree/admin/emails_controller.rb \
+  || bad 'the controller does not set Cache-Control: no-store on a page naming a customer'
+
+echo "7. the sidebar entry does not overwrite the shop's own Emails settings"
+# Spree::Admin::Navigation#add is `@items[key] = item`, an unconditional
+# overwrite with no warning, and spree_admin already registers :emails for the
+# store's from-address and SMTP page.
+# Comments stripped, like check 2 and for the same reason — and this one failed
+# on its first run because the comment in spree.rb has to QUOTE the dangerous
+# line in order to explain it. A gate that reads prose reports the explanation
+# as the fault.
+init=$(sed -e 's/#.*$//' config/initializers/spree.rb)
+# The danger is REGISTERING the key :emails, which is `add(:emails, …)` or the
+# SECOND argument of insert_before/insert_after. The first argument of
+# insert_after IS :emails and has to be — that is the item we are placing
+# ourselves next to. The first version of this pattern did not make that
+# distinction and failed on the correct line.
+danger='(^|[^_a-z])add\(? *:emails *[,)]|insert_(before|after)\( *:[a-z_]+ *, *:emails *[,)]'
+if printf '%s' "$init" | grep -qE "$danger"; then
+  bad 'config/initializers/spree.rb registers the key :emails, which silently replaces the store email settings link:'
+  printf '%s' "$init" | grep -nE "$danger" | sed 's/^/        /'
+fi
+printf '%s' "$init" | grep -q ':email_templates' \
+  || bad 'config/initializers/spree.rb does not register the email templates nav item'
+
+echo "8. the locale file survives .gitignore"
+# config/locales/* is ignored so the client's per-shop wording stays out of a
+# public repo. This file is admin chrome and has to be allowlisted, or the
+# deploy ships a screen whose every string renders as a missing-translation span.
+git check-ignore -q config/locales/admin_emails.en.yml \
+  && bad 'config/locales/admin_emails.en.yml is gitignored; add "!config/locales/admin_emails.en.yml" to .gitignore'
+
+echo
+if [ "$fails" -eq 0 ]; then
+  echo "PASS  building a preview cannot deliver, and the screen is gated and sandboxed."
+  echo "      This is the static half. Run the browser half too:"
+  echo "        node script/check_admin_emails.mjs <base-url> <admin-email> <password>"
+  exit 0
+fi
+echo "FAIL  $fails problem(s) above."
+exit 1

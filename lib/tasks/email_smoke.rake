@@ -125,6 +125,23 @@ namespace :emails do
         # of eleven templates or four scopes the placeholder came from.
         unfilled = (html + text).scan(/%\{[a-z_]+\}/).uniq
 
+        # A key the locale file does not have. Same failure shape as the one
+        # above and, like it, I18n raises nothing: the html gets
+        # `<span class="translation_missing" title="translation missing: …">`
+        # and the plain text part gets the words "translation missing: en-CA…"
+        # in the middle of a sentence to the customer.
+        #
+        # Added 22 Sep after /admin/emails rendered the reimbursement email on a
+        # store whose default_locale is en-CA and showed seven of them, in the
+        # line that states the amount refunded. This task had built that same
+        # email and called it ok on the line above, because it was only looking
+        # for ** and %{}.
+        #
+        # Checked on the rendered body for the same reason as the placeholder
+        # check: the body is what the customer reads, and it does not matter
+        # which of the locale roots the key fell through.
+        missing = (html + text).scan(/translation missing: ([^"<\n]+)/).flatten.uniq
+
         if html.strip.empty?
           failures << [name, 'rendered an empty body']
           puts format('  FAIL  %-42s empty body', name)
@@ -134,6 +151,9 @@ namespace :emails do
         elsif unfilled.any?
           failures << [name, "unfilled placeholder(s) printed to the customer: #{unfilled.join(' ')}"]
           puts format('  FAIL  %-42s unfilled %s', name, unfilled.join(' '))
+        elsif missing.any?
+          failures << [name, "missing translation(s) printed to the customer: #{missing.join(' ')}"]
+          puts format('  FAIL  %-42s missing %s', name, missing.first(3).join(' '))
         else
           ok += 1
           if dump

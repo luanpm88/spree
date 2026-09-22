@@ -1,0 +1,232 @@
+<script>
+  //
+  // The list drives the frame. Nothing here sends anything.
+  //
+  // ── why this is a plain script and not a Stimulus controller ─────────────
+  //
+  // Every other piece of behaviour in this admin is a Stimulus controller, and
+  // that is the right default. It is not available here without cost: the admin
+  // runs its own importmap (Rails.application.config.spree_admin.importmap,
+  // drawn from the gem's own config), the host app has no pin in it, and adding
+  // one means an initializer plus an override of the shared _custom_head
+  // partial — two new gitignore-and-deploy surfaces on a repo whose most
+  // expensive outage was a file the app loaded that the deploy left behind.
+  //
+  // So the Turbo problem is solved directly instead. Turbo Drive replaces
+  // <body> on every visit and re-executes body scripts, including on a
+  // back/forward restore from the snapshot cache. Two things follow, and both
+  // are handled below:
+  //
+  //   1. Listeners on #email-editor die with the element, which is replaced.
+  //      The dataset guard stops a second run binding the same element twice.
+  //   2. Listeners on document and window do NOT die, and would accumulate one
+  //      set per visit. They go through an AbortController that is fired on
+  //      turbo:before-cache.
+  //
+  // ── why the rows do not navigate ────────────────────────────────────────
+  //
+  // Each row is a real link with a real href, so it opens in a new tab, it can
+  // be copied, and it works with JavaScript off. Clicking one ordinarily would
+  // reload the whole admin page to change one iframe, throwing away the scroll
+  // position of a list 26 rows long. So the click is intercepted, the frame is
+  // pointed somewhere new, and the address bar is corrected with
+  // history.replaceState.
+  //
+  (function () {
+    var editor = document.getElementById("email-editor");
+    if (!editor || editor.dataset.bound) return;
+    editor.dataset.bound = "1";
+
+    var frame = document.getElementById("email-frame");
+    var stage = document.getElementById("email-stage");
+    var where = document.getElementById("email-where");
+    var head = document.getElementById("email-head");
+    var subjectOut = document.getElementById("email-subject");
+    var fromOut = document.getElementById("email-from");
+    var warnOut = document.getElementById("email-warnings");
+    var base = editor.dataset.previewBase;
+
+    var abort = new AbortController();
+    var signal = abort.signal;
+
+    var current = null;
+    var part = "html";
+    // An email is laid out for about 600px. 420 is what a phone actually gives
+    // it after the mail client's own chrome, and it is the width that finds a
+    // design which only works wide.
+    var LAYOUT = { desktop: 700, mobile: 420 };
+    var device = "desktop";
+
+    // ── fit the window ──────────────────────────────────────────────────────
+    //
+    // Measured from where the editor really starts, because what sits above it
+    // depends on how far the header wraps. A constant in the stylesheet would
+    // be wrong on the first narrow window.
+    function sizeEditor() {
+      if (document.body.classList.contains("email-full")) { editor.style.height = ""; return; }
+      var top = editor.getBoundingClientRect().top + window.scrollY;
+      var height = Math.max(460, window.innerHeight - top - 24);
+      editor.style.height = height + "px";
+      // Whatever the admin puts below this, take it off too, or the page keeps
+      // a little scroll that drags the frame out from under the reader.
+      var over = document.documentElement.scrollHeight - window.innerHeight;
+      if (over > 0 && height - over >= 460) editor.style.height = (height - over) + "px";
+    }
+
+    function fit() {
+      sizeEditor();
+      var box = stage.getBoundingClientRect();
+      if (!box.width) return;
+      var width = LAYOUT[device];
+      var scale = Math.min(1, box.width / width);
+      frame.style.width = width + "px";
+      // Scaled, so the CSS height must be the stage height DIVIDED by the scale
+      // for the document to fill the stage exactly.
+      frame.style.height = Math.round(box.height / scale) + "px";
+      frame.style.transform = "scale(" + scale + ")";
+      // Centre it. On desktop the frame fills the stage and this is zero; on
+      // the phone layout it is 420 inside a stage twice that, and pinned left
+      // it sat against one edge with a band of checkerboard beside it.
+      frame.style.left = Math.max(0, Math.round((box.width - width * scale) / 2)) + "px";
+    }
+
+    function load(id) {
+      if (!id) return;
+      current = id;
+      document.body.classList.remove("email-live");
+      frame.src = base + "/" + encodeURIComponent(id) + "/preview?part=" + part;
+      if (where) where.textContent = id.replace(/~/g, "/");
+      // Hidden until the envelope answers, rather than leaving the previous
+      // email's subject above the next email's body, which is worse than none.
+      if (head) head.hidden = true;
+      loadEnvelope(id);
+    }
+
+    frame.addEventListener("load", function () {
+      document.body.classList.add("email-live");
+      fit();
+    }, { signal: signal });
+
+    // The envelope comes from its own request, never from the preview document.
+    // The frame's claim is that it shows exactly what a customer receives, and
+    // a document we have added meta tags to no longer shows that.
+    //
+    // A stale reply must not overwrite a newer one: clicking three rows quickly
+    // starts three requests and they can come back in any order, which would
+    // leave one email's subject above another email's body. The id is checked
+    // against what is selected now before anything is written.
+    function loadEnvelope(id) {
+      fetch(base + "/" + encodeURIComponent(id) + "/envelope", {
+        headers: { Accept: "application/json" },
+        credentials: "same-origin",
+        signal: signal
+      })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data || id !== current || !head) return;
+          if (!data.available) { head.hidden = true; return; }
+          subjectOut.textContent = data.subject || "";
+          fromOut.textContent = data.from || "";
+          head.hidden = false;
+
+          // Said on the screen rather than left in the body for somebody to
+          // find. I18n raises on none of these and all three print straight to
+          // the customer.
+          var notes = [];
+          if (data.raw_bold > 0) notes.push(data.raw_bold + " unclosed bold marker(s) print as ** to the customer.");
+          if (data.unfilled && data.unfilled.length) notes.push("Unfilled placeholders: " + data.unfilled.join(", "));
+          if (data.missing && data.missing.length) {
+            notes.push(
+              data.missing.length + " missing translation(s) print to the customer: " +
+                data.missing.slice(0, 3).join(", ") + (data.missing.length > 3 ? " and more" : "")
+            );
+          }
+          if (!data.has_text) notes.push("No plain text part. Spam filters read that first.");
+          if (warnOut) {
+            warnOut.textContent = notes.join("  ");
+            warnOut.hidden = notes.length === 0;
+          }
+
+          var textBtn = editor.querySelector('[data-email-part="text"]');
+          if (textBtn) textBtn.disabled = !data.has_text;
+        })
+        .catch(function () { if (head) head.hidden = true; });
+    }
+
+    // ── the list ────────────────────────────────────────────────────────────
+    editor.addEventListener("click", function (event) {
+      var row = event.target.closest("[data-email-row]");
+      if (!row) return;
+      event.preventDefault();
+      editor.querySelectorAll(".email-row.is-current").forEach(function (el) {
+        el.classList.remove("is-current");
+      });
+      row.classList.add("is-current");
+      load(row.getAttribute("data-email-row"));
+      // The address bar follows without a round trip, so the page can be sent
+      // to somebody and reloaded onto the same email.
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState({}, "", row.getAttribute("href"));
+      }
+    });
+
+    // ── html or plain text ──────────────────────────────────────────────────
+    //
+    // Worth a button rather than a developer tool. A missing plain text part is
+    // invisible to whoever is sending and is exactly what a spam filter looks
+    // at, and this app has a path that silently produces a single-part message.
+    editor.addEventListener("click", function (event) {
+      var b = event.target.closest("[data-email-part]");
+      if (!b || b.disabled) return;
+      part = b.getAttribute("data-email-part");
+      editor.querySelectorAll("[data-email-part]").forEach(function (el) {
+        el.classList.toggle("is-on", el === b);
+      });
+      load(current);
+    });
+
+    // ── desktop or phone ────────────────────────────────────────────────────
+    editor.addEventListener("click", function (event) {
+      var b = event.target.closest("[data-email-device]");
+      if (!b) return;
+      device = b.getAttribute("data-email-device");
+      editor.querySelectorAll("[data-email-device]").forEach(function (el) {
+        el.classList.toggle("is-on", el === b);
+      });
+      fit();
+    });
+
+    var expand = document.getElementById("email-expand");
+    if (expand) {
+      expand.addEventListener("click", function () {
+        document.body.classList.toggle("email-full");
+        expand.classList.toggle("is-on", document.body.classList.contains("email-full"));
+        fit();
+      });
+    }
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key !== "Escape") return;
+      if (!document.body.classList.contains("email-full")) return;
+      document.body.classList.remove("email-full");
+      if (expand) expand.classList.remove("is-on");
+      fit();
+    }, { signal: signal });
+
+    window.addEventListener("resize", fit, { signal: signal });
+
+    // Leaving the page: drop the document and window listeners, drop the two
+    // body classes this screen adds, and cancel an envelope request still in
+    // flight. Without this a full-screen preview would be cached full screen
+    // and restored over the next page.
+    document.addEventListener("turbo:before-cache", function () {
+      document.body.classList.remove("email-full", "email-live");
+      abort.abort();
+    }, { once: true });
+
+    fit();
+
+    var first = editor.querySelector(".email-row.is-current") || editor.querySelector("[data-email-row]");
+    if (first) load(first.getAttribute("data-email-row"));
+  })();
+</script>

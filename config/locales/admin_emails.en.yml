@@ -1,0 +1,76 @@
+# /admin/emails — the email catalogue screen.
+#
+# This file is allowlisted in .gitignore (`!config/locales/admin_emails.en.yml`),
+# because the `config/locales/*` ignore above it exists to keep the client's
+# per-shop wording out of a public repo and would otherwise swallow this one.
+# Nothing here is client wording; it is admin chrome.
+#
+# Every string is written as a sentence a merchant can act on rather than a
+# label. The whole value of the screen is that it distinguishes "this email is
+# broken" from "this shop has never had a reimbursement", and a one-word status
+# throws that distinction away.
+en:
+  spree:
+    admin:
+      emails:
+        title: Emails
+        # The settings sidebar already has an "Emails" item — the shop's
+        # from-address and SMTP settings — so this one cannot be called that
+        # too. Two identical labels one above the other was what the first
+        # screenshot showed, and a merchant would click the wrong one every
+        # time.
+        nav: Email templates
+        count:
+          one: 1 email
+          other: "%{count} emails"
+        unknown: That email is not one this shop sends.
+
+        # ── row states ───────────────────────────────────────────────────────
+        status:
+          ready: Ready
+          no_record: No data yet
+          never: Never sent
+          unknown: Not connected
+        needs: "This shop has no %{records} yet, so there is nothing to build this from."
+        not_wired: Not connected yet
+        not_wired_why: >-
+          This template exists and its mailer exists, but nobody has written
+          down which record to build it from, so it cannot be previewed here
+          yet. It still sends normally.
+        never_sent: This shop never sends this
+        nothing_to_build_from: Nothing to build this from
+
+        # Built, and came back with nothing in it. This is its own state and
+        # never an ok: a mailer that returns before composing raises nothing,
+        # logs nothing, and the customer simply never hears anything.
+        builds_empty: This shop builds this email empty
+        nobody_qualifies: >-
+          The mailer returned without composing anything for any of the last
+          %{count} customers, so there is no %{records} on this shop right now.
+          Nothing is broken: this email only goes out when that condition is
+          met.
+        returned_early: >-
+          The mailer returned before composing anything. That happens when a
+          setting this email depends on is not filled in, or when the record
+          does not meet the condition the email is sent under.
+
+        # ── the preview frame ────────────────────────────────────────────────
+        failed: This email did not build
+        no_text_part: No plain text version
+        no_text_part_why: >-
+          This email is sent as HTML only. Most mail clients cope, but a plain
+          text alternative is the first thing a spam filter reads.
+        formats:
+          html: HTML
+          text: Plain text
+        desktop: Desktop
+        mobile: Phone
+        expand: Fill the screen. Escape closes it
+        subject: Subject
+        sends_from: Sent from
+        html_only: HTML only
+        html_and_text: HTML and plain text
+        built_now: >-
+          Built just now from this shop's own data, and nothing was sent. The
+          list is this shop's own: a shop with its own templates shows different
+          rows from one that uses the shared ones.

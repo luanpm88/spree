@@ -95,6 +95,7 @@ app/views/spree/order_mailer/
 config/locales/*
 !config/locales/_email_key_defaults.en.yml
 !config/locales/admin_branding.en.yml
+!config/locales/admin_emails.en.yml
 !config/locales/admin_invoice.en.yml
 !config/locales/approval_workflow.en.yml
 !config/locales/en.yml

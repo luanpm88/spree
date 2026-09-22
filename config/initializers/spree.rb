@@ -166,6 +166,53 @@ Rails.application.config.after_initialize do
   end
 end
 
+# Put "Email templates" in the settings sidebar, under the "Emails" item that is
+# already there.
+#
+# The key is :email_templates, NOT :emails, and that is the whole point of this
+# comment. Spree::Admin::Navigation#add is `@items[key] = item`, an
+# unconditional overwrite with no warning, and spree_admin already registers
+#
+#   settings_nav.add :emails, url: -> { spree.edit_admin_store_path(section: 'emails') }
+#
+# at position 30. `add :emails` here would silently replace the shop's
+# from-address and SMTP settings link with this one, and the merchant would
+# simply find that page gone. insert_after puts this beside it instead, which is
+# also where it belongs: one item is who the mail comes from, the other is what
+# it says.
+#
+# after_initialize for the same reason as the dropdown above — the navigation
+# registry is built inside spree_admin's own config.after_initialize and does
+# not exist during load_config_initializers. The app's after_initialize blocks
+# run after every engine's, so the ordering is safe in that direction.
+#
+# Guarded, because a Spree that ever renames or drops the :emails item would
+# otherwise take the boot down over a sidebar link.
+Rails.application.config.after_initialize do
+  nav = Spree.admin.navigation.settings
+  options = {
+    # Not admin.emails.title: the item above this one is already called
+    # "Emails", and two identical labels in one sidebar is a click somebody gets
+    # wrong every time.
+    label: 'admin.emails.nav',
+    url: :admin_emails_path,
+    icon: 'mail',
+    active: -> { controller_name == 'emails' },
+    # The same door as the "Emails" item beside it, and the same door the
+    # controller's authorize_admin opens.
+    if: -> { can?(:update, current_store) }
+  }
+
+  if nav.respond_to?(:insert_after) && nav.items.key?(:emails)
+    nav.insert_after(:emails, :email_templates, **options)
+  else
+    nav.add(:email_templates, position: 31, **options)
+  end
+rescue StandardError => e
+  # A sidebar link is never worth a boot failure on seven live shops.
+  Rails.logger.warn("[admin/emails] could not register the settings nav item: #{e.class}: #{e.message}")
+end
+
 # Order numbers start EB on this shop, at the client's request: "Please change the Order
 # Number prefix is EB so all orders will look like this: EB96546767398".
 #

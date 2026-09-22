@@ -6568,3 +6568,123 @@ Hai thứ nữa khiến chỗ này khó nhìn hơn bình thường:
 bấm Pay Now, và chỉ đạt khi **Stripe trả lời** lời gọi confirm. Nó dùng số thẻ
 luôn bị từ chối của Stripe nên an toàn với cổng thanh toán thật: bị từ chối là
 ĐẠT, im lặng là TRƯỢT.
+
+## 67. Một shop gửi 26 email, không phải 21, và ba cái bẫy khi đi liệt kê (22 Sep)
+
+Bản nháp đầu của `Spree::EmailCatalogue` ghi trong comment "app này có bốn view
+root" và "có 21 email". Cả hai đều là suy đoán và cả hai đều sai. Đo trong
+chính container này (Rails 8.1.3, Spree 5.6.1, `SHOP_KEY` không đặt):
+
+```
+ActionMailer::Base.view_paths        12 root   (13 nếu shop có thư mục riêng)
+ActionMailer::Base.descendants       14 mailer không abstract
+email tìm được                       26
+```
+
+Con số 21 sai ở chỗ nguy hiểm: 5 cái thiếu là của `Devise::Mailer`, mà shop này
+**có dùng** (`:recoverable` bật trên `Spree.user_class`), và một trong số đó là
+email đặt lại mật khẩu khách nhận khi không đăng nhập được. Bộ lọc cũ lọc theo
+thư mục có hậu tố `_mailer`, còn `Devise::Mailer#mailer_name` là `devise/mailer`
+— `mailer`, không có gạch dưới.
+
+Ba cái bẫy, đều đo được:
+
+**a) Quét `**/*.erb` toàn bộ view root đọc 749 file để báo 26, và tự bịa ra
+prefix.** `app/views` tự nó là một view root, nên một lần quét cũng trả về
+`app/views/shops/<shop>/spree/order_mailer/confirm_email` và coi
+`shops/<shop>/spree/order_mailer` là một mailer prefix. Trên shop có override
+đó là 7 dòng ma, trùng lặp 6 dòng thật, và không class nào trả lời cái prefix
+ấy. Chỉ glob đúng thư mục mà các class mailer tự khai (`mailer.mailer_name`)
+thì không thể sinh ra chuyện đó.
+
+**b) Regex tên file tự viết đọc sai file có locale và nuốt file có variant.**
+`welcome_email.fr.html.erb` cho ra action `"welcome_email.fr"`, vì nhóm action
+tham lam; `confirm_email.html+mobile.erb` không khớp gì cả và biến mất.
+`spree_i18n` có trong bundle này. Dùng `ActionView::Resolver::PathParser`, là
+thứ Rails tự dùng.
+
+**c) `action_methods` không phải nguồn để liệt kê.** `Spree::BaseMailer` không
+gọi `abstract!`, nên 8 helper public của nó (`mail`, `money`, `current_store`,
+`with_store_locale`, …) lọt vào `action_methods` của **mọi** mailer Spree, cùng
+với mọi `class_attribute` app này thêm vào. Đo được: 105 mục trên tất cả mailer,
+104 mục là nhiễu. Làm **bộ lọc** trên một template đã tìm thấy thì nó chính xác
+tuyệt đối — đó là cách dùng duy nhất đúng.
+
+Thêm một chi tiết về môi trường: ở `development`, `eager_load` tắt, và
+`ActionMailer::Base.descendants` chỉ có **5 trên 14** trước khi gọi
+`Rails.application.eager_load!`. Mọi mailer của `spree_core` không nhìn thấy.
+Nghĩa là một bộ liệt kê xuất phát từ `descendants` sẽ trả về danh sách ngắn ở
+đúng nơi người ta viết và thử nó, và đầy đủ ở production. Sai theo chiều tệ nhất.
+
+## 68. `MessageDelivery` là một `Delegator`, nên `.deliver` gửi thật (22 Sep)
+
+```ruby
+Spree::OrderMailer.confirm_email(order)   # => ActionMailer::MessageDelivery
+```
+
+Object đó là `Delegator`. `.deliver` trên nó **không phải** lỗi cú pháp Ruby
+chặn lại: Delegator chuyển tiếp sang `Mail::Message#deliver` và thư đi thật.
+`.deliver` đọc lên như một từ "dựng", nhưng nó không phải.
+
+Có bốn đường ra: `deliver_now`, `deliver_now!`, `deliver_later`, và
+`Mail::Message#deliver` gọi thẳng. `deliver_now!` **bỏ qua**
+`perform_deliveries` theo thiết kế.
+
+Nên với màn hình xem trước email, quy tắc mạnh hơn "đừng gọi deliver": **không
+tạo ra `MessageDelivery` nào cả**. `Spree::EmailSamples#build!` làm đúng thứ
+`MessageDelivery#processed_mailer` làm bên trong, bỏ đi lớp proxy:
+
+```ruby
+mailer = mailer_class.new
+mailer.process(action, *args)
+message = mailer.message
+message.perform_deliveries = false
+```
+
+Object trả về không hề có `deliver_now` hay `deliver_later` trên nó.
+
+Đo chứ không suy: dựng cả 26 email rồi đếm ở **Mailpit**, là đầu SMTP thật mà
+stack này gửi tới. 0 trước, 0 sau. Đếm ở `ActionMailer::Base.deliveries` sẽ
+không chứng minh được gì, vì mảng đó chỉ đầy dưới delivery method `:test`, thứ
+không server nào chạy.
+
+Và một lý do nữa để chắc chắn: `set_payload_for_mail` đưa `mail.encoded` — đủ
+header, người nhận, toàn bộ body — vào notification `deliver.action_mailer`.
+Sentry có ở đây. Một lần gửi nhầm cũng ghi luôn cả email của khách vào log.
+
+## 69. `translation missing` in thẳng ra cho khách, và cổng kiểm tra email không nhìn nó (22 Sep)
+
+Màn hình `/admin/emails` dựng xong email hoàn tiền trên một store có
+`default_locale = en-CA` và hiện ngay trong khung:
+
+```
+Total refunded: <span class="translation_missing" title="translation missing: en-CA…">
+```
+
+Đo tiếp trên chính message đó: **7 key thiếu**, và chúng nằm trong cả hai phần.
+
+```
+en-CA.spree.user_emails.reimbursement.payment_note_1
+en-CA.spree.user_emails.reimbursement.payment_note_2
+en-CA.spree.user_emails.reimbursement.refund_thank_you
+en-CA.spree.user_emails.common.the_team
+en-CA.spree.user_emails.common.support_url
+en-CA.spree.user_emails.common.owner_name
+en-CA.spree.user_emails.common.owner_title
+```
+
+Phần HTML ra một `<span class="translation_missing">`; phần plain text ra đúng
+mấy chữ `translation missing: en-CA…` nằm giữa một câu gửi cho khách. I18n
+**không raise** cho cả hai.
+
+Chỗ đáng ghi lại không phải cái key thiếu, mà là: `bin/rails emails:smoke` đã
+dựng đúng email đó và in `ok`. Nó chỉ tìm `**` và `%{...}`. Cùng một hình dạng
+lỗi — thứ gì đó không điền được, không báo gì, và in ra cho khách — nhưng cổng
+chỉ biết hai trong ba dạng.
+
+Cả hai chỗ giờ đều kiểm: `emails:smoke` trượt khi thấy nó, và màn hình quản trị
+in nó lên thanh trên khung, nên không cần ai phải grep body.
+
+Bài học chung hơn: một cổng kiểm tra nội dung email phải đo **trên body đã
+render**, không phải trên file locale — vì body là thứ khách đọc, và không quan
+trọng key rơi qua root locale nào.

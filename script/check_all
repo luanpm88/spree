@@ -137,6 +137,18 @@ if [ -f script/check_untracked_source ]; then
   run "source the deploy would carry is tracked" script/check_untracked_source
 fi
 
+# /admin/emails builds a real customer's order confirmation to show it on a
+# screen. One click that delivered would post that order's confirmation to that
+# customer a second time, so the property "building is not sending" is a gate,
+# not a comment. This is the static half — it reads every line on that path,
+# including the ones a browser walk never runs. The browser half needs a running
+# shop and is run separately:
+#
+#   node script/check_admin_emails.mjs <base-url> <admin-email> <password>
+if [ -f script/check_admin_emails ]; then
+  run "the admin email screen cannot send mail" script/check_admin_emails
+fi
+
 # The publishable key is generated, not configured, and reloading a shop's
 # database from his dump mints a new one. The storefront's copy is baked in at
 # build time, so a reload silently invalidates the storefront built for it: every
