@@ -213,3 +213,6 @@ docs/.risk_network.build.html
 # this lived there. It is right to. Nothing on the server reads this, only the
 # browser probes on this laptop, so it belongs beside .estate and .shopauth.
 .checkout_probes
+
+# Built beside the design PDF, for diffing a render. Regenerated every build.
+docs/**/*.build.html
