@@ -93,6 +93,21 @@ const CARD_QUERY: { expand: string[] } = {
 };
 
 async function fetchProducts(source: CollectionBlock["source"], limit: number) {
+  if (source.kind === "category_permalink") {
+    // A permalink that names no category is an empty row, not an error page.
+    try {
+      const category = await getCategory(source.permalink);
+      if (!category?.id) return [];
+      const response = await getCategoryProducts(category.id, {
+        limit,
+        ...CARD_QUERY,
+      });
+      return response.data ?? [];
+    } catch {
+      return [];
+    }
+  }
+
   if (source.kind === "category") {
     const response = await getCategoryProducts(source.id, {
       limit,
@@ -140,6 +155,9 @@ export async function Collection({
   // this block is the one piece of code that certainly knows which category it
   // is rendering.
   let href = viewAll?.href;
+  if (viewAll && source.kind === "category_permalink") {
+    href = `/c/${source.permalink}`;
+  }
   if (viewAll && source.kind === "category") {
     try {
       const category = await getCategory(source.id);

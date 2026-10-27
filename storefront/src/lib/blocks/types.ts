@@ -16,6 +16,8 @@
  * honest.
  */
 
+import type { HomeCategorySettings } from "@/lib/blocks/home-eligibility";
+
 /** Rich text with an optional image beside it. His hero and About sections. */
 export interface TextImageBlock {
   type: "text_image";
@@ -73,10 +75,61 @@ export interface TextImageBlock {
 export interface CollectionBlock {
   type: "collection";
   heading: string;
-  source: { kind: "category"; id: string } | { kind: "on_sale" };
+  source:
+    | { kind: "category"; id: string }
+    // By permalink, for a row a shop names in its content file. A permalink
+    // survives a database reload where an id does not, and the business front
+    // page names its Featured row this way.
+    | { kind: "category_permalink"; permalink: string }
+    | { kind: "on_sale" };
   /** Link on the right of the heading. Omitted when there is nowhere to go. */
   viewAll?: { label: string; href: string };
   limit?: number;
+}
+
+/**
+ * Category rows chosen by his eligibility rules, by slot.
+ *
+ * His homepage order places the six chosen categories in more than one place:
+ * one before the banner, one after it, four after Special Offers. So the page
+ * declares a block per run of slots, and every block reads the same decision,
+ * made once per request (lib/blocks/home-eligibility.ts).
+ */
+export interface HomeCategoriesBlock {
+  type: "home_categories";
+  /** First slot, 1 to 6. */
+  from: number;
+  /** Last slot, inclusive. */
+  to: number;
+  perRow?: number;
+  viewAllLabel?: string;
+  /** His Override and Position per category permalink. */
+  settings?: HomeCategorySettings;
+}
+
+/** A grid of the shop's main categories, each a link. "Browse by Category". */
+export interface BrowseCategoriesBlock {
+  type: "browse_categories";
+  heading: string;
+  /** Leave out a category that is not a shopping category. */
+  exclude?: string[];
+}
+
+/**
+ * One full-width advertisement, his "Full-width Banner Advertisement".
+ *
+ * Without artwork it renders nothing on a live page. On a preview it renders a
+ * labelled frame of the right size, so the layout can be judged before the
+ * artwork exists, and nobody mistakes the frame for the finished thing.
+ */
+export interface BannerAdBlock {
+  type: "banner_ad";
+  image?: string;
+  width?: number;
+  height?: number;
+  alt?: string;
+  href?: string;
+  preview?: boolean;
 }
 
 /**
@@ -542,7 +595,10 @@ export type Block =
   | EmbedBlock
   | DownloadsBlock
   | FeatureListBlock
-  | RichTextBlock;
+  | RichTextBlock
+  | HomeCategoriesBlock
+  | BrowseCategoriesBlock
+  | BannerAdBlock;
 
 export interface PageDefinition {
   /** Used for the <title> and for finding the page in the CMS later. */

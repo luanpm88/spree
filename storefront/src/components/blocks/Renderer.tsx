@@ -1,4 +1,6 @@
+import { BannerAd } from "@/components/blocks/BannerAd";
 import { BannerSlider } from "@/components/blocks/BannerSlider";
+import { BrowseCategories } from "@/components/blocks/BrowseCategories";
 import { CategoryRows } from "@/components/blocks/CategoryRows";
 import { Collection } from "@/components/blocks/Collection";
 import { Downloads } from "@/components/blocks/Downloads";
@@ -6,6 +8,7 @@ import { Embed } from "@/components/blocks/Embed";
 import { Enquiry } from "@/components/blocks/Enquiry";
 import { Faq } from "@/components/blocks/Faq";
 import { FeatureList } from "@/components/blocks/FeatureList";
+import { HomeCategories } from "@/components/blocks/HomeCategories";
 import { IconBanner } from "@/components/blocks/IconBanner";
 import { Notice } from "@/components/blocks/Notice";
 import { RichText } from "@/components/blocks/RichText";
@@ -86,6 +89,21 @@ export function Renderer({ blocks, basePath, currency }: RendererProps) {
             return <Embed key={key} {...block} />;
           case "feature_list":
             return <FeatureList key={key} {...block} basePath={basePath} />;
+          case "home_categories":
+            return (
+              <HomeCategories
+                key={key}
+                {...block}
+                basePath={basePath}
+                currency={currency}
+              />
+            );
+          case "browse_categories":
+            return (
+              <BrowseCategories key={key} {...block} basePath={basePath} />
+            );
+          case "banner_ad":
+            return <BannerAd key={key} {...block} basePath={basePath} />;
           default: {
             // The comment above promised the switch was exhaustive and it was
             // not: a `default: return null` meant any block type added to the
