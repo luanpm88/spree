@@ -47,8 +47,8 @@ module Spree
       base.class_attribute :welcome_includes_password_link, default: true
     end
 
-    # @param user [Spree.user_class]
-    # @param reset_token [String] the RAW Devise token, not the stored hash
+    # @param user [Spree.customer_class]
+    # @param reset_token [String] from generate_token_for(:password_reset)
     # @param store [Spree::Store]
     def welcome_email(user, reset_token, store)
       @user = user
@@ -158,7 +158,7 @@ module Spree
     # too, which was not asked for and is a good idea: it lets a welcome carry a line
     # written for that customer.
 
-    # @param user [Spree.user_class]
+    # @param user [Spree.customer_class]
     # @param store [Spree::Store]
     def approval_email(user, store)
       # Re-checked at render time, not at enqueue time, for the same reason as the
@@ -169,19 +169,35 @@ module Spree
       # Now that More Information and Not Approved are also groups, "has a group" would
       # let this congratulate somebody the shop had just declined.
       return unless in_approving_group?(user, store)
-      # Told once. The subscriber checks this too, but it can be enqueued twice: an admin
-      # ticking two approving groups in one save publishes two events, and both pass the
-      # enqueue-time check before either job runs.
-      return if user.respond_to?(:approval_notified?) && user.approval_notified?
+      return deliver_outcome(user, store, [:user_emails, :account_approval]) unless user.respond_to?(:mark_approval_notified!)
 
-      message = deliver_outcome(user, store, [:user_emails, :account_approval])
+      # Told once, and the check, the build and the mark happen under a lock on the
+      # customer row, because "once" failed without it. Measured on the 6.0 copy, 28 Oct:
+      # three approval jobs fell due in the same second, from one new membership and two
+      # edits to the customer, and the customer received the approval email twice. Each
+      # job read "not told yet" before either wrote the marker.
+      #
+      # Two jobs at once is the normal case, not a corner: the subscriber enqueues on
+      # customer_group_user.created AND on user.updated, both with the same two minute
+      # grace, so approving somebody and editing them in the same sitting (typing the
+      # note, fixing a name) queues two.
+      #
+      # with_lock reloads the row FOR UPDATE, so the second job waits for the first to
+      # commit and then sees the marker. Only the build happens inside; the SMTP send is
+      # ActionMailer's, after this action returns, so the lock is held for milliseconds.
+      message = nil
+      user.with_lock do
+        next if user.approval_notified?
 
-      # Marked here, past every guard, and NOT at enqueue time. Marking on enqueue is what
-      # the old ordering test effectively did, and it is why a withheld approval could
-      # never be recovered: the shop looked told when nothing had been sent. If the SMTP
-      # delivery itself then fails the mail is lost, which is the same exposure every other
-      # mailer here has and strictly better than losing it silently forever.
-      user.mark_approval_notified! if message.present? && user.respond_to?(:mark_approval_notified!)
+        message = deliver_outcome(user, store, [:user_emails, :account_approval])
+
+        # Marked here, past every guard, and NOT at enqueue time. Marking on enqueue is
+        # what the old ordering test effectively did, and it is why a withheld approval
+        # could never be recovered: the shop looked told when nothing had been sent. If
+        # the SMTP delivery itself then fails the mail is lost, which is the same exposure
+        # every other mailer here has and strictly better than losing it silently forever.
+        user.mark_approval_notified! if message.present?
+      end
       message
     end
 
@@ -191,7 +207,7 @@ module Spree
     # template". So the shop types it into a box on the customer page and it arrives here
     # as %{note}, which his wording places inside its own sentence.
     #
-    # @param user [Spree.user_class]
+    # @param user [Spree.customer_class]
     # @param store [Spree::Store]
     def more_information_email(user, store)
       group = group_for_role(:more_information, store)
@@ -223,7 +239,7 @@ module Spree
     # leaves an unreachable applicant sitting in the group without a further email. Kept
     # rather than deleted so that the day he writes the words, it sends.
     #
-    # @param user [Spree.user_class]
+    # @param user [Spree.customer_class]
     # @param store [Spree::Store]
     def not_approved_email(user, store)
       group = group_for_role(:not_approved, store)
@@ -250,7 +266,7 @@ module Spree
     # the backend; store.storefront_url is where customers go, and a customer record
     # does not exist there.
     #
-    # @param user [Spree.user_class] the customer who just signed up
+    # @param user [Spree.customer_class] the customer who just signed up
     # @param store [Spree::Store]
     def store_signup_notification(user, store)
       # Both decisions live here rather than in the subscriber, and that is the whole
@@ -324,21 +340,23 @@ module Spree
 
       @user = user
       @current_store = store
-      # to_param, NOT id, and the show page rather than /edit. Both halves were wrong and
-      # both were measured, not reasoned:
+      # The customer's page in the 6.0 dashboard, which replaced the Rails admin this
+      # used to point at (/admin/users/:id, a 404 on 6.0).
       #
-      #   Spree::Admin::UsersController#find_resource is
-      #     model_class.accessible_by(...).find_by_prefix_id!(params[:id])
+      # The route, read out of the dashboard bundle Spree 6.0.0 ships:
       #
-      # and find_by_prefix_id('1') returns nil, so /admin/users/1/edit rescued into a
-      # redirect and landed the shop on the customer LIST. The one link whose entire job
-      # is "here is the person to approve" pointed at everybody. to_param returns the
-      # prefixed id (cus_UkLWZg9DAJ) because Spree::User includes Spree::PrefixedId.
+      #   /_authenticated/$storeId/customers/$customerId
       #
-      # /edit is a Turbo Frame drawer opened from the show page, so requesting it directly
-      # returns a bare frame rather than a usable page. The show page carries the customer,
-      # their groups and the Edit button that opens that drawer.
-      @customer_admin_url = "#{store.formatted_url.to_s.chomp('/')}/admin/users/#{user.to_param}"
+      # Prefixed ids for both, never raw ones: the dashboard takes its ids from the Admin
+      # API, which only ever gives prefixed ones (store_…, cust_…). prefixed_id, not
+      # to_param, because Spree::Store#to_param is the raw id (measured: "1"). On 5.6 a
+      # raw id in this link landed the shop on the customer LIST instead of the person
+      # to approve, which is the one thing this link exists for.
+      #
+      # DashboardUrl rather than store.formatted_url + '/dashboard', because it is what
+      # Spree's own staff emails use and it honours SPREE_DASHBOARD_URL when the
+      # dashboard is served from somewhere else.
+      @customer_admin_url = "#{Spree::Stores::DashboardUrl.call(store: store).to_s.chomp('/')}/#{store.prefixed_id}/customers/#{user.prefixed_id}"
 
       with_store_locale(store) do
         mail(
@@ -395,7 +413,7 @@ module Spree
     end
 
     # The shop's note to this customer, typed on the admin form beside the customer
-    # group selector. Owned by the model, see Spree::UserDecorator#approval_note, so
+    # group selector. Owned by the model, see Spree::CustomerDecorator#approval_note, so
     # there is one definition of where it lives rather than a key repeated here.
     #
     # Read by both new emails: a decline can carry a reason as usefully as a request for

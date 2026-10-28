@@ -190,23 +190,6 @@ services:
              (test -d node_modules/next || pnpm install --frozen-lockfile) &&
              pnpm dev --port 3001 --hostname 0.0.0.0"
 
-  # Spree Admin's Tailwind CSS, rebuilt on change.
-  #
-  # This service is NOT in the upstream spree_starter compose — we added it.
-  # Without it /admin returns 500 with:
-  #   "The asset 'spree/admin/application.css' was not found in the load path"
-  # Why: the admin stylesheet is a *built* artifact at
-  # app/assets/builds/spree/admin/application.css. The image builds it during
-  # assets:precompile, but dev (a) bind-mounts the host source over /rails, and
-  # app/assets/builds/ is gitignored so it arrives empty, and (b) mounts an
-  # empty tmpfs over public/assets so the image's precompiled copy is hidden too.
-  # Upstream expects the `spree` npm CLI (`spree dev`) to run Procfile.dev, whose
-  # admin_css line is exactly this watcher. We run it as a compose service so
-  # plain `docker compose up` is enough.
-  admin_css:
-    <<: *app
-    command: ["bin/rails", "spree:admin:tailwindcss:watch"]
-
 volumes:
   postgres_data:
   # meilisearch_data:

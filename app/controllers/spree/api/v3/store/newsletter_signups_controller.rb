@@ -17,25 +17,29 @@ module Spree
         #     -> 201 Created, public_metadata still null.
         #
         # spree_newsletter_subscribers has no name column, and
-        # Spree::NewsletterSubscriber.subscribe takes email, user, store and
+        # Spree::NewsletterSubscriber.subscribe takes email, customer, store and
         # redirect_url. A name posted to it is dropped by the strong parameters
         # before anything could store it. A field on the form that silently
-        # discards what someone types is worse than no field.
+        # discards what someone types is worse than no field. Still true on
+        # 6.0.0: its CreateNewsletterSubscriberParams are email and redirect_url.
+        #
+        # Measured on 5.6 against the running shop; the 6.0 lines are read from
+        # spree_api 6.0.0's newsletter_subscribers_controller.rb.
         #
         # ── where the name goes, and why there ───────────────────────────────
         #
-        # Into a metafield, not into public_metadata.
+        # Into a custom field (a metafield on 5.6), not into metadata.
         #
-        # Metafields are a first class thing in 5.6: they have a definition with
-        # a name and a type, the admin renders them, and Spree::Exports::
-        # NewsletterSubscribers already puts every metafield into the CSV as its
-        # own column. So the name lands where the shop owner will actually meet
-        # it, which is the export he sends to his mail tool. public_metadata is a
-        # loose json blob that nothing displays and nothing exports.
+        # Custom fields are a first class thing: they have a definition with a
+        # label and a type, the dashboard renders them, and the subscriber export
+        # puts every one into the CSV as its own column. So the name lands where
+        # the shop owner will actually meet it, which is the export he sends to
+        # his mail tool. metadata is a loose json blob that nothing displays and
+        # nothing exports.
         #
         # Spree::NewsletterSubscriber is on the platform's own list of resources
-        # that may carry metafields, so this is a supported use of it rather than
-        # a hole being widened.
+        # that may carry custom fields (Spree.custom_fields.enabled_resources), so
+        # this is a supported use of it rather than a hole being widened.
         #
         # ── what this does NOT change ────────────────────────────────────────
         #
@@ -46,6 +50,15 @@ module Spree
         class NewsletterSignupsController < ::Spree::Api::V3::Store::BaseController
           allow_guest_storefront_access!
 
+          # The limit Spree puts on its own newsletter endpoint since 6.0. Ours
+          # creates the same row from the same anonymous request, so it takes the
+          # same limit rather than being the unthrottled way round it.
+          rate_limit to: Spree::Api::Config[:rate_limit_register],
+                     within: Spree::Api::Config[:rate_limit_window].seconds,
+                     store: Rails.cache,
+                     only: :create,
+                     with: -> { render_rate_limited(limit: Spree::Api::Config[:rate_limit_register]) }
+
           NAMESPACE = 'customer'.freeze
           KEY = 'name'.freeze
           MAX_NAME = 100
@@ -53,7 +66,7 @@ module Spree
           def create
             subscriber = Spree::NewsletterSubscriber.subscribe(
               email: params[:email],
-              user: current_user,
+              customer: current_user,
               store: current_store
             )
 
@@ -81,41 +94,42 @@ module Spree
 
           # Best effort on purpose. The subscription itself has already
           # succeeded by this point, and failing the whole request because a
-          # metafield could not be written would tell the visitor their signup
-          # did not work when it did.
+          # custom field could not be written would tell the visitor their
+          # signup did not work when it did.
+          #
+          # set_custom_field saves with save!, so a validation failure lands in the
+          # log below instead of vanishing.
           def store_name_for(subscriber)
             name = params[:name].to_s.strip.first(MAX_NAME)
             return if name.blank?
 
-            definition = metafield_definition
+            definition = custom_field_definition
             return if definition.nil?
 
-            metafield = Spree::Metafield.find_or_initialize_by(
-              resource: subscriber,
-              metafield_definition_id: definition.id
-            )
-            metafield.type = definition.metafield_type
-            metafield.value = name
-            metafield.save
+            subscriber.set_custom_field(definition, name)
           rescue StandardError => e
             Rails.logger.warn("[newsletter] could not store the name: #{e.class}: #{e.message}")
           end
 
           # Created on first use rather than in a migration, so a shop that never
           # receives a named signup never grows a definition it does not use, and
-          # so this works on all six shops without a deploy step per shop.
-          def metafield_definition
-            Spree::MetafieldDefinition.find_or_create_by!(
+          # so this works on every shop without a deploy step per shop.
+          #
+          # Per store, because a definition belongs to one on 6.0.
+          def custom_field_definition
+            Spree::CustomFieldDefinition.find_or_create_by!(
+              store: current_store,
               resource_type: 'Spree::NewsletterSubscriber',
               namespace: NAMESPACE,
               key: KEY
             ) do |d|
-              d.name = 'Name'
-              d.metafield_type = 'Spree::Metafields::ShortText'
-              d.display_on = 'both'
+              d.label = 'Name'
+              d.field_type = 'short_text'
+              # Read by staff and the export, never by the storefront.
+              d.storefront_visible = false
             end
           rescue ActiveRecord::RecordInvalid => e
-            Rails.logger.warn("[newsletter] no metafield definition: #{e.message}")
+            Rails.logger.warn("[newsletter] no custom field definition: #{e.message}")
             nil
           end
         end

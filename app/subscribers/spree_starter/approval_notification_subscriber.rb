@@ -47,12 +47,12 @@ module SpreeStarter
     # A customer joined a group, so the shop has just decided something.
     def handle_membership(event)
       # The payload for this model is Spree's minimal fallback, {id, created_at,
-      # updated_at}: no user_id, no customer_group_id, because there is no V3 serializer
-      # for a join table. The row has to be fetched.
+      # updated_at}: no customer_id, no customer_group_id, because there is no V3
+      # serializer for a join table. The row has to be fetched.
       membership = find_membership(event)
       return if membership.nil?
 
-      user = membership.user
+      user = membership.customer
       return if user.nil?
 
       store = event.store || Spree::Store.default
@@ -65,7 +65,7 @@ module SpreeStarter
         Spree::CustomerMailer.not_approved_email(user, store).deliver_later(wait: GRACE)
       else
         # Told once, and "once" is a recorded fact rather than a guess about row order.
-        # See Spree::UserDecorator::APPROVAL_NOTIFIED_KEY: the old ordering test was spent
+        # See Spree::CustomerDecorator::APPROVAL_NOTIFIED_KEY: the old ordering test was spent
         # the moment a send was withheld, so a withheld approval could never be delivered
         # by any later event.
         return if user.approval_notified?
@@ -89,15 +89,17 @@ module SpreeStarter
     # The customer record changed, which is the ONLY signal a declining membership going
     # away produces. Measured:
     #
-    #   customer_group_ids=      publishes user.updated        (the admin customer form)
-    #   remove_customers         publishes NOTHING             (group screen and API)
+    #   customer_group_ids=      publishes user.updated        (the customer form)
+    #   remove_customers_from    publishes NOTHING             (bulk action and API)
     #   destroy on the join row  publishes nothing either, because CustomerGroupUser has
     #                            only :create lifecycle events enabled
+    #
+    # (Measured on 5.6; the 6.0 code for all three is unchanged in shape.)
     #
     # So this handler is how an un-decline reaches the customer at all. It is cheap on the
     # hot path: almost every user.updated returns on the first or second line.
     #
-    # The group-screen path is covered by Spree::CustomerGroupDecorator#remove_customers,
+    # The bulk path is covered by Spree::CustomerGroupDecorator::ClassMethods#remove_customers_from,
     # which publishes user.updated for the affected customers precisely so that this
     # handler is the single place the decision is re-examined.
     def handle_user_changed(event)
@@ -136,7 +138,7 @@ module SpreeStarter
     # A de-duplicator, not the once-only guard. Exactly one row can be the oldest, so two
     # events from one save cannot both pass, and no race window exists at enqueue time.
     def first_approving_membership?(user, membership, store)
-      scope = Spree::CustomerGroupUser.where(user_id: user.id, user_type: membership.user_type)
+      scope = Spree::CustomerGroupUser.where(customer_id: user.id, customer_type: membership.customer_type)
       excluded = store.respond_to?(:non_approving_customer_group_ids) ? store.non_approving_customer_group_ids : []
       scope = scope.where.not(customer_group_id: excluded) if excluded.any?
 
@@ -147,8 +149,11 @@ module SpreeStarter
       true
     end
 
+    # 6.0 customer ids carry cust_, where 5.6 users carried cus_, and find_by_prefix_id
+    # refuses the other prefix. An event enqueued on 5.6 and handled on 6.0 would find
+    # nobody, which is why the job queue is drained before the move.
     def find_user(event)
-      Spree.user_class.find_by_prefix_id(event.payload['id'])
+      Spree.customer_class.find_by_prefix_id(event.payload['id'])
     rescue StandardError
       nil
     end

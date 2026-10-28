@@ -1,235 +1,45 @@
 # frozen_string_literal: true
 
-# Configure Spree Preferences
-#
-# Note: Initializing preferences available within the Admin will overwrite any changes that were made through the user interface when you restart.
-#       If you would like users to be able to update a setting with the Admin it should NOT be set here.
-#
-# Note: If a preference is set here it will be stored within the cache & database upon initialization.
-#       Just removing an entry from this initializer will not make the preference value go away.
-#       Instead you must either set a new value or remove entry, clear cache, and remove database entry.
-#
-# In order to initialize a setting do:
-# config.setting_name = 'new value'
-#
-# More on configuring Spree preferences can be found at:
-# https://docs.spreecommerce.org/developer/customization
+# Spree settings are configured with environment variables, see
+# https://spreecommerce.org/docs/developer/customization/configuration
+# Anything that shapes how a shop sells (currency, taxes, when customers are
+# charged, order number prefix) belongs to the store and is edited in the
+# dashboard, not here.
 Spree.config do |config|
-  # Example:
-  # Uncomment to stop tracking inventory levels in the application
-  # config.track_inventory_levels = false
+  # Six, not Spree 6.0's default of eight, and in code rather than per shop.
+  #
+  # Every storefront form that takes a password checks for six characters: the
+  # wholesale application, registration and password reset. With the backend at
+  # eight, a password of six or seven passes the form and is refused by the API,
+  # and the applicant sees an error the page told them they had avoided. The
+  # forms are the same code on every shop, so the floor they promise is set for
+  # every shop here, not in seven .env files that can drift.
+  #
+  # Raising it to eight is a change customers see, which is the client's call.
+  config.minimum_password_length = 6
 end
 
-# Configure Spree Dependencies
-#
-# Note: If a dependency is set here it will NOT be stored within the cache & database upon initialization.
-#       Just removing an entry from this initializer will make the dependency value go away.
-#
-# More on how to use Spree dependencies can be found at:
-# https://docs.spreecommerce.org/customization/dependencies
 Spree.dependencies do |dependencies|
-  # Example:
-  # Uncomment to change the default Service handling adding Items to Cart
-  # dependencies.cart_add_item_service = 'MyNewAwesomeService'
 end
 
-Rails.application.config.after_initialize do
-  # Spree.shipping_methods << Spree::ShippingMethods::SuperExpensiveNotVeryFastShipping
-  # Spree.payment_methods << Spree::PaymentMethods::VerySafeAndReliablePaymentMethod
-
-  # Spree.calculators.tax_rates << Spree::TaxRates::FinanceTeamForcedMeToCodeThis
-
-  # Spree.stock_splitters << Spree::Stock::Splitters::SecretLogicSplitter
-
-  # Spree.adjusters << Spree::Adjustable::Adjuster::TaxTheRich
-
-  # Custom promotions
-  # Spree.calculators.promotion_actions_create_adjustments << Spree::Calculators::PromotionActions::CreateAdjustments::AddDiscountForFriends
-  # Spree.calculators.promotion_actions_create_item_adjustments << Spree::Calculators::PromotionActions::CreateItemAdjustments::FinanceTeamForcedMeToCodeThis
-  # Spree.promotions.rules << Spree::Promotions::Rules::OnlyForVIPCustomers
-  # Spree.promotions.actions << Spree::Promotions::Actions::GiftWithPurchase
-
-  # Spree.taxon_rules << Spree::TaxonRules::ProductsWithColor
-
-  # Spree.exports << Spree::Exports::Payments
-  # Spree.reports << Spree::Reports::MassivelyOvercomplexReportForCfo
-
-  # ── Role-based permissions ────────────────────────────────────────────────
-  # Spree ships two roles (:default for customers, :admin for staff) and 14
-  # permission sets. Assigning sets here is what makes a role mean anything —
-  # creating a Spree::Role row alone grants nothing.
-  #
-  # A role with no permission sets can sign in and see nothing, so every staff
-  # role below includes DashboardDisplay.
-  #
-  # Create the matching users with:  bin/rails demo:seed_users
-  # Full list: Spree::PermissionSets::Base.descendants
-  Spree.permissions.assign(:default, [Spree::PermissionSets::DefaultCustomer])
-  Spree.permissions.assign(:admin, [Spree::PermissionSets::SuperUser])
-
-  # Quản lý — thấy hết, làm được gần hết, nhưng không sửa cấu hình hệ thống
-  # và không tự cấp quyền cho người khác.
-  Spree.permissions.assign(:manager, [
-    Spree::PermissionSets::DashboardDisplay,
-    Spree::PermissionSets::OrderManagement,
-    Spree::PermissionSets::ProductManagement,
-    Spree::PermissionSets::PromotionManagement,
-    Spree::PermissionSets::StockManagement,
-    Spree::PermissionSets::UserDisplay
-  ])
-
-  # Nhân viên sản phẩm — chỉ catalog và tồn kho. Không xem được đơn/khách.
-  Spree.permissions.assign(:catalog, [
-    Spree::PermissionSets::DashboardDisplay,
-    Spree::PermissionSets::ProductManagement,
-    Spree::PermissionSets::StockManagement
-  ])
-
-  # Nhân viên xử lý đơn — xử lý đơn, xem hàng và tồn kho, không sửa giá.
-  Spree.permissions.assign(:fulfillment, [
-    Spree::PermissionSets::DashboardDisplay,
-    Spree::PermissionSets::OrderManagement,
-    Spree::PermissionSets::ProductDisplay,
-    Spree::PermissionSets::StockDisplay,
-    Spree::PermissionSets::UserDisplay
-  ])
-
-  # Nhân viên bán sỉ (B2B) — cần quản lý khách để gán customer group, cần xem
-  # giá, và cần xử lý đơn sỉ. UserManagement là thứ cho phép gán nhóm khách.
-  # StockDisplay thêm vào sau khi audit (script/audit_roles.mjs) cho thấy thiếu
-  # nó thì không xem được tồn kho — mà bán sỉ thì luôn phải trả lời "còn hàng
-  # không". ProductManagement KHÔNG tự bao gồm quyền xem tồn kho.
-  Spree.permissions.assign(:sales_b2b, [
-    Spree::PermissionSets::DashboardDisplay,
-    Spree::PermissionSets::OrderManagement,
-    Spree::PermissionSets::ProductManagement,
-    Spree::PermissionSets::StockDisplay,
-    Spree::PermissionSets::UserManagement
-  ])
-
-  # :sales, viết đúng tên role mà khách đã tự tạo trong shop của ông ấy.
-  #
-  # Shop của ông ấy có sẵn một Spree::Role tên "Sales" từ 30/5/2025, và ông ấy
-  # nói "nothing worked for Sales". Đúng như vậy, và không phải lỗi cấu hình:
-  # spree_roles chỉ có mỗi cột name, quyền nằm hoàn toàn trong file này, và
-  # không dòng nào đăng ký cho :sales. Một role không có bộ quyền nào thì đăng
-  # nhập được mà không thấy gì — im lặng, không báo lỗi.
-  #
-  # Đặt tên :sales chứ không phải :Sales vì Spree chuẩn hoá tên role về symbol
-  # viết thường, nên "Sales" trong database khớp với :sales ở đây.
-  #
-  # Quyền chọn theo nghĩa "bán hàng bán lẻ": xử lý đơn, xem khách, xem hàng và
-  # tồn kho. Không sửa giá, không sửa khuyến mãi, không đụng cấu hình, không tự
-  # cấp quyền. Khác :sales_b2b ở chỗ b2b cần UserManagement để gán nhóm khách.
-  Spree.permissions.assign(:sales, [
-    Spree::PermissionSets::DashboardDisplay,
-    Spree::PermissionSets::OrderManagement,
-    Spree::PermissionSets::ProductDisplay,
-    Spree::PermissionSets::StockDisplay,
-    Spree::PermissionSets::UserDisplay
-  ])
-
-  # CSKH — chỉ đọc. Trả lời khách mà không sửa được gì.
-  Spree.permissions.assign(:support, [
-    Spree::PermissionSets::DashboardDisplay,
-    Spree::PermissionSets::OrderDisplay,
-    Spree::PermissionSets::ProductDisplay,
-    Spree::PermissionSets::UserDisplay
-  ])
-end
-
-# Put "Print invoice" in the order page's action menu.
+# Roles: none are set up here on Spree 6.0.
 #
-# Spree.admin.partials.order_page_dropdown is a hook spree_admin renders on the order page,
-# so nothing in the gem is overridden or decorated to get the link there. The controller,
-# route and view are ours; this is the only line that has to know about the admin UI.
-#
-# after_initialize, NOT to_prepare, and the reason is the same one that governs
-# Spree.subscribers a few lines below: the registry does not exist yet during
-# load_config_initializers. Measured the hard way — to_prepare gave
-#
-#   NoMethodError: undefined method 'include?' for nil
-#
-# and took the container down on boot. Probing it from `rails runner` earlier showed [],
-# because that runs after a completed boot, which is exactly the sort of check that
-# confirms the wrong thing.
-#
-# Guarded against a duplicate, and tolerant of a nil list, so a future Spree that builds
-# the registry later still works.
-Rails.application.config.after_initialize do
-  partial = 'spree/admin/orders/invoice_link'
-  list = Spree.admin.partials.order_page_dropdown
-  if list.nil?
-    Spree.admin.partials.order_page_dropdown = [partial]
-  elsif !list.include?(partial)
-    list << partial
-  end
-end
+# 5.6 gave a role its meaning in this file (Spree.permissions.assign with
+# permission sets). 6.0 removed permission sets; a role's permissions are data on
+# the role, edited in the dashboard. The two shops on 6.0 so far have only the
+# built-in admin role, which has every permission. A shop with custom roles
+# (manager, catalog, fulfillment, sales_b2b, Sales, support) needs them seeded as
+# data before it moves, see docs/PLAN_6-0.md section 9.1.2.
 
-# Put "Email templates" in the settings sidebar, under the "Emails" item that is
-# already there.
-#
-# The key is :email_templates, NOT :emails, and that is the whole point of this
-# comment. Spree::Admin::Navigation#add is `@items[key] = item`, an
-# unconditional overwrite with no warning, and spree_admin already registers
-#
-#   settings_nav.add :emails, url: -> { spree.edit_admin_store_path(section: 'emails') }
-#
-# at position 30. `add :emails` here would silently replace the shop's
-# from-address and SMTP settings link with this one, and the merchant would
-# simply find that page gone. insert_after puts this beside it instead, which is
-# also where it belongs: one item is who the mail comes from, the other is what
-# it says.
-#
-# after_initialize for the same reason as the dropdown above — the navigation
-# registry is built inside spree_admin's own config.after_initialize and does
-# not exist during load_config_initializers. The app's after_initialize blocks
-# run after every engine's, so the ordering is safe in that direction.
-#
-# Guarded, because a Spree that ever renames or drops the :emails item would
-# otherwise take the boot down over a sidebar link.
-Rails.application.config.after_initialize do
-  nav = Spree.admin.navigation.settings
-  options = {
-    # Not admin.emails.title: the item above this one is already called
-    # "Emails", and two identical labels in one sidebar is a click somebody gets
-    # wrong every time.
-    label: 'admin.emails.nav',
-    url: :admin_emails_path,
-    icon: 'mail',
-    active: -> { controller_name == 'emails' },
-    # The same door as the "Emails" item beside it, and the same door the
-    # controller's authorize_admin opens.
-    if: -> { can?(:update, current_store) }
-  }
+# Order numbers (EB…, ENZW… plus nine random digits) are store preferences on 6.0,
+# order_number_prefix and document_number_format, set once on each store when it
+# moves. 5.6 set the prefix here from ORDER_NUMBER_PREFIX; 6.0 ignores that
+# variable.
 
-  if nav.respond_to?(:insert_after) && nav.items.key?(:emails)
-    nav.insert_after(:emails, :email_templates, **options)
-  else
-    nav.add(:email_templates, position: 31, **options)
-  end
-rescue StandardError => e
-  # A sidebar link is never worth a boot failure on seven live shops.
-  Rails.logger.warn("[admin/emails] could not register the settings nav item: #{e.class}: #{e.message}")
-end
-
-# Order numbers start EB on this shop, at the client's request: "Please change the Order
-# Number prefix is EB so all orders will look like this: EB96546767398".
-#
-# Spree builds the number in Spree::Core::NumberGenerator, included into Spree::Order as
-#   include Spree::Core::NumberGenerator.new(prefix: 'R')
-# and the generator exposes prefix as an accessor, so this needs no decorator on the model.
-#
-# Only NEW orders are affected. Numbers already issued are stored on the row and never
-# regenerated, which is correct: an order number is what a customer quotes in an email.
-#
-# to_prepare, because Spree::Order is reloadable in development and an assignment made
-# once at boot is lost on the first code reload.
-Rails.application.config.to_prepare do
-  Spree::Order.number_generator.prefix = ENV.fetch('ORDER_NUMBER_PREFIX', 'R')
-end
-
-Spree.user_class = 'Spree::User'
+# Spree 6.0's own models. Until 6.0 these were Devise models of ours,
+# Spree::User and Spree::AdminUser; spree:upgrade copies both tables over, ids and
+# password hashes included.
+Spree.customer_class = 'Spree::Customer'
 Spree.admin_user_class = 'Spree::AdminUser'
 
 # Make the Store API's customer_groups mean "the groups that approve you".
@@ -250,46 +60,45 @@ Spree.api.customer_serializer = 'Spree::Api::V3::ApprovalScopedCustomerSerialize
 # comes from routes.default_url_options (see config/environments/production.rb).
 Spree.cdn_host = ENV['CDN_HOST'] if ENV['CDN_HOST'].present?
 
-# Background job queue configuration
+# Background job queue configuration. Every queue named here is also listed in
+# config/queue.yml, or its jobs never run.
 Spree.queues.default = :default
+Spree.queues.addresses = :spree_addresses
+Spree.queues.api_keys = :spree_api_keys
+Spree.queues.categories = :spree_categories
+Spree.queues.collections = :spree_collections
+Spree.queues.coupon_codes = :spree_coupon_codes
+Spree.queues.data_requests = :spree_data_requests
 Spree.queues.events = :spree_events
 Spree.queues.exports = :spree_exports
+Spree.queues.gift_cards = :spree_gift_cards
 Spree.queues.images = :spree_images
 Spree.queues.imports = :spree_imports
-Spree.queues.products = :spree_products
-Spree.queues.reports = :spree_reports
-Spree.queues.variants = :spree_variants
-Spree.queues.taxons = :spree_taxons
-Spree.queues.stock_location_stock_items = :spree_stock_location_stock_items
-Spree.queues.coupon_codes = :spree_coupon_codes
-Spree.queues.addresses = :spree_addresses
-Spree.queues.gift_cards = :spree_gift_cards
-Spree.queues.webhooks = :spree_webhooks
 Spree.queues.payment_webhooks = :spree_payment_webhooks
-Spree.queues.api_keys = :spree_api_keys
+Spree.queues.payouts = :spree_payouts
+Spree.queues.products = :spree_products
 Spree.queues.search = :spree_search
+Spree.queues.stock_location_stock_levels = :spree_stock_location_stock_levels
+Spree.queues.stock_reservations = :spree_stock_reservations
+Spree.queues.tax_identifiers = :spree_tax_identifiers
+Spree.queues.variants = :spree_variants
+Spree.queues.webhooks = :spree_webhooks
 
 # Search provider
 if ENV['MEILISEARCH_URL'].present?
-  Spree.search_provider = 'Spree::SearchProvider::Meilisearch'
+  Spree.search_provider = 'SpreeMeilisearch::SearchProvider'
 end
 
-Rails.application.config.to_prepare do
-  require_dependency 'spree/authentication_helpers'
-end
-
-Devise.parent_controller = 'Spree::BaseController' if defined?(Devise) && Devise.respond_to?(:parent_controller)
-
-# Customer emails that Spree 5.6 does not ship.
+# Customer emails that Spree does not ship.
 #
-# to_prepare rather than after_initialize: the flag lives on Spree::User, which is
+# to_prepare rather than after_initialize: the flag lives on Spree::Customer, which is
 # reloadable in development, and an after_initialize assignment is lost on the first
 # code reload. The symptom is an email that works until you edit a file.
 Rails.application.config.to_prepare do
   # Off unless the store asks for it. It fires on after_create_commit for EVERY user
   # row, which includes seeds, sample data and a bulk customer import. A CSV import
   # that silently emails five thousand people is not a sensible default.
-  Spree.user_class.send_welcome_emails = ENV['SEND_WELCOME_EMAILS'] == 'true'
+  Spree.customer_class.send_welcome_emails = ENV['SEND_WELCOME_EMAILS'] == 'true'
 
   # No set-your-password link in the welcome email on this deployment.
   #
@@ -328,8 +137,8 @@ end
 # ── why this is not a setting he can reach ──────────────────────────────────
 #
 # Spree has exactly one switch, Store#preferred_send_consumer_transactional_emails,
-# default TRUE, and it gates order confirm, shipped, reimbursement, customer and
-# newsletter together. There is no per-email switch anywhere in 5.6.1. Turning it off
+# default TRUE, and it gates order confirm, shipped, refund, customer and newsletter
+# together. There is no per-email switch anywhere in 5.6.1 or 6.0.0. Turning it off
 # to stop the shipped email would take the order confirmation with it, which is the one
 # email he most wants.
 #
@@ -370,9 +179,15 @@ Rails.application.config.after_initialize do
   # Referencing the classes is safe in this phase for the plainest possible reason:
   # spree_emails' own engine names the same constants in its own after_initialize block
   # to register them.
+  #
+  # The names are the 5.6 ones on purpose, because they are what each shop's .env
+  # already says. 6.0 renamed the things behind them: a shipment is a fulfilment
+  # and a reimbursement is a refund on a return. The old subscriber classes are
+  # gone, and naming them here would stop the boot of every shop, not only the
+  # ones that set the variable.
   optional = {
-    'shipment' => Spree::ShipmentEmailSubscriber,
-    'reimbursement' => Spree::ReimbursementEmailSubscriber,
+    'shipment' => Spree::FulfillmentEmailSubscriber,
+    'reimbursement' => Spree::ReturnEmailSubscriber,
     'newsletter' => Spree::NewsletterSubscriberEmailSubscriber
   }
 
@@ -389,19 +204,10 @@ Rails.application.config.after_initialize do
   requested.each { |name| Spree.subscribers.delete(optional.fetch(name)) }
 end
 
-# Let the admin form save the approval note.
-#
-# A virtual attribute on Spree::User, not private_metadata straight from the form: that
-# attribute's setter replaces the whole hash, so one field would delete every other key
-# in it. See Spree::UserDecorator#approval_note.
-#
-# mattr_reader, so the array is read-only as an accessor but mutable in place, which is
-# the pattern Spree's own docs use. Guarded because to_prepare runs again on every code
-# reload in development and would otherwise append a duplicate each time.
-Rails.application.config.to_prepare do
-  attrs = Spree::PermittedAttributes.user_attributes
-  attrs << :approval_note unless attrs.include?(:approval_note)
-end
+# The approval note is written through Spree::CustomerDecorator#approval_note=,
+# which merges one key into the customer's metadata. 5.6 put it on the Rails admin
+# customer form through Spree::PermittedAttributes; 6.0 has neither, and where the
+# shop types it on 6.0 is the dashboard (docs/MIGRATION_6-0.md).
 
 # Make joining a customer group publish an event.
 #
@@ -452,12 +258,15 @@ end
 #
 # All three, and all events on each:
 #
-#   Taxon           a category renamed, moved, added or removed
-#   Taxonomy        a whole tree added or renamed
-#   Classification  a product joining or leaving a category, and reordering within
-#                   one, which changes what the category page shows
+#   Category         a category renamed, moved, added or removed
+#   ProductCategory  a product joining or leaving a category, and reordering within
+#                    one, which changes what the category page shows
+#
+# On 6.0 a taxon is a Spree::Category and a classification a Spree::ProductCategory,
+# and taxonomies are folded into categories. The event names follow the class:
+# category.*, product_category.*. The storefront's revalidation has to listen for
+# those names on 6.0.
 Rails.application.config.to_prepare do
-  Spree::Taxon.publishes_lifecycle_events
-  Spree::Taxonomy.publishes_lifecycle_events
-  Spree::Classification.publishes_lifecycle_events
+  Spree::Category.publishes_lifecycle_events
+  Spree::ProductCategory.publishes_lifecycle_events
 end

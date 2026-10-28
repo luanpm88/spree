@@ -16,8 +16,7 @@ if File.exist?(env_file)
 end
 
 # Rails must load before Propshaft (its railtie only registers once Rails is
-# present), and Propshaft before the Spree gems, so that tinymce-rails (loaded
-# by spree_admin) detects it and serves TinyMCE assets in development.
+# present), and Propshaft before the Spree gems.
 gem 'rails', '~> 8.1.2'
 gem 'propshaft'
 
@@ -25,57 +24,54 @@ gem 'propshaft'
 spree_path = ENV.fetch('SPREE_PATH', nil)
 
 if spree_path
-  path "#{spree_path}/spree" do
+  # Bundler's default path glob stops two levels deep; the extra level
+  # reaches provider gems under spree/providers/*.
+  path "#{spree_path}/spree", glob: '{,*,*/*,*/*/*}.gemspec' do
     gem 'spree'
     gem 'spree_core'
     gem 'spree_api'
-    gem 'spree_admin'
     gem 'spree_dashboard'
+    gem 'spree_easypost'
     gem 'spree_emails'
+    gem 'spree_meilisearch'
+    gem 'spree_stripe'
+    gem 'spree_opentelemetry'
+    gem 'spree_mcp'
   end
 else
-  spree_version = '>= 5.6.0.rc1'
+  spree_version = '~> 6.0'
   gem 'spree', spree_version
-  gem 'spree_admin', spree_version
   gem 'spree_emails', spree_version
-  # Serves the React Dashboard at /dashboard (see the Dockerfile's dashboard
-  # stage — SPREE_DASHBOARD_DIST_PATH points at the baked build).
   gem 'spree_dashboard', spree_version
+  gem 'spree_easypost', spree_version
+  gem 'spree_meilisearch', spree_version
+  gem 'spree_stripe', spree_version
+  gem 'spree_opentelemetry', spree_version
+  gem 'spree_mcp', spree_version
 end
 
 # Extensions
-gem 'spree_i18n'
-gem 'spree_stripe'
-gem 'spree_adyen'
-gem 'spree_paypal_checkout'
+# gem 'spree_adyen'
+# gem 'spree_paypal_checkout'
 
 # Rails & Infrastructure
 gem 'aws-sdk-s3', require: false
 gem 'bootsnap', require: false
-gem 'devise'
 gem 'image_processing', '~> 1.2'
-gem 'importmap-rails'
 gem 'lograge'
 gem 'pg', '~> 1.1'
 gem 'puma', '>= 5.0'
 gem 'sentry-rails'
 gem 'sentry-ruby'
-# The Solid stack: jobs, cache, and Action Cable in Postgres. Swap any piece
-# for Redis/Valkey when scale calls for it.
+# The Solid stack: jobs, cache, and Action Cable in Postgres — no extra
+# service to run.
 gem 'solid_cable'
 gem 'solid_cache'
 gem 'solid_queue'
 # Job dashboard at /jobs
 gem 'mission_control-jobs'
-gem 'stimulus-rails'
 gem 'rack-cors'
-gem 'tailwindcss-rails'
 gem 'thruster', require: false
-gem 'turbo-rails'
-
-# Search — client for the optional Meilisearch provider; product search runs
-# on the database unless MEILISEARCH_URL is set
-gem 'meilisearch', '>= 0.28'
 
 # Windows does not include zoneinfo files, so bundle the tzinfo-data gem
 gem 'tzinfo-data', platforms: %i[windows jruby]
@@ -85,10 +81,9 @@ group :development, :test do
   gem 'bundler-audit', require: false
   gem 'debug', platforms: %i[mri windows], require: 'debug/prelude'
   gem 'dotenv-rails'
-  gem 'letter_opener'
   gem 'rubocop-rails-omakase', require: false
   gem 'simplecov-cobertura'
-  gem 'spree_dev_tools'
+  gem 'spree_dev_tools', '>= 1.0.0.beta1'
 end
 
 group :development do

@@ -19,7 +19,7 @@ Otherwise, refer to:
 ## Architecture
 
 - Rails app with Spree engines mounted at `/`
-- Admin dashboard at `/admin`
+- Admin dashboard at `/dashboard` (React; the Rails admin at `/admin` is gone in 6.0)
 - Store API v3 at `/api/v3/store/`
 - Admin API v3 at `/api/v3/admin/`
 - Background jobs via Solid Queue (in Postgres, runs inside Puma by default) — dashboard at `/jobs`
@@ -64,37 +64,25 @@ Rails.application.config.after_initialize do
 end
 ```
 
-### 2. Swapping Services (Dependencies)
+### 2. Workflow hooks, then swapping a workflow (Spree 6.0)
 
-Create a new service inheritting from Spree service, eg.
-
-```ruby
-module MyApp
-  module Cart
-    class AddItem < Spree::Cart::AddItem
-      def call(order:, variant:, quantity: nil, metadata: {}, public_metadata: {}, private_metadata: {}, options: {})
-        ApplicationRecord.transaction do
-          run :add_to_line_item
-          run :my_app_custom_logic_here
-          run Spree.cart_recalculate_service
-        end
-      end
-      
-      def my_app_custom_logic_here
-        # ...
-      end
-    end
-  end
-end
-```
-
-Regiser in `config/initializers/spree.rb`:
+6.0 replaced most services with workflows. To run code inside an existing flow,
+register a hook rather than replacing the flow. Both lines below are the forms the
+6.0.0 starter's own `config/initializers/spree.rb` gives:
 
 ```ruby
+# a hook inside an existing workflow
+Spree.hooks.register('carts.add_item.validate', 'MyApp::CheckPurchaseLimit')
+
+# replacing the whole workflow, when a hook is not enough
 Spree.dependencies do |dependencies|
-  dependencies.cart_add_item_service = 'MyApp::Cart::AddItem'
+  dependencies.cart_add_item_workflow = 'MyApp::Carts::AddItem'
 end
 ```
+
+The 5.6 names (`Spree::Cart::AddItem`, `cart_add_item_service`) are gone or
+deprecated aliases on 6.0. Read
+https://spreecommerce.org/docs/developer/customization/workflows before writing one.
 
 ### 3. Adding Extensions
 
@@ -326,7 +314,6 @@ make setup             # first time: build, boot, create DB, seed, sample data, 
 make up / make down    # start / stop
 make console           # Rails console
 make logs              # tail web logs
-make css               # build admin Tailwind (REQUIRED — /admin 500s without it)
 make test              # rspec
 ```
 
@@ -354,7 +341,7 @@ Details and rationale in `docs/DEPLOY.md`.
 
 - All custom code goes in `app/` — never modify gem source
 - Use decorators in `app/models/spree/` for model extensions
-- Use `Spree.user_class` / `Spree.admin_user_class` — never reference `Spree::User` directly
+- Use `Spree.customer_class` / `Spree.admin_user_class` (6.0: `Spree::Customer`, `Spree::AdminUser`; `Spree::User` and Devise are gone)
 - All Spree models are namespaced under `Spree::` (e.g., `Spree::Product`, `Spree::Order`)
 - Use `Spree::Current.store`, `Spree::Current.currency`, `Spree::Current.locale` for request context
 - Prefixed IDs in API (e.g., `prod_86Rf07xd4z`) — never expose raw database IDs

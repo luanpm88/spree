@@ -19,7 +19,7 @@ ADMIN_PASSWORD ?= spree123456
 .DEFAULT_GOAL := help
 .PHONY: help setup env build up down stop restart logs ps sh psql console \
         db-prepare db-migrate db-reset seed sample-data admin api-key \
-        css css-watch mail test lint reset doctor
+        mail test lint reset doctor
 
 ## ─── Getting started ────────────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ help: ## List every target
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-setup: env build up db-prepare css sample-data admin api-key ## Full first-time setup (~10 min, mostly the image build)
+setup: env build up db-prepare sample-data admin api-key ## Full first-time setup (~10 min, mostly the image build)
 	@echo
 	@echo "──────────────────────────────────────────────────────────────"
 	@echo " Spree is up:  http://localhost:$(PORT)/admin"
@@ -61,7 +61,7 @@ doctor: ## Check host prerequisites (Docker daemon, buildx, ports)
 build: ## Build the dev image (rerun after Gemfile or Dockerfile changes)
 	$(DC) build web
 
-up: ## Start postgres + mailpit + web + admin_css watcher
+up: ## Start postgres + mailpit + web
 	$(DC) up -d
 
 down: ## Stop containers (keeps the database volume)
@@ -117,14 +117,6 @@ admin: ## Create an admin user (override ADMIN_EMAIL / ADMIN_PASSWORD)
 
 api-key: ## Print the storefront publishable API key
 	@$(RUN) bin/rails spree:cli:ensure_api_key
-
-## ─── Assets ─────────────────────────────────────────────────────────────────
-
-css: ## Build Spree Admin's Tailwind CSS once (required, see docs/LOCAL.md)
-	$(EXEC) bin/rails spree:admin:tailwindcss:build
-
-css-watch: ## Rebuild admin CSS on change in the foreground
-	$(DC) exec web bin/rails spree:admin:tailwindcss:watch
 
 ## ─── Checks ─────────────────────────────────────────────────────────────────
 

@@ -33,7 +33,7 @@ module Spree
     self.table_name = 'spree_product_reviews'
 
     belongs_to :product, class_name: 'Spree::Product', optional: true
-    belongs_to :user, class_name: Spree.user_class.to_s, optional: true
+    belongs_to :user, class_name: Spree.customer_class.to_s, optional: true
 
     # Only what a visitor may see. Ordered newest first, which is how his old shop
     # showed them.

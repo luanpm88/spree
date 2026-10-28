@@ -10,14 +10,14 @@ module SpreeStarter
   #
   # A subscriber rather than a model callback, which is the order CLAUDE.md asks for
   # and was worth checking rather than assuming: Spree::Publishable is included in
-  # Spree::Base, so Spree::User publishes user.created on after_commit like any other
+  # Spree::Base, so Spree::Customer publishes user.created on after_commit like any other
   # model. An earlier note in user_decorator.rb claimed no customer lifecycle event
   # existed. It was wrong, and wrong in the direction that costs you, because it sent
   # the welcome email down the decorator route for no reason.
   #
   # Being a subscriber buys two things a callback does not. It runs through
   # Spree::Events::SubscriberJob, so a mail failure happens well away from the request
-  # that created the account and can never roll a signup back. And Spree::User is left
+  # that created the account and can never roll a signup back. And Spree::Customer is left
   # alone.
   class SignupNotificationSubscriber < Spree::Subscriber
     subscribes_to 'user.created'
@@ -43,15 +43,15 @@ module SpreeStarter
 
     private
 
-    # By prefixed id first. The payload carries `cus_UkLWZg9DAJ` rather than a raw
-    # database id, and email is not a safe key on its own: Spree allows the same address
-    # on more than one store, so find_by(email:) can return a different person's account
-    # on a multi-store install.
+    # By prefixed id first. The payload carries `cust_UkLWZg9DAJ` (`cus_` on 5.6) rather
+    # than a raw database id, and email is not a safe key on its own: Spree allows the
+    # same address on more than one store, so find_by(email:) can return a different
+    # person's account on a multi-store install.
     def find_user(event)
-      Spree.user_class.find_by_prefix_id(event.payload['id']) ||
-        Spree.user_class.find_by(email: event.payload['email'])
+      Spree.customer_class.find_by_prefix_id(event.payload['id']) ||
+        Spree.customer_class.find_by(email: event.payload['email'])
     rescue StandardError
-      Spree.user_class.find_by(email: event.payload['email'])
+      Spree.customer_class.find_by(email: event.payload['email'])
     end
   end
 end

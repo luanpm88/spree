@@ -1,34 +1,10 @@
 
 Rails.application.routes.draw do
   Spree::Core::Engine.add_routes do
-    # Printable invoice for one order, at /admin/orders/:order_id/invoice.
-    #
-    # A separate controller rather than an extra action on Spree's OrdersController, so
-    # nothing in spree_admin is decorated. add_routes is the sanctioned way to put a route
-    # inside the engine's namespace, which is what makes spree.admin_order_invoice_path
-    # resolve in admin views.
-    namespace :admin do
-      resources :orders, only: [] do
-        resource :invoice, only: [:show], controller: 'invoices'
-      end
-
-      # Every email this shop sends, and what each one looks like.
-      #
-      # The id is a view path with its slashes swapped for tildes, because
-      # 'spree/order_mailer/confirm_email' in a path segment would be read as
-      # three segments. A dash was the obvious choice and is wrong: the actions
-      # themselves contain dashes once humanised and, more to the point,
-      # 'password_reset_email' round-trips through a dash ambiguously. Tilde is
-      # unreserved in RFC 3986 and appears in none of the 26 keys. It is
-      # reversed in the controller and never stored, so nothing depends on the
-      # spelling.
-      resources :emails, only: %i[index show], constraints: { id: /[^\/]+/ } do
-        member do
-          get :preview
-          get :envelope
-        end
-      end
-    end
+    # The printable invoice (/admin/orders/:order_id/invoice) and the "every email
+    # this shop sends" screen (/admin/emails) lived in the Rails admin, which Spree
+    # 6.0 removes. Both are to be rebuilt in the dashboard; see
+    # docs/PLAN_6-0.md section 9.1.7.
 
     # Newsletter signup that keeps the name the visitor typed.
     #
@@ -53,18 +29,6 @@ Rails.application.routes.draw do
       end
     end
 
-    # Admin authentication
-    devise_for(
-      Spree.admin_user_class.model_name.singular_route_key,
-      class_name: Spree.admin_user_class.to_s,
-      controllers: {
-        sessions: 'spree/admin/user_sessions',
-        passwords: 'spree/admin/user_passwords'
-      },
-      skip: :registrations,
-      path: :admin_user,
-      router_name: :spree
-    )
   end
   # This line mounts Spree's routes at the root of your application.
   # This means, any requests to URLs such as /products, will go to
@@ -75,8 +39,6 @@ Rails.application.routes.draw do
   # We ask that you don't use the :as option here, as Spree relies on it being
   # the default of "spree".
   mount Spree::Core::Engine, at: '/'
-  devise_for :admin_users, class_name: "Spree::AdminUser"
-  devise_for :users, class_name: "Spree::User"
 
   # Job dashboard (Mission Control) — inspect, retry, and discard Solid Queue
   # jobs at http://localhost:3000/jobs. Guarded by its own HTTP Basic auth
@@ -87,5 +49,8 @@ Rails.application.routes.draw do
   # Can be used by load balancers and uptime monitors to verify that the app is live.
   get "up" => "rails/health#show", as: :rails_health_check
 
-  root to: redirect('/admin')
+  # The app's front door is the dashboard. Spree resolves where it lives:
+  # SPREE_DASHBOARD_URL when set, else the /dashboard this app serves. 302, not 301,
+  # so browsers do not cache it past a change of SPREE_DASHBOARD_URL.
+  root to: redirect(status: 302) { Spree::Stores::DashboardUrl.call.presence || '/dashboard' }
 end
