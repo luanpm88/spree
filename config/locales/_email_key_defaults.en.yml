@@ -20,6 +20,20 @@
 #                 into the alt attribute and the footer.
 en:
   spree:
+    # Spree 5.6 shipped this key and his order emails print it over the totals.
+    # Spree 6.0 does not, so it read "Translation missing: en.spree.subtotal" in
+    # the totals of every order email (measured 28 Oct on the 6.0 Liquid port).
+    subtotal: Subtotal
     user_emails:
       common:
         shop_country: ""
+      order_ref:
+        # The warehouse column of the shipped email. b2b writes its own; a shop
+        # that has not (business, which does not send that email today) would
+        # otherwise print "Translation missing" over the column the day it does.
+        depot: Location
+      order_confirm:
+        # The label of the shop row. The 5.6 template wrote its default inline,
+        # Spree.t(:shop, ..., default: "Shop"); the Liquid t filter has no
+        # default, so it lives here. A shop that writes its own still wins.
+        shop: Shop

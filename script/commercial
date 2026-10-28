@@ -48,6 +48,9 @@ CLIENT_ASSETS=(
   "app/views/spree/order_mailer"
   "app/views/spree/shipment_mailer"
   "app/views/spree/reimbursement_mailer"
+  # Spree 6.0 homes of the two above (fulfilled_email, refunded_email), in Liquid.
+  "app/views/spree/fulfillment_mailer"
+  "app/views/spree/return_mailer"
   "app/models/spree/calculator/shipping"
   "config/rural_postcodes.txt"
   # The autoload rule the calculators above depend on. It is gitignored for the same

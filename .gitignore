@@ -125,6 +125,10 @@ config/clean_url_shops
 
 app/views/spree/shipment_mailer/
 app/views/spree/reimbursement_mailer/
+# Spree 6.0 sends the shipped email as FulfillmentMailer#fulfilled_email and the
+# refund email as ReturnMailer#refunded_email; his Liquid ports live here.
+app/views/spree/fulfillment_mailer/
+app/views/spree/return_mailer/
 
 # Client-branded PDF covers. Names a client, and this repo is public.
 docs/.covers.local.json

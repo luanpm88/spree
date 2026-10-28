@@ -50,24 +50,27 @@ namespace :emails do
     # on a shop that has simply never sold anything is a gate people re-run until
     # it is green, which is the same as not having it.
     order = Spree::Order.complete.order(:id).last
-    shipment = Spree::Shipment.joins(:order).order(:id).last
+    # Spree 6.0 names: a shipment is a fulfillment, a reimbursement is a refund on a
+    # return, and customers are Spree::Customer. The 5.6 names raised NameError here
+    # before any email was built.
+    fulfillment = Spree::Fulfillment.joins(:order).order(:id).last
 
-    # Only a reimbursement whose order still exists. `Spree::Reimbursement#1`
+    # (5.6, kept for the reason) Only a reimbursement whose order still exists. `Spree::Reimbursement#1`
     # survived his pre-upgrade dump with its order gone, so the mailer raised
     # ActiveSupport::DelegationError on four shops: "store delegated to order,
     # but order is nil". That row cannot generate an email in real life either,
     # because there is no order to reimburse. It is orphaned data, not a broken
     # template, and reporting it as a failed email sends the client looking at
     # the wrong thing.
-    reimbursement = Spree::Reimbursement.joins(:order).order(:id).last
-    user = Spree.user_class.order(:id).last
+    return_record = Spree::Return.joins(:order).order(:id).last
+    user = Spree.customer_class.order(:id).last
 
     cases = [
       ['order_mailer.confirm_email',        -> { Spree::OrderMailer.confirm_email(order) },                order],
       ['order_mailer.cancel_email',         -> { Spree::OrderMailer.cancel_email(order) },                 order],
       ['order_mailer.store_owner_notification', -> { Spree::OrderMailer.store_owner_notification_email(order) }, order],
-      ['shipment_mailer.shipped_email',     -> { Spree::ShipmentMailer.shipped_email(shipment) },          shipment],
-      ['reimbursement_mailer.reimbursement', -> { Spree::ReimbursementMailer.reimbursement_email(reimbursement) }, reimbursement],
+      ['fulfillment_mailer.fulfilled_email', -> { Spree::FulfillmentMailer.fulfilled_email(fulfillment) }, fulfillment],
+      ['return_mailer.refunded_email',      -> { Spree::ReturnMailer.refunded_email(return_record) },      return_record],
     ]
 
     # welcome_email(user, reset_token, store), not welcome_email(user). Getting
@@ -163,7 +166,12 @@ namespace :emails do
         # Checked on the rendered body for the same reason as the placeholder
         # check: the body is what the customer reads, and it does not matter
         # which of the locale roots the key fell through.
-        missing = (html + text).scan(/translation missing: ([^"<\n]+)/).flatten.uniq
+        # Case-insensitive: 5.6 printed "translation missing:", and the Liquid t
+        # filter of 6.0 prints "Translation missing:". Matching only the first
+        # spelling let every 6.0 gap through as ok.
+        missing = (html + text).scan(/translation missing: ([^"<\n]+)/i).flatten.uniq
+        documents = html.scan(/<html/i).size
+        liquid_left = html.scan(/\{\{|\{%/).size
 
         # ── and which kind of missing it is ──────────────────────────────────
         #
@@ -208,6 +216,12 @@ namespace :emails do
         if html.strip.empty?
           failures << [name, 'rendered an empty body']
           puts format('  FAIL  %-42s empty body', name)
+        elsif documents != 1
+          failures << [name, "#{documents} <html> documents in one email (a fragment with no layout, or a layout twice)"]
+          puts format('  FAIL  %-42s %d <html>', name, documents)
+        elsif liquid_left.positive?
+          failures << [name, "#{liquid_left} unrendered Liquid tag(s) printed to the customer"]
+          puts format('  FAIL  %-42s %d Liquid tags left', name, liquid_left)
         elsif raw.positive?
           failures << [name, "#{raw} raw ** markers in the html"]
           puts format('  FAIL  %-42s %d raw markers', name, raw)
