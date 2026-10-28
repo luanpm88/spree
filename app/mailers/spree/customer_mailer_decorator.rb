@@ -169,19 +169,36 @@ module Spree
       # Now that More Information and Not Approved are also groups, "has a group" would
       # let this congratulate somebody the shop had just declined.
       return unless in_approving_group?(user, store)
-      # Told once. The subscriber checks this too, but it can be enqueued twice: an admin
-      # ticking two approving groups in one save publishes two events, and both pass the
-      # enqueue-time check before either job runs.
-      return if user.respond_to?(:approval_notified?) && user.approval_notified?
+      return deliver_outcome(user, store, [:user_emails, :account_approval]) unless user.respond_to?(:mark_approval_notified!)
 
-      message = deliver_outcome(user, store, [:user_emails, :account_approval])
+      # Told once, and the check, the build and the mark happen under a lock on the
+      # customer row, because "once" failed without it. Measured on a Spree 6.0 copy,
+      # 28 Oct, with this same code: three approval jobs fell due in the same second, from
+      # one new membership and two edits to the customer, and the customer received the
+      # approval email twice. Each job read "not told yet" before either wrote the marker.
+      # Not measured on 5.6; the events and the check are the same here.
+      #
+      # Two jobs at once is the normal case, not a corner: the subscriber enqueues on
+      # customer_group_user.created AND on user.updated, both with the same two minute
+      # grace, so approving somebody and editing them in the same sitting (typing the
+      # note, fixing a name) queues two.
+      #
+      # with_lock reloads the row FOR UPDATE, so the second job waits for the first to
+      # commit and then sees the marker. Only the build happens inside; the SMTP send is
+      # ActionMailer's, after this action returns, so the lock is held for milliseconds.
+      message = nil
+      user.with_lock do
+        next if user.approval_notified?
 
-      # Marked here, past every guard, and NOT at enqueue time. Marking on enqueue is what
-      # the old ordering test effectively did, and it is why a withheld approval could
-      # never be recovered: the shop looked told when nothing had been sent. If the SMTP
-      # delivery itself then fails the mail is lost, which is the same exposure every other
-      # mailer here has and strictly better than losing it silently forever.
-      user.mark_approval_notified! if message.present? && user.respond_to?(:mark_approval_notified!)
+        message = deliver_outcome(user, store, [:user_emails, :account_approval])
+
+        # Marked here, past every guard, and NOT at enqueue time. Marking on enqueue is
+        # what the old ordering test effectively did, and it is why a withheld approval
+        # could never be recovered: the shop looked told when nothing had been sent. If
+        # the SMTP delivery itself then fails the mail is lost, which is the same exposure
+        # every other mailer here has and strictly better than losing it silently forever.
+        user.mark_approval_notified! if message.present?
+      end
       message
     end
 
