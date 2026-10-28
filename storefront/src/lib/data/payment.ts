@@ -14,7 +14,7 @@ import {
   resolveSurfaceForCart,
   resolveSurfaceForCartVerified,
 } from "./checkout";
-import { getOrder } from "./orders";
+import { getOrder, singleOrder } from "./orders";
 import { actionResult } from "./utils";
 
 function checkoutTag(surface: Surface): string {
@@ -125,9 +125,8 @@ export async function completeCheckoutOrder(
   const surface = knownSurface ?? (await resolveSurfaceForCart(cartId));
   try {
     const options = await getCartOptions(surface);
-    const order: Order = await getClientForSurface(surface).carts.complete(
-      cartId,
-      options,
+    const order: Order = singleOrder(
+      await getClientForSurface(surface).carts.complete(cartId, options),
     );
     updateTag(checkoutTag(surface));
     updateTag(cartTag(surface));

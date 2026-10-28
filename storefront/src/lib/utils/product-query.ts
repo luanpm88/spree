@@ -1,4 +1,4 @@
-import type { ProductListParams } from "@spree/sdk";
+import type { ProductListParams, ProductSort } from "@spree/sdk";
 import type { ActiveFilters } from "@/types/filters";
 
 /**
@@ -17,11 +17,12 @@ export function buildProductQueryParams(
   }
 
   if (filters.priceMin !== undefined) {
-    params.price_gte = filters.priceMin;
+    // Decimal strings since SDK 6.0, the same form the API returns money in.
+    params.price_gte = String(filters.priceMin);
   }
 
   if (filters.priceMax !== undefined) {
-    params.price_lte = filters.priceMax;
+    params.price_lte = String(filters.priceMax);
   }
 
   if (filters.optionValues.length > 0) {
@@ -35,7 +36,9 @@ export function buildProductQueryParams(
   }
 
   if (filters.sortBy && filters.sortBy !== "manual") {
-    params.sort = filters.sortBy;
+    // From the URL, so any string. SDK 6.0 types sort as the keys it knows; an
+    // unknown one is refused by the API, as it was before the type said so.
+    params.sort = filters.sortBy as ProductSort;
   }
 
   return params;

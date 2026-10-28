@@ -1,6 +1,11 @@
 "use client";
 
-import type { Address, AddressParams, Country } from "@spree/sdk";
+import type {
+  Address,
+  AddressCreateParams,
+  AddressParams,
+  Country,
+} from "@spree/sdk";
 import { Plus } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useCallback, useState } from "react";
@@ -141,7 +146,9 @@ export function AddressManagement({
         );
       }
     } else {
-      const result = await createAddress(data);
+      // The form requires every field a new address needs. SDK 1.x's
+      // AddressParams said so; 6.0's is the update shape, all optional.
+      const result = await createAddress(data as AddressCreateParams);
       if (!result.success) {
         throw new Error(result.error);
       }

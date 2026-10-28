@@ -98,9 +98,10 @@ export const FilterBar = memo(function FilterBar({
       (f) => f.type === "price_range",
     ) as PriceRangeFilter | undefined;
     if (!priceFilter) return [];
+    // Decimal strings since SDK 6.0.
     return generatePriceBuckets(
-      priceFilter.min,
-      priceFilter.max,
+      Number(priceFilter.min),
+      Number(priceFilter.max),
       priceFilter.currency,
       { t, locale },
     );

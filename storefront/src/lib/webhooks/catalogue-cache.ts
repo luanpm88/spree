@@ -183,4 +183,24 @@ export const CATALOGUE_EVENTS = [
   "classification.created",
   "classification.updated",
   "classification.deleted",
+  // Spree 6.0 names. 6.0 renamed the models and their events: a taxon is a
+  // category, a classification a product_category, an image or asset is media,
+  // and a stock item a stock level. Only stock levels keep emitting the old
+  // name beside the new one, and only for one release; the rest send the new
+  // name alone, so a 6.0 shop subscribed to the list above hears nothing about
+  // a changed photo or category. Both lists stay while 5.6 and 6.0 shops share
+  // this build. The shop's webhook endpoint must subscribe to these too
+  // (tmp/rehearsal6/600/post.rb adds them on the move).
+  "category.created",
+  "category.updated",
+  "category.deleted",
+  "product_category.created",
+  "product_category.updated",
+  "product_category.deleted",
+  "media.created",
+  "media.updated",
+  "media.deleted",
+  "stock_level.created",
+  "stock_level.updated",
+  "stock_level.deleted",
 ] as const;

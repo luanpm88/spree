@@ -55,6 +55,9 @@ vi.mock("@spree/sdk", () => ({
       this.status = status;
     }
   },
+  // The SDK's own check, copied: the module is mocked whole, and singleOrder
+  // in lib/data/orders.ts calls it on every order lookup.
+  isOrderGroup: (result: { orders?: unknown }) => Array.isArray(result.orders),
 }));
 
 vi.mock("next/cache", () => ({

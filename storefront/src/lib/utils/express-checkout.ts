@@ -187,6 +187,9 @@ export function buildShippingRateMap(
     const rates = shipment.delivery_rates ?? [];
 
     for (const rate of rates) {
+      // A null cost is a price the shop is hiding from this buyer (SDK 6.0).
+      // Offering it in the wallet sheet would show it as free, so it is left out.
+      if (rate.cost === null) continue;
       const methodId = rate.delivery_method_id;
 
       if (!rateMap.has(methodId)) {

@@ -1,6 +1,6 @@
 "use server";
 
-import type { AddressParams, Cart } from "@spree/sdk";
+import type { AddressParams, Cart, UpdateCartParams } from "@spree/sdk";
 import { SpreeError } from "@spree/sdk";
 import { updateTag } from "next/cache";
 import {
@@ -193,9 +193,15 @@ export async function updateCartMarket(
     const surface = await resolveSurfaceForCart(cartId);
     const options = await getCartOptions(surface);
     const id = await requireCartId(surface);
+    // SDK 6.0 types currency and locale as the codes it knows. These come from
+    // the market picker, which only offers the store's own, and the API refuses
+    // anything else either way.
     const cart = await getClientForSurface(surface).carts.update(
       id,
-      params,
+      {
+        currency: params.currency as UpdateCartParams["currency"],
+        locale: params.locale as UpdateCartParams["locale"],
+      },
       options,
     );
     updateTag(checkoutTag(surface));
