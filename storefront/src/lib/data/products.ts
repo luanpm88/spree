@@ -10,6 +10,7 @@ import {
   getLocaleOptions,
   type Surface,
 } from "@/lib/spree";
+import { asCustomerOrGuest } from "./catalog-token";
 
 /**
  * Cached product list fetch. Cache key is derived from all function
@@ -35,10 +36,10 @@ export async function cachedListProducts(
   cacheTag(`products${cacheTagSuffix(surface)}`);
   return getClientForSurface(surface).products.list(params, {
     ...options,
-    // Wholesale catalog requires the customer JWT — the channel is gated.
-    ...(surface === "wholesale" && userToken
-      ? { token: userToken }
-      : undefined),
+    // The customer's token on every surface: the wholesale channel 401s
+    // guests, and a prices-hidden channel prices only for who is asking
+    // (./catalog-token.ts).
+    ...(userToken ? { token: userToken } : undefined),
   });
 }
 
@@ -48,7 +49,9 @@ export async function getProducts(
 ) {
   const options = await getLocaleOptions();
   const userToken = await getAccessToken();
-  return cachedListProducts(params, options, surface, userToken);
+  return asCustomerOrGuest(userToken, (token) =>
+    cachedListProducts(params, options, surface, token),
+  );
 }
 
 /**
@@ -79,9 +82,7 @@ export async function cachedGetProduct(
     { expand },
     {
       ...options,
-      ...(surface === "wholesale" && userToken
-        ? { token: userToken }
-        : undefined),
+      ...(userToken ? { token: userToken } : undefined),
     },
   );
 }
@@ -93,12 +94,8 @@ export async function getProduct(
 ) {
   const options = await getLocaleOptions();
   const userToken = await getAccessToken();
-  return cachedGetProduct(
-    slugOrId,
-    params?.expand ?? [],
-    options,
-    surface,
-    userToken,
+  return asCustomerOrGuest(userToken, (token) =>
+    cachedGetProduct(slugOrId, params?.expand ?? [], options, surface, token),
   );
 }
 
@@ -113,9 +110,7 @@ async function cachedGetProductFilters(
   cacheTag(`product-filters${cacheTagSuffix(surface)}`);
   return getClientForSurface(surface).products.filters(params, {
     ...options,
-    ...(surface === "wholesale" && userToken
-      ? { token: userToken }
-      : undefined),
+    ...(userToken ? { token: userToken } : undefined),
   });
 }
 
@@ -125,5 +120,7 @@ export async function getProductFilters(
 ) {
   const options = await getLocaleOptions();
   const userToken = await getAccessToken();
-  return cachedGetProductFilters(params, options, surface, userToken);
+  return asCustomerOrGuest(userToken, (token) =>
+    cachedGetProductFilters(params, options, surface, token),
+  );
 }

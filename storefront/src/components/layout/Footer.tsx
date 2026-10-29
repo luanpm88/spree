@@ -229,7 +229,12 @@ export async function Footer({ basePath, locale, categoryLinks }: FooterProps) {
                 </Link>
               </li>
               <li>
-                <Link href={`${basePath}/account/login`} className={l.link}>
+                {/* /account, not /account/login: there is no login route. The
+                    middleware bounced a signed-out visitor from the second to the
+                    first, but a signed-in one got a 404 (measured 29 Oct). The
+                    account page is the sign-in form to the first and their
+                    account to the second. */}
+                <Link href={`${basePath}/account`} className={l.link}>
                   {t("login")}
                 </Link>
               </li>

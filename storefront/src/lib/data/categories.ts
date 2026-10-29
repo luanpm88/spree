@@ -3,6 +3,7 @@
 import type { CategoryListParams, ProductListParams } from "@spree/sdk";
 import { cacheLife, cacheTag } from "next/cache";
 import { getAccessToken, getClient, getLocaleOptions } from "@/lib/spree";
+import { asCustomerOrGuest } from "./catalog-token";
 
 async function cachedListCategories(
   params: CategoryListParams | undefined,
@@ -56,14 +57,16 @@ async function cachedListCategoryProducts(
   categoryId: string,
   params: ProductListParams | undefined,
   options: { locale?: string; country?: string },
-  _userToken?: string,
+  userToken?: string,
 ) {
   "use cache: remote";
   cacheLife("tenMinutes");
   cacheTag("products", `category-products:${categoryId}`);
+  // The customer's token, so a prices-hidden shop prices this list for an
+  // approved customer (./catalog-token.ts). Undefined for a guest.
   return getClient().products.list(
     { ...params, in_category: categoryId },
-    options,
+    { ...options, ...(userToken ? { token: userToken } : undefined) },
   );
 }
 
@@ -73,5 +76,7 @@ export async function getCategoryProducts(
 ) {
   const options = await getLocaleOptions();
   const userToken = await getAccessToken();
-  return cachedListCategoryProducts(categoryId, params, options, userToken);
+  return asCustomerOrGuest(userToken, (token) =>
+    cachedListCategoryProducts(categoryId, params, options, token),
+  );
 }

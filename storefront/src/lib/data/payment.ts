@@ -14,7 +14,8 @@ import {
   resolveSurfaceForCart,
   resolveSurfaceForCartVerified,
 } from "./checkout";
-import { getOrder, singleOrder } from "./orders";
+import { getOrder } from "./orders";
+import { singleOrder } from "./single-order";
 import { actionResult } from "./utils";
 
 function checkoutTag(surface: Surface): string {
