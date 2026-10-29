@@ -12,9 +12,14 @@ en:
     admin_invoice:
       print_invoice: Print invoice
       print: Print
-      back_to_order: Back to order
+      back_to_order: Close
       invoice_title: "Invoice %{number}"
       order_number: Order
       order_date: Date
       payment_status: Payment
       printed_on: "Printed %{date}"
+      discount: Discount
+      fees: Fees
+      # Spree 5.6 had these as spree.qty and spree.order_total; 6.0 dropped both.
+      qty: Qty
+      order_total: Order Total

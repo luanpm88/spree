@@ -42,3 +42,16 @@ node_modules
 docs/screenshots
 docs/USER_GUIDE.pdf
 docs/.user_guide.build.html
+
+# The storefront builds from its own context (./app/storefront, its own
+# .dockerignore) and the Rails image needs none of it. Left in, the context was
+# 1.23 GB on a worktree with the storefront's node_modules installed (29 Oct),
+# and the storefront's source rode into the Rails image.
+storefront
+# The dashboard app's install and build output: the image's dashboard stage
+# installs from the lockfile and builds its own.
+apps/*/node_modules
+apps/*/dist
+apps/*/.tanstack
+apps/*/.pnpm-store
+.build

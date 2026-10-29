@@ -1,10 +1,10 @@
 
 Rails.application.routes.draw do
   Spree::Core::Engine.add_routes do
-    # The printable invoice (/admin/orders/:order_id/invoice) and the "every email
-    # this shop sends" screen (/admin/emails) lived in the Rails admin, which Spree
-    # 6.0 removes. Both are to be rebuilt in the dashboard; see
-    # docs/PLAN_6-0.md section 9.1.7.
+    # The "every email this shop sends" screen (/admin/emails) lived in the Rails
+    # admin, which Spree 6.0 removes; it is to be rebuilt in the dashboard, see
+    # docs/PLAN_6-0.md section 9.1.7. The printable invoice is rebuilt: the Admin
+    # API below returns the document, and the dashboard's order page prints it.
 
     # Newsletter signup that keeps the name the visitor typed.
     #
@@ -24,6 +24,12 @@ Rails.application.routes.draw do
           # product so a shop can never be asked for another shop's.
           resources :products, only: [] do
             resources :reviews, only: [:index], controller: 'product_reviews'
+          end
+        end
+
+        namespace :admin do
+          resources :orders, only: [] do
+            resource :invoice, only: [:show], controller: 'orders/invoices'
           end
         end
       end

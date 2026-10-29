@@ -13,6 +13,9 @@
 !.env.example
 !.env.production.example
 !.env.example
+# The dashboard's build-time switches (no secrets: every VITE_ value is public).
+# Without it the image would bake Spree's Enterprise previews back in.
+!apps/dashboard/.env.production
 
 # Ignore all logfiles and tempfiles.
 /log/*
