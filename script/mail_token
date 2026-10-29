@@ -37,7 +37,15 @@ req = urllib.request.Request(f"{host}/api/v1/auth/authenticate-user", data=body,
 try:
     data = json.loads(urllib.request.urlopen(req, timeout=20).read().decode())
 except urllib.error.HTTPError as e:
-    print(f"HTTP {e.code}: {e.read().decode()[:500]}", file=sys.stderr); sys.exit(1)
+    # A refused sign-in still answers JSON, with the reason in "message"; the rest of
+    # the body is two dozen empty fields that push the reason past any sensible cut.
+    raw = e.read().decode()
+    try:
+        body = json.loads(raw)
+        print(f"HTTP {e.code}: {body.get('message') or '(no message)'} (resultCode {body.get('resultCode')})", file=sys.stderr)
+    except json.JSONDecodeError:
+        print(f"HTTP {e.code}: {raw[:300]}", file=sys.stderr)
+    sys.exit(1)
 
 if not data.get("success") or not data.get("refreshToken"):
     # Two-factor and a forced password change both land here, with the reason in the body.
