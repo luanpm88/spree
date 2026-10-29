@@ -16,6 +16,15 @@ The older ActiveCollab the plan syncs from is a different site: `script/ac_sync`
 
 ## Run
 
+**Before any piece of work, first:** (Luan's rule, 29 Oct)
+
+```bash
+script/check_tasks                # both sites: new, updated, newly commented since the last look
+script/check_tasks --all          # every open task on both
+```
+
+Report what changed in a line or two, then work; follow the tasks alongside WhatsApp. Mail on demand:
+
 ```bash
 script/mail_inbox                 # newest 20 in the inbox, * = unread, with each uid
 script/mail_inbox --read <uid> --redact   # one message as text, passwords and keys masked

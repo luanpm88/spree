@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#
+# The first thing before any piece of work: what changed on the trackers since the
+# last look. Every connected ActiveCollab, only what is new, updated or newly
+# commented, with the latest comment. Read only.
+#
+#   script/check_tasks            changes since the last run
+#   script/check_tasks --all      every open task on every site
+#
+# Sites are whichever token files exist: .env.activecollab (the client's current
+# tracker, also synced into the plan by script/ac_sync) and .env.ac_team (the team
+# site). Mail is separate and on demand: script/mail_inbox.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+mode="--changes"; [ "${1:-}" = "--all" ] && mode=""
+found=0
+for env in .env.activecollab .env.ac_team; do
+  [ -f "$env" ] || continue
+  found=1
+  node script/ac_tasks --env "$env" $mode || echo "  ($env: could not read; token refused or site down)"
+  echo
+done
+[ "$found" = 1 ] || { echo "no ActiveCollab token files (.env.activecollab, .env.ac_team)"; exit 2; }
