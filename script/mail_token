@@ -30,8 +30,10 @@ import json, os, sys, urllib.error, urllib.request
 
 host = os.environ["MAIL_HOST"].rstrip("/")
 body = json.dumps({"username": os.environ["MAIL_USER"], "password": os.environ["MAIL_PASS"]}).encode()
+# Cloudflare in front of the site answers 403 "error code: 1010" to Python's default
+# User-Agent (Python-urllib); a named one passes (measured 29 Oct).
 req = urllib.request.Request(f"{host}/api/v1/auth/authenticate-user", data=body,
-                             headers={"Content-Type": "application/json"}, method="POST")
+                             headers={"Content-Type": "application/json", "User-Agent": "spree-plan-tools/1.0"}, method="POST")
 try:
     data = json.loads(urllib.request.urlopen(req, timeout=20).read().decode())
 except urllib.error.HTTPError as e:

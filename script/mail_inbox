@@ -35,7 +35,8 @@ host = env["MAIL_HOST"].rstrip("/")
 
 
 def call(path, body, token=None):
-    headers = {"Content-Type": "application/json"}
+    # Cloudflare answers 403 "error code: 1010" to Python's default User-Agent.
+    headers = {"Content-Type": "application/json", "User-Agent": "spree-plan-tools/1.0"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(f"{host}/api/v1/{path}", data=json.dumps(body).encode(),

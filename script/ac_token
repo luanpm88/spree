@@ -40,10 +40,12 @@ body = json.dumps({
     "client_vendor": "internal",
 }).encode()
 
+# Cloudflare in front of the site answers 403 "error code: 1010" to Python's default
+# User-Agent (Python-urllib); a named one passes (measured 29 Oct).
 req = urllib.request.Request(
     f"{host}/api/v1/issue-token",
     data=body,
-    headers={"Content-Type": "application/json"},
+    headers={"Content-Type": "application/json", "User-Agent": "spree-plan-tools/1.0"},
     method="POST",
 )
 
