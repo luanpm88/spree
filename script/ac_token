@@ -3,6 +3,12 @@
 # Issue an ActiveCollab API token.
 #
 #   script/ac_token
+#   AC_HOST=https://<site> AC_SAVE=.env.ac_team script/ac_token
+#
+# With AC_SAVE the token goes straight into that file (created mode 600, ACTIVECOLLAB_URL
+# and ACTIVECOLLAB_TOKEN), and is never printed: a token in terminal scrollback is a
+# token in every screenshot and paste that follows. The file must be gitignored; the
+# script refuses one that is not.
 #
 # Self-hosted ActiveCollab exchanges an email + password for a long-lived API token
 # via POST /api/v1/issue-token. Verified against ActiveCollab 8.0.21.
@@ -14,12 +20,16 @@
 set -euo pipefail
 
 HOST="${AC_HOST:?set AC_HOST to your ActiveCollab base URL}"
+SAVE="${AC_SAVE:-}"
+if [ -n "$SAVE" ] && ! git check-ignore -q "$SAVE" 2>/dev/null; then
+  echo "refusing: $SAVE is not gitignored" >&2; exit 2
+fi
 
 read -rp  "ActiveCollab email: "    AC_EMAIL
 read -rsp "ActiveCollab password: " AC_PASS; echo
 echo
 
-AC_EMAIL="$AC_EMAIL" AC_PASS="$AC_PASS" AC_HOST="$HOST" python3 - <<'PY'
+AC_EMAIL="$AC_EMAIL" AC_PASS="$AC_PASS" AC_HOST="$HOST" AC_SAVE="$SAVE" python3 - <<'PY'
 import json, os, sys, urllib.error, urllib.request
 
 host = os.environ["AC_HOST"].rstrip("/")
@@ -60,6 +70,14 @@ if not data.get("is_ok") or not token:
     print("no token issued:", file=sys.stderr)
     print(json.dumps(data, indent=2)[:1000], file=sys.stderr)
     sys.exit(1)
+
+save = os.environ.get("AC_SAVE")
+if save:
+    fd = os.open(save, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(f"ACTIVECOLLAB_URL={host}\nACTIVECOLLAB_TOKEN={token}\n")
+    print(f"token saved to {save} (mode 600, {len(token)} characters); nothing printed", file=sys.stderr)
+    sys.exit(0)
 
 print(token)
 print("", file=sys.stderr)

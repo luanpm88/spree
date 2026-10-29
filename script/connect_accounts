@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+#
+# One sitting to connect the business mailbox and the team ActiveCollab, so both can
+# be read later with script/mail_inbox and script/ac_tasks. Run it yourself, in your own
+# terminal: it asks for each password with a hidden prompt and keeps only the tokens.
+#
+#   script/connect_accounts            both
+#   script/connect_accounts mail       only the mailbox
+#   script/connect_accounts tasks      only ActiveCollab
+#
+# The hosts come from .env.sprie (gitignored; MAILBOX_WEBMAIL_URL, ACTIVECOLLAB_NEW_URL),
+# because this repository is public. Change a password that was ever pasted or shown on
+# screen BEFORE running this: a token issued against it outlives the moment it leaked.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+[ -f .env.sprie ] || { echo "missing .env.sprie (the hosts)" >&2; exit 2; }
+host() { grep -E "^$1=" .env.sprie | head -1 | cut -d= -f2-; }
+what="${1:-both}"
+
+if [ "$what" = both ] || [ "$what" = mail ]; then
+  echo "── mailbox: $(host MAILBOX_WEBMAIL_URL)"
+  MAIL_HOST="$(host MAILBOX_WEBMAIL_URL)" MAIL_SAVE=.env.mailbox script/mail_token
+  script/mail_inbox --take 3 >/dev/null && echo "   mailbox reads: ok"
+fi
+
+if [ "$what" = both ] || [ "$what" = tasks ]; then
+  echo "── ActiveCollab: $(host ACTIVECOLLAB_NEW_URL)"
+  AC_HOST="$(host ACTIVECOLLAB_NEW_URL)" AC_SAVE=.env.ac_team script/ac_token
+  script/ac_tasks >/dev/null && echo "   ActiveCollab reads: ok"
+fi

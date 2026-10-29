@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# Sign in to a SmarterMail mailbox once and keep a refresh token, so the mailbox can be
+# read by script/mail_inbox without anyone storing the password.
+#
+#   MAIL_HOST=https://<webmail host> MAIL_SAVE=.env.mailbox script/mail_token
+#
+# SmarterMail's web API (POST /api/v1/auth/authenticate-user) exchanges a username and
+# password for an access token and a refresh token. Only the tokens are kept: the
+# password is read with `read -s`, handed to python through the environment rather than
+# argv (argv is visible in `ps`), and never written anywhere. Run it yourself, in your
+# own terminal: the password is yours to type.
+#
+# The file is created mode 600 and must be gitignored (.env* is); the script refuses
+# one that is not. Revoke by signing out of all sessions in the webmail, or by changing
+# the password.
+set -euo pipefail
+
+HOST="${MAIL_HOST:?set MAIL_HOST to the webmail base URL}"
+SAVE="${MAIL_SAVE:-.env.mailbox}"
+if ! git check-ignore -q "$SAVE" 2>/dev/null; then
+  echo "refusing: $SAVE is not gitignored" >&2; exit 2
+fi
+
+read -rp  "Mailbox address: " MAIL_USER
+read -rsp "Password: "        MAIL_PASS; echo
+
+MAIL_USER="$MAIL_USER" MAIL_PASS="$MAIL_PASS" MAIL_HOST="$HOST" MAIL_SAVE="$SAVE" python3 - <<'PY'
+import json, os, sys, urllib.error, urllib.request
+
+host = os.environ["MAIL_HOST"].rstrip("/")
+body = json.dumps({"username": os.environ["MAIL_USER"], "password": os.environ["MAIL_PASS"]}).encode()
+req = urllib.request.Request(f"{host}/api/v1/auth/authenticate-user", data=body,
+                             headers={"Content-Type": "application/json"}, method="POST")
+try:
+    data = json.loads(urllib.request.urlopen(req, timeout=20).read().decode())
+except urllib.error.HTTPError as e:
+    print(f"HTTP {e.code}: {e.read().decode()[:500]}", file=sys.stderr); sys.exit(1)
+
+if not data.get("success") or not data.get("refreshToken"):
+    # Two-factor and a forced password change both land here, with the reason in the body.
+    shown = {k: v for k, v in data.items() if "token" not in k.lower()}
+    print("no token issued:", json.dumps(shown)[:500], file=sys.stderr); sys.exit(1)
+
+fd = os.open(os.environ["MAIL_SAVE"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    f.write(f"MAIL_HOST={host}\n")
+    f.write(f"MAIL_USER={os.environ['MAIL_USER']}\n")
+    f.write(f"MAIL_REFRESH_TOKEN={data['refreshToken']}\n")
+print(f"saved to {os.environ['MAIL_SAVE']} (mode 600): host, user and a refresh token; no password", file=sys.stderr)
+PY
