@@ -7,6 +7,8 @@ script/mail_token saved. Read only: nothing here sends, moves, flags or deletes.
     script/mail_inbox --folder "Sent Items"
     script/mail_inbox --read <uid>     one message as text: headers, body, attachment names
     script/mail_inbox --env .env.x     another saved mailbox (default .env.mailbox)
+    script/mail_inbox --read <uid> --redact   the same, with passwords and keys masked:
+                                       use it whenever a message is shown to anyone
 
 A SmarterMail refresh token is single use: each refresh returns a new pair. The new
 refresh token is written back to the file before anything else happens, so a run that
@@ -22,6 +24,7 @@ ap.add_argument("--env", default=".env.mailbox")
 ap.add_argument("--folder", default="inbox")
 ap.add_argument("--take", type=int, default=20)
 ap.add_argument("--read", metavar="UID")
+ap.add_argument("--redact", action="store_true", help="mask anything that looks like a password or key")
 args = ap.parse_args()
 
 if not os.path.exists(args.env):
@@ -65,6 +68,24 @@ def text_of(message_html):
     return re.sub(r"\n{3,}", "\n\n", t).strip()
 
 
+EMAIL = re.compile(r"^[\w.+-]+@[\w-]+(\.[\w-]+)+[>),.;:]*$")
+
+
+def redact(text):
+    """Mask words that look like secrets: 10+ characters, no spaces, at least three of
+    lower, upper, digit, symbol. Real email addresses and URLs stay; a password that
+    happens to contain @ does not (it slipped through the first version of this, 29 Oct)."""
+    def one(m):
+        w = m.group(0)
+        if w.startswith(("http://", "https://", "www.")) or EMAIL.match(w.strip('<>"(),')):
+            return w
+        core = w.rstrip(".,;:!?)\"'")  # sentence punctuation is not part of a secret
+        kinds = sum(bool(re.search(p, core)) for p in (r"[a-z]", r"[A-Z]", r"\d", r"[^A-Za-z0-9]"))
+        return "[hidden]" if len(core) >= 10 and kinds >= 3 else w
+    text = re.sub(r"\S{10,}", one, text)
+    return re.sub(r"(?im)^(\s*(pass|password|pwd)\s*:?\s*)\S.*$", r"\1[hidden]", text)
+
+
 if args.read:
     res = call("mail/message", {"folder": args.folder, "uid": int(args.read), "ownerEmailAddress": ""}, token)
     m = res.get("messageData") or res
@@ -77,7 +98,8 @@ if args.read:
     for a in m.get("attachments") or []:
         print(f"Attachment: {a.get('filename') or a.get('name')} ({a.get('size')} bytes)")
     print()
-    print(m.get("messagePlainText") or text_of(m.get("messageHTML")))
+    body = m.get("messagePlainText") or text_of(m.get("messageHTML"))
+    print(redact(body) if args.redact else body)
     sys.exit(0)
 
 # GetMessages (POST /api/v1/mail/messages): folder, ownerEmailAddress, skip, take,
