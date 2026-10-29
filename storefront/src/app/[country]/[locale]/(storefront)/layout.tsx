@@ -60,11 +60,13 @@ const getRootCategories = cache(async (country: string, locale: string) => {
   return getCategories(
     {
       depth_eq: 0,
-      // Four levels, not three. His navigation runs Categories > Bottles & Cups >
+      // Five levels. His navigation runs Categories > Bottles & Cups >
       // Single Wall Bottles > the individual sizes, and stopping a level short
       // dropped every leaf: the menu showed the groups and none of the products
       // people actually look for. Found by diffing his live pages against these.
-      expand: ["children.children.children"],
+      // The business shop's structure (29 Oct) asks for five; the Store API
+      // returns all five on 6.0.0 (measured on a copy with a five-level branch).
+      expand: ["children.children.children.children"],
     },
     { country, locale },
   )

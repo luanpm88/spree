@@ -14,12 +14,18 @@ async function cachedListCategories(
   return getClient().categories.list(params, options);
 }
 
+/**
+ * Categories in the order staff set on the dashboard, unless the caller asks
+ * for another. The Store API has no default order for this list: unsorted, it
+ * came back in a different order after every edit to the tree (measured 29 Oct
+ * on 6.0.0), and the live 5.6 menu shows his main categories shuffled.
+ */
 export async function getCategories(
   params?: CategoryListParams,
   options?: { locale?: string; country?: string },
 ) {
   const localeOptions = options ?? (await getLocaleOptions());
-  return cachedListCategories(params, localeOptions);
+  return cachedListCategories({ sort: "lft", ...params }, localeOptions);
 }
 
 export async function cachedGetCategory(
