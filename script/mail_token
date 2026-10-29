@@ -29,13 +29,20 @@ MAIL_USER="$MAIL_USER" MAIL_PASS="$MAIL_PASS" MAIL_HOST="$HOST" MAIL_SAVE="$SAVE
 import json, os, sys, urllib.error, urllib.request
 
 host = os.environ["MAIL_HOST"].rstrip("/")
-body = json.dumps({"username": os.environ["MAIL_USER"], "password": os.environ["MAIL_PASS"]}).encode()
+# clientId: "Required at login to enable token refresh. Tokens obtained without a
+# clientId are valid for 15 minutes and cannot be refreshed" (the server's own API
+# documentation, /Documentation/api). Measured: without it, success with refreshToken null.
+CLIENT_ID = "spree-plan-tools"
+body = json.dumps({"username": os.environ["MAIL_USER"], "password": os.environ["MAIL_PASS"],
+                   "clientId": CLIENT_ID}).encode()
 # Cloudflare in front of the site answers 403 "error code: 1010" to Python's default
 # User-Agent (Python-urllib); a named one passes (measured 29 Oct).
 req = urllib.request.Request(f"{host}/api/v1/auth/authenticate-user", data=body,
                              headers={"Content-Type": "application/json", "User-Agent": "spree-plan-tools/1.0"}, method="POST")
 try:
-    data = json.loads(urllib.request.urlopen(req, timeout=20).read().decode())
+    res = urllib.request.urlopen(req, timeout=20)
+    data = json.loads(res.read().decode())
+    cookies = res.headers.get_all("Set-Cookie") or []
 except urllib.error.HTTPError as e:
     # A refused sign-in still answers JSON, with the reason in "message"; the rest of
     # the body is two dozen empty fields that push the reason past any sensible cut.
@@ -47,15 +54,34 @@ except urllib.error.HTTPError as e:
         print(f"HTTP {e.code}: {raw[:300]}", file=sys.stderr)
     sys.exit(1)
 
-if not data.get("success") or not data.get("refreshToken"):
+if not data.get("success"):
     # Two-factor and a forced password change both land here, with the reason in the body.
     shown = {k: v for k, v in data.items() if "token" not in k.lower()}
-    print("no token issued:", json.dumps(shown)[:500], file=sys.stderr); sys.exit(1)
+    print("sign-in refused:", json.dumps(shown)[:500], file=sys.stderr); sys.exit(1)
+
+# The refresh token: in the body on the builds this was written against; some builds
+# answer success with the body's token fields empty and the tokens in cookies instead.
+refresh = data.get("refreshToken") or ""
+cookie_names = []
+for c in cookies:
+    name, _, rest = c.partition("=")
+    cookie_names.append(name.strip())
+    if not refresh and "refresh" in name.lower():
+        refresh = rest.split(";", 1)[0]
+
+if not refresh:
+    # Names and lengths only, never values, so the next step is known without a leak.
+    fields = {k: (len(v) if isinstance(v, str) else v) for k, v in data.items() if "token" in k.lower()}
+    print("signed in, but no refresh token found.", file=sys.stderr)
+    print(f"  token fields in the body (lengths): {fields}", file=sys.stderr)
+    print(f"  cookies set: {cookie_names}", file=sys.stderr)
+    sys.exit(1)
 
 fd = os.open(os.environ["MAIL_SAVE"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, "w") as f:
     f.write(f"MAIL_HOST={host}\n")
     f.write(f"MAIL_USER={os.environ['MAIL_USER']}\n")
-    f.write(f"MAIL_REFRESH_TOKEN={data['refreshToken']}\n")
-print(f"saved to {os.environ['MAIL_SAVE']} (mode 600): host, user and a refresh token; no password", file=sys.stderr)
+    f.write(f"MAIL_CLIENT_ID={CLIENT_ID}\n")
+    f.write(f"MAIL_REFRESH_TOKEN={refresh}\n")
+print(f"saved to {os.environ['MAIL_SAVE']} (mode 600): host, user and a refresh token ({len(refresh)} characters); no password", file=sys.stderr)
 PY

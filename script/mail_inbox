@@ -80,14 +80,17 @@ if args.read:
     print(m.get("messagePlainText") or text_of(m.get("messageHTML")))
     sys.exit(0)
 
+# GetMessages (POST /api/v1/mail/messages): folder, ownerEmailAddress, skip, take,
+# sortType (5 = InternalDate), sortAscending. Answers {totalCount, unreadCount, results}.
 res = call("mail/messages", {"folder": args.folder, "ownerEmailAddress": "", "sortType": 5,
                              "sortAscending": False, "skip": 0, "take": args.take}, token)
-msgs = res.get("messages")
+msgs = res.get("results")
 if msgs is None:
     sys.exit(f"mail/messages: {json.dumps(res)[:400]}")
-print(f"{args.folder}: {len(msgs)} shown")
+print(f"{args.folder}: {len(msgs)} shown of {res.get('totalCount')}, {res.get('unreadCount')} unread")
 for m in msgs:
-    unread = "*" if m.get("isUnread") or not m.get("isSeen", True) else " "
-    when = str(m.get("dateReceived") or m.get("date") or "")[:16]
-    who = m.get("fromAddress") or m.get("from") or ""
-    print(f"{unread} {m.get('uid')!s:>6}  {when}  {who[:38]:<38}  {m.get('subject') or ''}")
+    unread = " " if m.get("isSeen") else "*"
+    when = str(m.get("internalDate") or m.get("dateSent") or "")[:16].replace("T", " ")
+    sender = m.get("from") if isinstance(m.get("from"), dict) else {}
+    who = sender.get("name") or sender.get("email") or m.get("fromAddress") or ""
+    print(f"{unread} {m.get('uid')!s:>6}  {when}  {who[:30]:<30}  {m.get('subject') or ''}")
