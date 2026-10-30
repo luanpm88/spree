@@ -9,17 +9,17 @@ importers:
   .:
     dependencies:
       '@spree/admin-sdk':
-        specifier: ^6.0.0-0
-        version: 6.0.0(typescript@7.0.2)(zod@4.6.7)
+        specifier: ^6.0.1
+        version: 6.0.1(typescript@7.0.2)(zod@4.6.7)
       '@spree/dashboard':
-        specifier: ^6.0.0-0
-        version: 6.0.0(80c22509dfbc670f0822810114760c7b)
+        specifier: ^6.0.1
+        version: 6.0.1(d43e078ec5142e9c4131587c3414f689)
       '@spree/dashboard-core':
-        specifier: ^6.0.0-0
-        version: 6.0.0(14177696186c411c276aa28b362e8ea5)
+        specifier: ^6.0.1
+        version: 6.0.1(465f62fe462c4bb2307fc90b0bffbd6f)
       '@spree/dashboard-ui':
-        specifier: ^6.0.0-0
-        version: 6.0.0(@babel/runtime@7.29.10)(@date-fns/tz@1.5.0)(@floating-ui/dom@1.8.0)(@tanstack/react-router@1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@tiptap/extensions@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(react-i18next@17.1.9(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2))(react-is@19.3.1)(react@19.3.1)(redux@5.0.1)(tailwindcss@4.3.3)
+        specifier: ^6.0.1
+        version: 6.0.1(@babel/runtime@7.29.10)(@date-fns/tz@1.5.0)(@floating-ui/dom@1.8.0)(@tanstack/react-router@1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@tiptap/extensions@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(react-i18next@17.1.9(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2))(react-is@19.3.1)(react@19.3.1)(redux@5.0.1)(tailwindcss@4.3.3)
       '@tanstack/react-query':
         specifier: ^5.104.5
         version: 5.105.0(@types/react@19.3.0)(react@19.3.1)
@@ -818,8 +818,8 @@ packages:
     resolution: {integrity: sha512-tlqY9xq5ukxTUZBmoOp+m61cqwQD5pHJtFY3Mn8CA8ps6yghLH/Hw8UPdqg4OLmFW3IFlcXnQNmo/dh8HzXYIQ==}
     engines: {node: '>=18'}
 
-  '@spree/admin-sdk@6.0.0':
-    resolution: {integrity: sha512-ae/PI2p4mk4gu6GOnBMIBlIV96eGTWgjTMAeASH/sdrHRwsH7Zs0U324kFjkxvzrGn19E31h/BHITdDUpVyS/g==}
+  '@spree/admin-sdk@6.0.1':
+    resolution: {integrity: sha512-9H5svEgXPv2VmF2sapQzqOQrOo7IhulCRnQITLxRyugeMcR30aCJH8ik57akvcRipREPSO+RLnqprSE6Gt+mEA==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
       typescript: '>=4.7.0'
@@ -830,15 +830,15 @@ packages:
       zod:
         optional: true
 
-  '@spree/core@6.0.0':
-    resolution: {integrity: sha512-7nUGfzJSG87qBkD3HgZOqPp4oCurXCntY+5Smm58rKXudgNy4fL2/gQtArmGppI3i0KmBVtSzPJmpAemPu3tgw==}
+  '@spree/core@6.0.1':
+    resolution: {integrity: sha512-TQwtYCswd6Z9Da1LlwkRKHVsjcwA40Qsv9Kqc7yO9Ocf1xCsjwt8Me+5LWvwxTg0P4jR7KZEPAmVEnTcs+9smg==}
     engines: {node: '>=18.0.0'}
 
-  '@spree/dashboard-core@6.0.0':
-    resolution: {integrity: sha512-rztVQspCvj6nW1IuwIPd9ig2WXtsC3FcnooJLVKMpKwhD3nk/i7ASEdrru+Bn2S7pYEgfZgBjQtOipI3uhkOxQ==}
+  '@spree/dashboard-core@6.0.1':
+    resolution: {integrity: sha512-wOYffs8haSiBbSR3s8MNcTAfDkis40Yt2hmckC9CO/9lEWx9GF1HK4igB4ZNlmBY5/wgTbSnXR/inVvZNcpzJw==}
     peerDependencies:
-      '@spree/admin-sdk': '>=6.0.0 <7.0.0-0'
-      '@spree/dashboard-ui': '>=6.0.0 <7.0.0-0'
+      '@spree/admin-sdk': '>=6.0.1 <7.0.0-0'
+      '@spree/dashboard-ui': '>=6.0.1 <7.0.0-0'
       '@tanstack/react-query': ^5.100.9
       '@tanstack/react-router': ^1.169.2
       i18next: ^26.2.0
@@ -847,8 +847,8 @@ packages:
       react-hook-form: ^7.75.0
       react-i18next: ^17.0.8
 
-  '@spree/dashboard-ui@6.0.0':
-    resolution: {integrity: sha512-BMGx/iqcb3yKS/IKHIGM45DGppZnf9gtRUTu6dGU5qsURHS8Iz/3LAGB91/LUM294r+Z3eYnHk3VXrZfRd7QFA==}
+  '@spree/dashboard-ui@6.0.1':
+    resolution: {integrity: sha512-o5Yl5adynDURUkfjHOTqs1c2EzQWYG6f1zHsWMdTi1MFD6gIzhzv6gxjUS0Vy5FI5TD6M2cX+yt/Aty7485u0g==}
     peerDependencies:
       '@tanstack/react-router': ^1.169.2
       i18next: ^26.2.0
@@ -858,12 +858,12 @@ packages:
       react-i18next: ^17.0.8
       tailwindcss: ^4.2.4
 
-  '@spree/dashboard@6.0.0':
-    resolution: {integrity: sha512-8Qs9JuG9VWTomtxTKse70Cxc8xj//e7t7drnulXL/5CxB0ipj29Ahm3xQ1gMNUnw+JeXR3w+JWFeWIkISru4LQ==}
+  '@spree/dashboard@6.0.1':
+    resolution: {integrity: sha512-WT9crbrhP/ywgk6FE9yy8oh2lp2y45O1P+Kq3vCNl78h7pWrWiOGtZDW/0Olm3bztJ/xYaBCzjJWlni8S1nmGQ==}
     peerDependencies:
-      '@spree/admin-sdk': ^6.0.0
-      '@spree/dashboard-core': ^6.0.0
-      '@spree/dashboard-ui': ^6.0.0
+      '@spree/admin-sdk': ^6.0.1
+      '@spree/dashboard-core': ^6.0.1
+      '@spree/dashboard-ui': ^6.0.1
       '@tanstack/react-query': ^5.104.5
       '@tanstack/react-router': ^1.170.45
       i18next: ^26.5.3
@@ -4289,22 +4289,22 @@ snapshots:
 
   '@sindresorhus/merge-streams@4.0.0': {}
 
-  '@spree/admin-sdk@6.0.0(typescript@7.0.2)(zod@4.6.7)':
+  '@spree/admin-sdk@6.0.1(typescript@7.0.2)(zod@4.6.7)':
     optionalDependencies:
       typescript: 7.0.2
       zod: 4.6.7
 
-  '@spree/core@6.0.0': {}
+  '@spree/core@6.0.1': {}
 
-  '@spree/dashboard-core@6.0.0(14177696186c411c276aa28b362e8ea5)':
+  '@spree/dashboard-core@6.0.1(465f62fe462c4bb2307fc90b0bffbd6f)':
     dependencies:
       '@dnd-kit/core': 6.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@dnd-kit/sortable': 10.0.0(@dnd-kit/core@6.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react@19.3.1)
       '@dnd-kit/utilities': 3.2.2(react@19.3.1)
       '@hookform/resolvers': 6.0.2(@standard-schema/spec@1.1.0)(ajv-formats@2.1.1(ajv@8.20.0))(ajv@8.20.0)(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(zod@4.6.7)
-      '@spree/admin-sdk': 6.0.0(typescript@7.0.2)(zod@4.6.7)
-      '@spree/core': 6.0.0
-      '@spree/dashboard-ui': 6.0.0(@babel/runtime@7.29.10)(@date-fns/tz@1.5.0)(@floating-ui/dom@1.8.0)(@tanstack/react-router@1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@tiptap/extensions@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(react-i18next@17.1.9(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2))(react-is@19.3.1)(react@19.3.1)(redux@5.0.1)(tailwindcss@4.3.3)
+      '@spree/admin-sdk': 6.0.1(typescript@7.0.2)(zod@4.6.7)
+      '@spree/core': 6.0.1
+      '@spree/dashboard-ui': 6.0.1(@babel/runtime@7.29.10)(@date-fns/tz@1.5.0)(@floating-ui/dom@1.8.0)(@tanstack/react-router@1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@tiptap/extensions@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(react-i18next@17.1.9(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2))(react-is@19.3.1)(react@19.3.1)(redux@5.0.1)(tailwindcss@4.3.3)
       '@tailwindcss/vite': 4.3.3(vite@8.3.5(jiti@2.7.0))
       '@tanstack/react-hotkeys': 0.16.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@tanstack/react-query': 5.105.0(@types/react@19.3.0)(react@19.3.1)
@@ -4344,7 +4344,7 @@ snapshots:
       - vite
       - yup
 
-  '@spree/dashboard-ui@6.0.0(@babel/runtime@7.29.10)(@date-fns/tz@1.5.0)(@floating-ui/dom@1.8.0)(@tanstack/react-router@1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@tiptap/extensions@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(react-i18next@17.1.9(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2))(react-is@19.3.1)(react@19.3.1)(redux@5.0.1)(tailwindcss@4.3.3)':
+  '@spree/dashboard-ui@6.0.1(@babel/runtime@7.29.10)(@date-fns/tz@1.5.0)(@floating-ui/dom@1.8.0)(@tanstack/react-router@1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@tiptap/extensions@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(react-i18next@17.1.9(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2))(react-is@19.3.1)(react@19.3.1)(redux@5.0.1)(tailwindcss@4.3.3)':
     dependencies:
       '@base-ui/react': 1.8.0(@date-fns/tz@1.5.0)(@types/react@19.3.0)(date-fns@4.4.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@codemirror/autocomplete': 6.20.4
@@ -4361,7 +4361,7 @@ snapshots:
       '@dnd-kit/utilities': 3.2.2(react@19.3.1)
       '@fontsource-variable/geist': 5.3.0
       '@fontsource-variable/geist-mono': 5.3.0
-      '@spree/core': 6.0.0
+      '@spree/core': 6.0.1
       '@tanstack/react-hotkeys': 0.16.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@tanstack/react-router': 1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@tanstack/react-table': 9.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -4407,7 +4407,7 @@ snapshots:
       - redux
       - supports-color
 
-  '@spree/dashboard@6.0.0(80c22509dfbc670f0822810114760c7b)':
+  '@spree/dashboard@6.0.1(d43e078ec5142e9c4131587c3414f689)':
     dependencies:
       '@base-ui/react': 1.8.0(@date-fns/tz@1.5.0)(@types/react@19.3.0)(date-fns@4.4.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@dnd-kit/core': 6.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -4416,10 +4416,10 @@ snapshots:
       '@fontsource-variable/geist': 5.3.0
       '@fontsource-variable/geist-mono': 5.3.0
       '@hookform/resolvers': 6.0.2(@standard-schema/spec@1.1.0)(ajv-formats@2.1.1(ajv@8.20.0))(ajv@8.20.0)(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(zod@4.6.7)
-      '@spree/admin-sdk': 6.0.0(typescript@7.0.2)(zod@4.6.7)
-      '@spree/core': 6.0.0
-      '@spree/dashboard-core': 6.0.0(14177696186c411c276aa28b362e8ea5)
-      '@spree/dashboard-ui': 6.0.0(@babel/runtime@7.29.10)(@date-fns/tz@1.5.0)(@floating-ui/dom@1.8.0)(@tanstack/react-router@1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@tiptap/extensions@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(react-i18next@17.1.9(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2))(react-is@19.3.1)(react@19.3.1)(redux@5.0.1)(tailwindcss@4.3.3)
+      '@spree/admin-sdk': 6.0.1(typescript@7.0.2)(zod@4.6.7)
+      '@spree/core': 6.0.1
+      '@spree/dashboard-core': 6.0.1(465f62fe462c4bb2307fc90b0bffbd6f)
+      '@spree/dashboard-ui': 6.0.1(@babel/runtime@7.29.10)(@date-fns/tz@1.5.0)(@floating-ui/dom@1.8.0)(@tanstack/react-router@1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@tiptap/extensions@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0))(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react-hook-form@7.91.0(@types/react@19.3.0)(react@19.3.1))(react-i18next@17.1.9(i18next@26.5.11(typescript@7.0.2))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@7.0.2))(react-is@19.3.1)(react@19.3.1)(redux@5.0.1)(tailwindcss@4.3.3)
       '@tanstack/react-hotkeys': 0.16.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@tanstack/react-query': 5.105.0(@types/react@19.3.0)(react@19.3.1)
       '@tanstack/react-router': 1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
