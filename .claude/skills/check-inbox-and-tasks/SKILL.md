@@ -28,6 +28,7 @@ Report what changed in a line or two, then work; follow the tasks alongside What
 ```bash
 script/mail_inbox                 # newest 20 in the inbox, * = unread, with each uid
 script/mail_inbox --read <uid> --redact   # one message as text, passwords and keys masked
+script/mail_inbox --read <uid> --redact --links   # plus every link: a "Confirm my account" button is one
 script/ac_tasks                   # every open task, newest first
 script/ac_tasks --mine            # assigned to Luan
 script/ac_tasks --task <id>       # body and comments

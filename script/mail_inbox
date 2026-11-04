@@ -9,6 +9,9 @@ script/mail_token saved. Read only: nothing here sends, moves, flags or deletes.
     script/mail_inbox --env .env.x     another saved mailbox (default .env.mailbox)
     script/mail_inbox --read <uid> --redact   the same, with passwords and keys masked:
                                        use it whenever a message is shown to anyone
+    script/mail_inbox --read <uid> --links    also list every link with its label. A
+                                       button such as "Confirm my account" is a link the
+                                       text view drops, and a sign-up waits on it
 
 A SmarterMail refresh token is single use: each refresh returns a new pair. The new
 refresh token is written back to the file before anything else happens, so a run that
@@ -25,6 +28,7 @@ ap.add_argument("--folder", default="inbox")
 ap.add_argument("--take", type=int, default=20)
 ap.add_argument("--read", metavar="UID")
 ap.add_argument("--redact", action="store_true", help="mask anything that looks like a password or key")
+ap.add_argument("--links", action="store_true", help="with --read: list every link in the message with its label")
 args = ap.parse_args()
 
 if not os.path.exists(args.env):
@@ -100,6 +104,11 @@ if args.read:
     print()
     body = m.get("messagePlainText") or text_of(m.get("messageHTML"))
     print(redact(body) if args.redact else body)
+    if args.links:
+        print("\nLinks:")
+        for href, label in re.findall(r'(?is)<a\b[^>]*\bhref\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>', m.get("messageHTML") or ""):
+            label = re.sub(r"\s+", " ", text_of(label)).strip() or "(image)"
+            print(f"  {label[:60]}: {html.unescape(href)}")
     sys.exit(0)
 
 # GetMessages (POST /api/v1/mail/messages): folder, ownerEmailAddress, skip, take,
