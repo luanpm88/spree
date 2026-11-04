@@ -3,6 +3,11 @@
 //
 //   script/ac_comment 1 draft.md           preview only, sends nothing
 //   script/ac_comment 1 draft.md --send    actually post it
+//   script/ac_comment 1 draft.md --env .env.ac_team --project 2
+//                                          another site and project (default
+//                                          .env.activecollab, project 264). The client
+//                                          moved his information to the team site on
+//                                          4 Nov, and this only knew the old one
 //
 // Without --send this is a dry run. That is deliberate and not negotiable in the
 // flags: this writes into the client's project under a real person's name, and the
@@ -13,13 +18,11 @@
 // to the client, which is how the first one went out. See docs/DISCOVERIES.md.
 
 import { readFileSync, existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline/promises'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const ENV_PATH = join(ROOT, '.env.activecollab')
-const PROJECT_ID = process.env.ACTIVECOLLAB_PROJECT_ID || '264'
 
 const C = process.stdout.isTTY
   ? { dim: '\x1b[2m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', bold: '\x1b[1m', off: '\x1b[0m' }
@@ -29,8 +32,12 @@ const die = (m) => { console.error(`${C.red}error${C.off} ${m}`); process.exit(1
 
 const args = process.argv.slice(2)
 const SEND = args.includes('--send')
-const [task, file] = args.filter((a) => !a.startsWith('--'))
-if (!task || !file) die('usage: script/ac_comment <task-number|task-id> <file.md> [--send]')
+const VALUED = ['--env', '--project']
+const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined }
+const ENV_PATH = resolve(ROOT, flag('--env') || '.env.activecollab')
+const PROJECT_ID = flag('--project') || process.env.ACTIVECOLLAB_PROJECT_ID || '264'
+const [task, file] = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]))
+if (!task || !file) die('usage: script/ac_comment <task-number|task-id> <file.md> [--env .env.x --project <id>] [--send]')
 if (!existsSync(file)) die(`no such file: ${file}`)
 
 // ── credentials ─────────────────────────────────────────────────────────────
@@ -167,7 +174,7 @@ if (leaked.length) {
 
 if (!SEND) {
   console.log(`${C.dim}preview only. nothing sent.${C.off}`)
-  console.log(`to post it:  script/ac_comment ${task} ${file} --send`)
+  console.log(`to post it:  script/ac_comment ${args.filter((a) => a !== '--send').join(' ')} --send`)
   process.exit(0)
 }
 
