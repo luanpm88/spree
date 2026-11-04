@@ -1,4 +1,10 @@
-import { SUPPORTED_LOCALES } from "@/i18n/locales";
+import {
+  DEFAULT_LOCALE,
+  resolveSupportedLocale,
+  SUPPORTED_LOCALES,
+} from "@/i18n/locales";
+import { getClient } from "@/lib/spree/config";
+import { createMarketsSnapshot } from "@/lib/spree/markets-snapshot";
 import { createSpreeMiddleware } from "@/lib/spree/middleware";
 import {
   cleanUrlsEnabled,
@@ -8,6 +14,16 @@ import {
   isAccountRequired,
 } from "@/lib/store";
 
+// Asked the same way the layout asks, so both see the same list.
+const markets = createMarketsSnapshot(() =>
+  getClient()
+    .markets.list({
+      country: getDefaultCountry(),
+      locale: resolveSupportedLocale(getDefaultLocale()) ?? DEFAULT_LOCALE,
+    })
+    .then((res) => res.data),
+);
+
 export const proxy = createSpreeMiddleware({
   defaultCountry: getDefaultCountry(),
   defaultLocale: getDefaultLocale(),
@@ -15,6 +31,7 @@ export const proxy = createSpreeMiddleware({
   requireAccount: isAccountRequired(),
   publicPaths: getPublicPaths(),
   cleanUrls: cleanUrlsEnabled(),
+  markets,
 });
 
 /**

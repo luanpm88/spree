@@ -1,4 +1,11 @@
+import type { Market } from "@spree/sdk";
 import { type NextRequest, NextResponse } from "next/server";
+import {
+  findMarketForCountry,
+  getDefaultMarketLocaleTarget,
+  getMarketDefaultLocale,
+  isLocaleEnabledForMarket,
+} from "@/i18n/markets";
 import {
   canonicalizeLocale,
   matchLocale,
@@ -79,6 +86,70 @@ export interface SpreeMiddlewareConfig {
    * reachable and do not need listing.
    */
   publicPaths?: readonly string[];
+  /**
+   * The shop's Markets as last fetched, or null while they are not known. With
+   * them, an address without a prefix is served in a country the shop sells
+   * to. Without them, the country is chosen exactly as before.
+   */
+  markets?: () => readonly Market[] | null;
+}
+
+/**
+ * The country and locale to serve an unprefixed address in, out of the ones the
+ * shop actually sells to. Null when the Markets are not known.
+ *
+ * ── the fault this exists for ───────────────────────────────────────────────
+ *
+ * The country used to be the first of cookie, IP country and default, whether
+ * or not the shop sold there. The layout then found no Market for it and
+ * redirected, and because the layout renders inside Suspense the redirect
+ * landed after the page had started streaming. What a visitor from outside the
+ * shop's countries received was HTML with no products in it and a redirect for
+ * the browser to carry out: four or five navigations, a white page in between,
+ * products after 3 to 7 seconds. Measured on all six public shops on 3 Nov. The
+ * US shop sent them to American Samoa, the first country of its Market. Google
+ * crawls mostly from the US, so on the shops that do not sell there it read an
+ * empty page.
+ *
+ * Every shop has one Market, so the IP country never changed anybody's prices.
+ * It only chose which redirect they got.
+ *
+ * Each candidate is taken only if a Market lists it. When none is listed, the
+ * answer is the default Market's first country, which is where the layout's
+ * redirect used to land: the same page as before, reached without the trip.
+ * The locale is kept when that Market offers it, and is otherwise the Market's
+ * own, which is the layout's second redirect made in advance.
+ */
+export function chooseServedMarket(
+  markets: readonly Market[] | null,
+  candidates: readonly (string | null | undefined)[],
+  locale: string,
+): { country: string; locale: string } | null {
+  if (!markets?.length) return null;
+  const list = markets as Market[];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const market = findMarketForCountry(list, candidate);
+    if (!market) continue;
+    return {
+      country: candidate.toLowerCase(),
+      locale: isLocaleEnabledForMarket(market, locale)
+        ? locale
+        : (getMarketDefaultLocale(market) ?? locale),
+    };
+  }
+
+  const target = getDefaultMarketLocaleTarget(list);
+  if (!target) return null;
+  const market = list.find((m) => m.id === target.marketId);
+  return {
+    country: target.country,
+    locale:
+      market && isLocaleEnabledForMarket(market, locale)
+        ? locale
+        : target.locale,
+  };
 }
 
 const PUBLIC_ACCOUNT_PATHS = new Set([
@@ -513,11 +584,15 @@ export function createSpreeMiddleware(
     }
 
     // Detect country: cookie → geo headers → default
-    const country =
-      request.cookies.get(COUNTRY_COOKIE)?.value ??
-      request.headers.get("x-vercel-ip-country")?.toLowerCase() ??
-      request.headers.get("cf-ipcountry")?.toLowerCase() ??
-      defaultCountry;
+    const cookieCountry = request.cookies.get(COUNTRY_COOKIE)?.value;
+    const vercelCountry = request.headers
+      .get("x-vercel-ip-country")
+      ?.toLowerCase();
+    const cloudflareCountry = request.headers
+      .get("cf-ipcountry")
+      ?.toLowerCase();
+    let country =
+      cookieCountry ?? vercelCountry ?? cloudflareCountry ?? defaultCountry;
 
     // Detect locale: cookie → accept-language → default
     const cookieValue = request.cookies.get(LOCALE_COOKIE)?.value;
@@ -530,7 +605,18 @@ export function createSpreeMiddleware(
       supportedLocales.length > 0
         ? negotiateAcceptLanguage(acceptLanguage, supportedLocales)
         : canonicalizeLocale(acceptLanguage?.split(",")[0]?.split(";")[0]);
-    const locale = cookieLocale ?? acceptedLocale ?? defaultLocale;
+    let locale = cookieLocale ?? acceptedLocale ?? defaultLocale;
+
+    // Only a country the shop sells to. See chooseServedMarket.
+    const served = chooseServedMarket(
+      config.markets?.() ?? null,
+      [cookieCountry, vercelCountry, cloudflareCountry, defaultCountry],
+      locale,
+    );
+    if (served) {
+      country = served.country;
+      locale = served.locale;
+    }
 
     const url = request.nextUrl.clone();
     url.pathname = `/${country}/${locale}${pathname === "/" ? "" : pathname}`;

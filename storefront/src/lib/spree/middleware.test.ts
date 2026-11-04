@@ -1,3 +1,4 @@
+import type { Market } from "@spree/sdk";
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 import { createSpreeMiddleware } from "@/lib/spree/middleware";
@@ -454,6 +455,141 @@ describe("clean URLs: no country and no locale in the address", () => {
         "location",
       ),
     ).toBe("https://retail.example/nz/en/products");
+  });
+});
+
+describe("a visitor from a country the shop does not sell to", () => {
+  // Shaped like the live shops on 3 Nov: one Market each, in the order the API
+  // returned their countries.
+  const market = (iso: string[], extra: Partial<Market> = {}) =>
+    ({
+      id: `mkt_${iso[0]}`,
+      name: iso.join(","),
+      currency: "USD",
+      default: true,
+      default_locale: "en",
+      supported_locales: ["en"],
+      countries: iso.map((c) => ({ iso: c })),
+      ...extra,
+    }) as unknown as Market;
+
+  const shop = (defaultCountry: string, markets: Market[] | null) =>
+    createSpreeMiddleware({
+      defaultCountry,
+      defaultLocale: "en",
+      supportedLocales: ["en", "de"],
+      cleanUrls: true,
+      markets: () => markets,
+    });
+
+  const visit = (
+    middleware: ReturnType<typeof createSpreeMiddleware>,
+    headers: Record<string, string> = {},
+  ) => {
+    const response = middleware(
+      new NextRequest("https://retail.example/products", { headers }),
+    );
+    return {
+      rewrite: response.headers.get("x-middleware-rewrite"),
+      location: response.headers.get("location"),
+      country: response.cookies.get("spree_country")?.value,
+      locale: response.cookies.get("spree_locale")?.value,
+    };
+  };
+
+  const canada = shop("ca", [market(["CA"])]);
+  const us = shop("us", [market(["AS", "GU", "MP", "PR", "US", "VI"])]);
+  const international = shop("nolocal", [market(["BE", "DE", "NL"])]);
+
+  it("serves the shop's own country rather than the visitor's", () => {
+    const seen = visit(canada, { "cf-ipcountry": "US" });
+
+    expect(seen.location).toBeNull();
+    expect(seen.rewrite).toContain("/ca/en/products");
+    expect(seen.country).toBe("ca");
+  });
+
+  it("does not send a visitor to the US shop to American Samoa", () => {
+    // AS is the first country of that Market, which is where the layout's
+    // redirect used to land them. The shop's own country is in the Market, so
+    // it is the one to use.
+    const seen = visit(us, { "cf-ipcountry": "VN" });
+
+    expect(seen.rewrite).toContain("/us/en/products");
+    expect(seen.country).toBe("us");
+  });
+
+  it("leaves a visitor the shop does sell to exactly where they were", () => {
+    expect(visit(canada, { "cf-ipcountry": "CA" }).rewrite).toContain(
+      "/ca/en/products",
+    );
+    expect(visit(us, { "cf-ipcountry": "PR" }).rewrite).toContain(
+      "/pr/en/products",
+    );
+    expect(visit(international, { "cf-ipcountry": "NL" }).rewrite).toContain(
+      "/nl/en/products",
+    );
+  });
+
+  it("gives a shop named after itself the page the redirect used to end on", () => {
+    // The international shop is built with its own name as the country, which
+    // no Market lists. Its visitors from elsewhere ended on the Market's first
+    // country after the redirect, so that is what they get, without it.
+    const seen = visit(international, { "cf-ipcountry": "US" });
+
+    expect(seen.rewrite).toContain("/be/en/products");
+    expect(seen.country).toBe("be");
+  });
+
+  it("takes a cookie the shop sells to over the IP", () => {
+    expect(
+      visit(international, {
+        "cf-ipcountry": "NL",
+        cookie: "spree_country=de",
+      }).rewrite,
+    ).toContain("/de/en/products");
+  });
+
+  it("drops a cookie for a country the shop does not sell to", () => {
+    // Left behind by a visit whose redirect never finished. It used to send
+    // the visitor round the same redirect on every page.
+    const seen = visit(canada, {
+      "cf-ipcountry": "CA",
+      cookie: "spree_country=vn",
+    });
+
+    expect(seen.rewrite).toContain("/ca/en/products");
+    expect(seen.country).toBe("ca");
+  });
+
+  it("uses the Market's own language when it does not offer the visitor's", () => {
+    const seen = visit(canada, {
+      "cf-ipcountry": "CA",
+      "accept-language": "de",
+    });
+
+    expect(seen.rewrite).toContain("/ca/en/products");
+    expect(seen.locale).toBe("en");
+  });
+
+  it("keeps the visitor's language when the Market offers it", () => {
+    const bilingual = shop("ca", [
+      market(["CA"], { supported_locales: ["en", "de"] }),
+    ]);
+
+    expect(
+      visit(bilingual, { "cf-ipcountry": "US", "accept-language": "de" })
+        .rewrite,
+    ).toContain("/ca/de/products");
+  });
+
+  it("chooses exactly as before while the Markets are not known", () => {
+    expect(visit(shop("ca", null), { "cf-ipcountry": "US" }).rewrite).toContain(
+      "/us/en/products",
+    );
+    expect(visit(shop("ca", []), { "cf-ipcountry": "US" }).rewrite).toContain(
+      "/us/en/products",
+    );
   });
 });
 
