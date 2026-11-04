@@ -146,6 +146,14 @@ async function type(page, sel, value) {
 async function chooseState(page, wanted) {
   const l = page.locator("#ship-state").first();
   if (!(await l.count())) return;                     // country needs no region
+  // A country with no regions in Spree (the UK, on two of the shops) gets a
+  // free text box under the same id, not a select. Asking that box for its
+  // second <option> waited 45 s and reported "the region box offers nothing to
+  // choose" on two shops that sell fine (4 Nov): the check, not the shop.
+  if ((await l.evaluate((el) => el.tagName)) !== "SELECT") {
+    if (wanted) await type(page, "#ship-state", wanted);
+    return;
+  }
   if (wanted) { await choose(page, "#ship-state", wanted); return; }
   const first = await l.locator("option").nth(1).getAttribute("value").catch(() => null);
   if (!first) throw new Error("the region box offers nothing to choose");
@@ -260,6 +268,14 @@ async function walk(code) {
     // check written against it reports a working shop as one with no card box.
     // That wrong conclusion was reached twice on 20 Sep before someone looked
     // inside the frame.
+    // Where the card is not the first method (one shop lists PayPal first), pick
+    // it the way a customer would. Without this the card field never appears
+    // and the shop reads as one that cannot take a card (4 Nov).
+    const cardOption = page
+      .locator('#checkout-section-payment label:has-text("Card"), #checkout-section-payment label:has-text("Stripe")')
+      .first();
+    if (await cardOption.count()) { await cardOption.click().catch(() => {}); await page.waitForTimeout(3000); }
+
     const inFrame = page.frameLocator("iframe[title='Secure payment input frame']");
     const number = inFrame.locator("#payment-numberInput").first();
     await number.waitFor({ state: "visible", timeout: 40000 })
