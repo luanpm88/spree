@@ -19,11 +19,12 @@ The older ActiveCollab the plan syncs from is a different site: `script/ac_sync`
 **Before any piece of work, first:** (Luan's rule, 29 Oct)
 
 ```bash
-script/check_tasks                # both sites: new, updated, newly commented since the last look
+script/check_tasks                # both sites since the last look: every new comment (not only the latest),
+                                  # every activity by others (tasks, files, notes) and every chat message
 script/check_tasks --all          # every open task on both
 ```
 
-Report what changed in a line or two, then work; follow the tasks alongside WhatsApp. Mail on demand:
+Report what changed in a line or two, then work. Since 4 Nov the client sends information on the tracker and keeps WhatsApp for basic info, so the tracker comes first, and nothing in it may be missed: every comment, every chat message. Mail on demand:
 
 ```bash
 script/mail_inbox                 # newest 20 in the inbox, * = unread, with each uid
@@ -32,6 +33,8 @@ script/mail_inbox --read <uid> --redact --links   # plus every link: a "Confirm 
 script/ac_tasks                   # every open task, newest first
 script/ac_tasks --mine            # assigned to Luan
 script/ac_tasks --task <id>       # body and comments
+script/ac_comment <task> <file.md> --env .env.ac_team --project <id>   # preview a comment; --send posts it
+                                  # @[Name](user:<id>) in the file is a real mention (GET /users for ids)
 ```
 
 ## When a token is missing or refused

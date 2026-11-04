@@ -67,6 +67,10 @@ if (process.argv.includes('--changes')) {
   const SEEN = `tmp/ac_seen-${new globalThis.URL(URL).host}.json`
   mkdirSync('tmp', { recursive: true })
   const seen = existsSync(SEEN) ? JSON.parse(readFileSync(SEEN, 'utf8')) : null
+  // The mark for next time is taken now, before anything is read, so a comment that
+  // lands while this runs is shown next time rather than falling between two looks.
+  const runStart = Date.now()
+  const sinceTs = seen?.at ? Math.floor(seen.at / 1000) : null
   const now = {}
   const changed = []
   for (const r of rows) {
@@ -82,13 +86,59 @@ if (process.argv.includes('--changes')) {
   for (const r of changed) {
     let last = ''
     if (r.comments > 0 && r.why !== 'first look') {
-      const cs = (await api(`/comments/task/${r.id}`)).filter((c) => !c.is_trashed).sort((a, b) => b.created_on - a.created_on)
-      if (cs[0]) last = `\n      latest comment ${day(cs[0].created_on)} ${cs[0].created_by_name || cs[0].created_by_id}: ${text(cs[0].body).replace(/\s+/g, ' ').slice(0, 220)}`
+      // Every comment since the last look, oldest first. Showing only the latest hid
+      // the one before it whenever two arrived between looks (Luan, 4 Nov: "ko missing
+      // luôn luôn"). Without a previous look, the latest one only.
+      const cs = (await api(`/comments/task/${r.id}`)).filter((c) => !c.is_trashed).sort((a, b) => a.created_on - b.created_on)
+      const fresh = sinceTs ? cs.filter((c) => c.created_on > sinceTs) : cs.slice(-1)
+      for (const c of fresh) last += `\n      comment ${day(c.created_on)} ${c.created_by_name || c.created_by_id}: ${text(c.body).replace(/\s+/g, ' ').slice(0, 600)}`
     }
     console.log(`  ${r.why.padEnd(18)} ${day(r.updated)}  ${r.p} #${r.n} (id ${r.id}) ${r.name}${last}`)
   }
   for (const l of closed) console.log(`  no longer open     ${l}`)
-  writeFileSync(SEEN, JSON.stringify({ at: Date.now(), tasks: now }, null, 1))
+
+  if (sinceTs) {
+    // Everything the others did since the last look, from the tracker's own activity
+    // feed: comments anywhere, tasks created or edited, files, notes, discussions. The
+    // task list above only sees open tasks; this sees the rest.
+    const logs = new Map(), related = {}
+    for (let page = 1; page <= 10; page++) {
+      let w
+      try { w = await api(`/whats-new?page=${page}`) } catch { break }
+      const batch = w.activity_logs || []
+      for (const [k, v] of Object.entries(w.related || {})) related[k] = { ...(related[k] || {}), ...v }
+      const before = logs.size
+      for (const a of batch) if (a.created_on > sinceTs) logs.set(a.id, a)
+      if (!batch.length || logs.size === before || batch[batch.length - 1].created_on <= sinceTs) break
+    }
+    const others = [...logs.values()].filter((a) => a.created_by_id !== me).sort((a, b) => a.created_on - b.created_on)
+    console.log(`  activity by others since the last check: ${others.length}`)
+    for (const a of others) {
+      const parent = related[a.parent_type]?.[a.parent_id]
+      const what = a.class.replace(/ActivityLog$/, '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
+      const body = a.comment_id ? text(related.Comment?.[a.comment_id]?.body || '').replace(/\s+/g, ' ').slice(0, 600) : ''
+      console.log(`    ${day(a.created_on)} ${a.created_by_name || a.created_by_id}: ${what}, ${a.parent_type} ${parent?.name ? `"${parent.name}"` : a.parent_id}${body ? `\n      ${body}` : ''}`)
+    }
+
+    // Chat. Pusher makes it live in the browser; this reads it for whoever is not
+    // looking at the browser. Every message since the last look, from anyone else.
+    let convs = []
+    try { const r = await api('/conversations/for-screen'); convs = Array.isArray(r) ? r : (r.conversations || []) } catch {}
+    let chatCount = 0
+    const chatLines = []
+    for (const c of convs) {
+      let ms = []
+      try { const r = await api(`/conversations/${c.id}/messages`); ms = Array.isArray(r) ? r : (r.messages || r.items || []) } catch { chatLines.push(`    (could not read conversation ${c.id} ${c.name || ''})`); continue }
+      for (const m of ms.filter((m) => m.created_on > sinceTs && m.created_by_id !== me).sort((a, b) => a.created_on - b.created_on)) {
+        chatCount++
+        chatLines.push(`    ${day(m.created_on)} ${m.created_by_name || m.created_by_id} in ${c.name || `chat ${c.id}`}: ${text(m.body).replace(/\s+/g, ' ').slice(0, 600)}`)
+      }
+    }
+    console.log(`  chat messages from others since the last check: ${chatCount} (${convs.length} conversation(s))`)
+    for (const l of chatLines) console.log(l)
+  }
+
+  writeFileSync(SEEN, JSON.stringify({ at: runStart, tasks: now }, null, 1))
   process.exit(0)
 }
 
