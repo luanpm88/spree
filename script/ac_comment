@@ -77,8 +77,13 @@ const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, 
 
 // Inline marks are applied AFTER escaping, so a literal < in the source stays literal
 // and only our own tags survive.
+// A mention, written @[Jane Doe](user:1), becomes the span ActiveCollab's
+// own editor inserts (read from its index.js on 4 Nov 2026, buildMentionAttributes:
+// class new_mention, data-type user, data-user-id). User ids: GET /users.
 function inline(s) {
   return esc(s)
+    .replace(/@\[([^\]]+)\]\(user:(\d+)\)/g,
+      '<span class="new_mention" data-type="user" data-context="" data-user-id="$2">$1</span>')
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2">$1</a>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
