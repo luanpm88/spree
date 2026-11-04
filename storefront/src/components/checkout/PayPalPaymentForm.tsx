@@ -15,17 +15,31 @@ export interface PayPalPaymentFormHandle {
 }
 
 interface PayPalPaymentFormProps {
+  /** Remounts the buttons when the session behind them is replaced. */
   paypalOrderId: string;
   currency: string;
   onReady: (handle: PayPalPaymentFormHandle) => void;
-  /** Called when user approves payment in the PayPal popup. */
-  onApproved: () => void;
+  /**
+   * Runs when the PayPal button is pressed, before the popup opens. False keeps
+   * the popup shut: the same checks the "Pay now" button makes, which this
+   * button used to skip (see lib/utils/paypal-guard.ts).
+   */
+  onClick: () => Promise<boolean>;
+  /**
+   * Creates the PayPal order the popup will show, at the moment of the click,
+   * for the order total as it is then. Resolves to PayPal's order id.
+   */
+  createOrder: () => Promise<string>;
+  /** Called when the customer approves in the popup, with PayPal's order id. */
+  onApproved: (paypalOrderId: string) => void;
 }
 
 function PayPalPaymentFormInner({
   paypalOrderId,
   currency,
   onReady,
+  onClick,
+  createOrder,
   onApproved,
 }: PayPalPaymentFormProps) {
   const t = useTranslations("checkout");
@@ -92,9 +106,14 @@ function PayPalPaymentFormInner({
     };
   }, [PayPalSDK]);
 
-  // Stable ref for onApproved to avoid re-renders of PayPalButtons
+  // Stable refs for the callbacks, so PayPalButtons is not re-rendered (and
+  // its iframe rebuilt) every time the parent renders.
   const onApprovedRef = useRef(onApproved);
   onApprovedRef.current = onApproved;
+  const onClickRef = useRef(onClick);
+  onClickRef.current = onClick;
+  const createOrderRef = useRef(createOrder);
+  createOrderRef.current = createOrder;
 
   if (!PayPalSDK) {
     return (
@@ -122,14 +141,24 @@ function PayPalPaymentFormInner({
             color: "gold",
             label: "paypal",
           }}
-          createOrder={async () => paypalOrderId}
-          onApprove={async () => {
+          onClick={async (_data, actions) => {
+            setError(null);
+            let allowed = false;
+            try {
+              allowed = await onClickRef.current();
+            } catch {
+              allowed = false;
+            }
+            return allowed ? actions.resolve() : actions.reject();
+          }}
+          createOrder={() => createOrderRef.current()}
+          onApprove={async (data) => {
             approvedRef.current = true;
             setApprovedForUI(true);
             setError(null);
             // Trigger payment completion directly — no need for
             // the user to click "Place Order" again.
-            onApprovedRef.current();
+            onApprovedRef.current(data.orderID);
           }}
           onError={(err) => {
             const msg = err instanceof Error ? err.message : t("paypalError");

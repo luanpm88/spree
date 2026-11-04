@@ -51,6 +51,7 @@ import {
 } from "@/lib/data/payment";
 import { hasPayableTotal } from "@/lib/utils/express-checkout";
 import { extractBasePath } from "@/lib/utils/path";
+import { hasTakenPayment } from "@/lib/utils/paypal-guard";
 import { CheckoutSidebar } from "./CheckoutSidebar";
 import type { CheckoutInitialData } from "./page";
 
@@ -504,8 +505,13 @@ function CheckoutPageContentInner({
         // session completion, completeCheckoutOrder handles 403/422 gracefully.
         const completeResult = await completeCheckoutOrder(currentOrder.id);
         if (!completeResult.success) {
+          // After a session payment the money has been taken, so the one
+          // thing this customer must not do is pay again. Say so, rather than
+          // a bare "failed" that reads as "try again".
           setError(
-            completeResult.error || tRef.current("failedToCompleteOrder"),
+            result.type === "session"
+              ? tRef.current("paymentTakenOrderIncomplete")
+              : completeResult.error || tRef.current("failedToCompleteOrder"),
           );
           setProcessing(false);
           return;
@@ -556,9 +562,16 @@ function CheckoutPageContentInner({
     [],
   );
 
-  // Validate and pay — single "Pay now" action
-  const validateAndPay = async () => {
-    if (!cart) return;
+  // Everything "Pay now" checks before it pays: policy consent, then no address
+  // or delivery step left on a freshly read order. Shows the errors where they
+  // belong and resolves false when anything is missing.
+  //
+  // PayPal pays from its own popup and never passes through "Pay now", and it
+  // used to skip all of this: a customer could press it with no address, have
+  // the item price captured, and leave an order that could never complete
+  // (docs/DISCOVERIES.md §84). PaymentSection now runs this on the PayPal click.
+  const checkReadyToPay = async (): Promise<boolean> => {
+    if (!cart) return false;
 
     setSectionErrors({});
     setError(null);
@@ -570,14 +583,23 @@ function CheckoutPageContentInner({
         .getElementById("policy-consent")
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
       document.getElementById("policy-consent")?.focus();
-      return;
+      return false;
     }
 
     // Refresh cart to get latest requirements
     const freshOrder = await getCheckoutOrder(cart.id);
     if (!freshOrder) {
       setError(t("failedToLoadCheckout"));
-      return;
+      return false;
+    }
+
+    // A cart that already holds a taken payment is one whose capture went
+    // through while completing the order failed. Paying again, by any method,
+    // charges the customer twice.
+    if (hasTakenPayment(freshOrder)) {
+      setCart(freshOrder);
+      setError(t("paymentAlreadyReceived"));
+      return false;
     }
     setCart(freshOrder);
 
@@ -613,8 +635,24 @@ function CheckoutPageContentInner({
         el.scrollIntoView({ behavior: "smooth", block: "start" });
       }
 
-      return;
+      return false;
     }
+
+    return true;
+  };
+
+  // A stable handle for PaymentSection, which keeps it in a ref of its own;
+  // the function behind it is rebuilt each render with the current state.
+  const checkReadyToPayRef = useRef(checkReadyToPay);
+  checkReadyToPayRef.current = checkReadyToPay;
+  const validateBeforePayment = useCallback(
+    () => checkReadyToPayRef.current(),
+    [],
+  );
+
+  // Validate and pay — single "Pay now" action
+  const validateAndPay = async () => {
+    if (!(await checkReadyToPay())) return;
 
     // All requirements met — submit payment
     if (!paymentRef.current) {
@@ -777,6 +815,7 @@ function CheckoutPageContentInner({
             processing={processing}
             setProcessing={setProcessing}
             onSessionMethodChange={setIsSessionPayment}
+            onValidateBeforePayment={validateBeforePayment}
             errors={sectionErrors.payment}
           />
         </div>

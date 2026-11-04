@@ -111,9 +111,42 @@ export async function completeCheckoutPaymentSession(
 }
 
 /**
- * Completes the order. Treats 403 and 422 as success:
+ * How long a 422 is given to turn out to be a concurrent completion (the
+ * webhook finishing the same order) before it is believed. Not exported: a
+ * "use server" module may export async functions only.
+ */
+const INCOMPLETE_RECHECK_MS = 1500;
+
+/**
+ * After a 422 from complete: is the cart still sitting there unfinished?
+ *
+ * A 422 has two meanings and only one of them is success. A concurrent request
+ * that completed the order first answers 422 (state_lock_version), and so does
+ * an order that cannot complete at all: Spree's carts#complete renders
+ * "Could not complete checkout" as 422 when the order has no address or no
+ * delivery. Reading every 422 as success sent that second customer on to the
+ * thank-you page with their money taken and no order behind it
+ * (docs/DISCOVERIES.md §84). So look: a completed order no longer reads as a
+ * cart, an unfinished one does. One recheck covers the race with the webhook.
+ */
+async function cartStillUnfinished(
+  cartId: string,
+  surface: Surface,
+): Promise<boolean> {
+  const unfinished = async () => {
+    const cart = await getCart(cartId, surface).catch(() => null);
+    return Boolean(cart && cart.current_step !== "complete");
+  };
+  if (!(await unfinished())) return false;
+  await new Promise((resolve) => setTimeout(resolve, INCOMPLETE_RECHECK_MS));
+  return unfinished();
+}
+
+/**
+ * Completes the order. Treats as success:
  * - 403 = cart already completed (e.g. webhook handler completed it)
- * - 422 = state_lock_version conflict (concurrent request)
+ * - 422 = state_lock_version conflict (concurrent request), but only once the
+ *   cart is confirmed gone; a cart still unfinished after a 422 is a failure
  *
  * When the order was already completed (403/422), fetch it from the API
  * so the caller always gets the order data for caching on the thank-you page.
@@ -135,6 +168,15 @@ export async function completeCheckoutOrder(
   } catch (error: unknown) {
     if (error && typeof error === "object" && "status" in error) {
       const status = (error as { status: number }).status;
+      if (status === 422 && (await cartStillUnfinished(cartId, surface))) {
+        return {
+          success: false as const,
+          error:
+            error instanceof Error && error.message
+              ? error.message
+              : "Failed to complete order",
+        };
+      }
       if (status === 403 || status === 422) {
         // Order already completed — try to fetch it so the thank-you page
         // can cache and display it without a second round-trip.

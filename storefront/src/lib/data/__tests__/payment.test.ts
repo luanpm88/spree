@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockClient = {
   carts: {
@@ -162,15 +162,75 @@ describe("payment server actions", () => {
       expect(result).toEqual({ success: true, order: null });
     });
 
-    it("treats 422 as success (state_lock_version conflict)", async () => {
+    it("treats 422 as success once the cart is gone (state_lock_version conflict)", async () => {
       const spreeError = Object.assign(new Error("Unprocessable Content"), {
         status: 422,
       });
       mockClient.carts.complete.mockRejectedValue(spreeError);
+      // A completed order no longer reads as a cart.
+      mockClient.carts.get.mockRejectedValue(
+        Object.assign(new Error("Not found"), { status: 404 }),
+      );
 
       const result = await completeCheckoutOrder("cart-1");
 
       expect(result).toEqual({ success: true, order: null });
+    });
+
+    describe("a 422 from an order that cannot complete", () => {
+      // Spree's carts#complete answers "Could not complete checkout" with 422
+      // when the order has no address or delivery. Reading that as success sent
+      // a customer whose PayPal money had been taken on to the thank-you page
+      // with no order behind it (DISCOVERIES §84).
+      const cannotComplete = Object.assign(
+        new Error("Could not complete checkout"),
+        { status: 422 },
+      );
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+        // clearAllMocks keeps queued Once values; an unconsumed one would leak
+        // into the next describe's tests.
+        mockClient.carts.get.mockReset();
+        mockClient.carts.complete.mockReset();
+      });
+
+      it("is a failure while the cart is still unfinished after the recheck", async () => {
+        mockClient.carts.complete.mockRejectedValue(cannotComplete);
+        mockClient.carts.get.mockResolvedValue({
+          id: "cart-1",
+          current_step: "address",
+        });
+
+        const pending = completeCheckoutOrder("cart-1");
+        await vi.advanceTimersByTimeAsync(2000);
+        const result = await pending;
+
+        expect(result).toEqual({
+          success: false,
+          error: "Could not complete checkout",
+        });
+        // Looked twice: once at once, once after giving a webhook time to land.
+        expect(mockClient.carts.get).toHaveBeenCalledTimes(2);
+      });
+
+      it("is a success when the webhook completes it during the recheck", async () => {
+        mockClient.carts.complete.mockRejectedValue(cannotComplete);
+        mockClient.carts.get
+          .mockResolvedValueOnce({ id: "cart-1", current_step: "payment" })
+          .mockRejectedValueOnce(
+            Object.assign(new Error("Not found"), { status: 404 }),
+          );
+
+        const pending = completeCheckoutOrder("cart-1");
+        await vi.advanceTimersByTimeAsync(2000);
+        const result = await pending;
+
+        expect(result).toMatchObject({ success: true });
+      });
     });
 
     it("returns error on non-403 failure", async () => {

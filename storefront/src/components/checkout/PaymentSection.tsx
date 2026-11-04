@@ -38,6 +38,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useCountryStates } from "@/hooks/useCountryStates";
 import { useReachedPaymentStep } from "@/hooks/useReachedPaymentStep";
+import { getCheckoutOrder } from "@/lib/data/checkout";
 import { getCreditCards } from "@/lib/data/credit-cards";
 import {
   createCheckoutPaymentSession,
@@ -53,6 +54,24 @@ import {
 import { getCardIconType, getCardLabel } from "@/lib/utils/credit-card";
 import { extractBasePath } from "@/lib/utils/path";
 import { resolveGatewayId } from "@/lib/utils/payment-gateway";
+import {
+  checkPayPalCapture,
+  checkPayPalStart,
+  type PayPalGuardResult,
+  toCents,
+} from "@/lib/utils/paypal-guard";
+
+/** The message a customer reads when PayPal is refused, per reason. */
+const PAYPAL_REFUSAL_KEY = {
+  already_paid: "paymentAlreadyReceived",
+  steps_missing: "paypalStepsMissing",
+  credit_applied: "paypalCreditApplied",
+  no_total: "paypalStartAgain",
+  total_changed: "paypalTotalChanged",
+} as const satisfies Record<
+  Extract<PayPalGuardResult, { ok: false }>["reason"],
+  string
+>;
 
 /**
  * Whether to print Stripe's test card number under the card option.
@@ -130,6 +149,13 @@ interface PaymentSectionProps {
   processing: boolean;
   setProcessing: (processing: boolean) => void;
   onSessionMethodChange?: (isSessionBased: boolean) => void;
+  /**
+   * The checks the "Pay now" button runs before paying: policy consent, and no
+   * address or delivery step left. Shows its own errors and resolves false when
+   * something is missing. Approval-driven buttons that pay without "Pay now"
+   * (PayPal) must run it too.
+   */
+  onValidateBeforePayment?: () => Promise<boolean>;
   errors?: string[];
 }
 
@@ -144,6 +170,7 @@ export function PaymentSection({
   processing,
   setProcessing,
   onSessionMethodChange,
+  onValidateBeforePayment,
   errors,
 }: PaymentSectionProps) {
   const t = useTranslations("checkout");
@@ -552,6 +579,163 @@ export function PaymentSection({
     },
     [
       paymentSessionId,
+      useShippingForBilling,
+      billAddress,
+      onUpdateBillingAddress,
+      onPaymentComplete,
+      setProcessing,
+      t,
+    ],
+  );
+
+  // ── PayPal: checked at the click, created at the click, checked again ──
+  // before the capture. lib/utils/paypal-guard.ts has the three live orders
+  // that went wrong without this. The session made when the box scrolled into
+  // view only draws the buttons; the PayPal order the customer approves is the
+  // one made at the click, for the total as it is then, and it is captured only
+  // if the order still totals exactly that.
+  const onValidateRef = useRef(onValidateBeforePayment);
+  onValidateRef.current = onValidateBeforePayment;
+  const paypalOrderRef = useRef<{
+    sessionId: string;
+    paypalOrderId: string;
+    amount: string;
+  } | null>(null);
+  // Bumped to remount the PayPal buttons once an approved order is spent.
+  const [paypalAttempt, setPaypalAttempt] = useState(0);
+
+  const handlePayPalClick = useCallback(async (): Promise<boolean> => {
+    if (completionInFlightRef.current) return false;
+    setGatewayError(null);
+    const validate = onValidateRef.current;
+    return validate ? validate() : true;
+  }, []);
+
+  const createPayPalOrder = useCallback(async (): Promise<string> => {
+    paypalOrderRef.current = null;
+    if (!selectedMethod) throw new Error(t("selectPaymentMethod"));
+
+    const fresh = await getCheckoutOrder(cart.id);
+    if (!fresh) throw new Error(t("paypalStartAgain"));
+    const verdict = checkPayPalStart(fresh);
+    if (!verdict.ok) throw new Error(t(PAYPAL_REFUSAL_KEY[verdict.reason]));
+
+    const basePath = extractBasePath(window.location.pathname);
+    const result = await createCheckoutPaymentSession(
+      cart.id,
+      selectedMethod.id,
+      {
+        return_url: `${window.location.origin}${basePath}/confirm-payment/${cart.id}`,
+      },
+    );
+    if (!result.success) {
+      throw new Error(result.error || t("failedToCreateSession"));
+    }
+    const session = result.session;
+    const paypalOrderId = session?.external_data?.id;
+    if (!session || typeof paypalOrderId !== "string" || !paypalOrderId) {
+      throw new Error(t("failedToInitPayment"));
+    }
+    // The gateway builds PayPal's amount from the order total at this moment,
+    // and the session reports the same figure. If the two disagree, the order
+    // moved between the reads, and PayPal must not be shown either of them.
+    if (toCents(session.amount) !== toCents(fresh.total)) {
+      throw new Error(t("paypalTotalChanged"));
+    }
+    paypalOrderRef.current = {
+      sessionId: session.id,
+      paypalOrderId,
+      amount: session.amount,
+    };
+    return paypalOrderId;
+  }, [cart.id, selectedMethod, t]);
+
+  const handlePayPalApproved = useCallback(
+    async (paypalOrderId: string) => {
+      if (completionInFlightRef.current) return;
+
+      // One capture per PayPal order: whatever happens next, this one is spent.
+      const pending = paypalOrderRef.current;
+      paypalOrderRef.current = null;
+
+      // Nothing is captured on any refusal. An approved PayPal order that is
+      // never captured takes no money and expires on PayPal's side.
+      // Every refusal happens before the capture, so the customer may try
+      // again: the lock is released and the buttons start over.
+      const refuse = (
+        key:
+          | (typeof PAYPAL_REFUSAL_KEY)[keyof typeof PAYPAL_REFUSAL_KEY]
+          | "failedToSaveBilling"
+          | "paymentError",
+      ) => {
+        setGatewayError(t(key));
+        setProcessing(false);
+        setPaypalAttempt((n) => n + 1);
+        completionInFlightRef.current = false;
+      };
+
+      if (!pending || pending.paypalOrderId !== paypalOrderId) {
+        refuse("paypalStartAgain");
+        return;
+      }
+
+      completionInFlightRef.current = true;
+      setProcessing(true);
+      setGatewayError(null);
+      let captureRequested = false;
+
+      try {
+        let addressSuccess: boolean;
+        if (useShippingForBilling) {
+          addressSuccess = await onUpdateBillingAddress({ use_shipping: true });
+        } else {
+          addressSuccess = await onUpdateBillingAddress({
+            billing_address: formDataToAddress(billAddress),
+          });
+        }
+        if (!addressSuccess) {
+          refuse("failedToSaveBilling");
+          return;
+        }
+
+        // Read the order as it stands after the billing save, which is the
+        // order the capture will be recorded against.
+        const fresh = await getCheckoutOrder(cart.id);
+        const verdict: PayPalGuardResult = fresh
+          ? checkPayPalCapture(fresh, pending.amount)
+          : { ok: false, reason: "no_total" };
+        if (!verdict.ok) {
+          refuse(PAYPAL_REFUSAL_KEY[verdict.reason]);
+          // Point at the section that is missing, the way "Pay now" does.
+          if (verdict.reason === "steps_missing") {
+            await onValidateRef.current?.();
+          }
+          return;
+        }
+
+        captureRequested = true;
+        await onPaymentComplete({
+          type: "session",
+          sessionId: pending.sessionId,
+        });
+        // Deliberately still locked. From here the capture may have happened
+        // even when completing the order then failed, and onPaymentComplete
+        // reports its failures on the page rather than by throwing. Unlocking
+        // would let the next click create a fresh PayPal order and charge the
+        // customer a second time. Success leaves the page anyway; a reload
+        // starts over, and the guard then refuses a cart that already holds a
+        // payment (hasTakenPayment).
+      } catch {
+        if (captureRequested) {
+          setGatewayError(t("paymentError"));
+          setProcessing(false);
+        } else {
+          refuse("paymentError");
+        }
+      }
+    },
+    [
+      cart.id,
       useShippingForBilling,
       billAddress,
       onUpdateBillingAddress,
@@ -1027,11 +1211,13 @@ export function PaymentSection({
                               return orderId ? (
                                 <div className="p-4">
                                   <PayPalPaymentForm
-                                    key={orderId}
+                                    key={`${orderId}:${paypalAttempt}`}
                                     paypalOrderId={orderId}
                                     currency={cart.currency}
                                     onReady={handleGatewayReady}
-                                    onApproved={handleGatewayApproved}
+                                    onClick={handlePayPalClick}
+                                    createOrder={createPayPalOrder}
+                                    onApproved={handlePayPalApproved}
                                   />
                                 </div>
                               ) : null;
