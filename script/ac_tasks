@@ -36,11 +36,19 @@ if (taskId) {
     let t
     try { t = await api(`/projects/${p.id}/tasks/${taskId}`) } catch { continue }
     const s = t.single || t
-    console.log(`#${s.task_number} ${s.name}  (${p.name}, created ${day(s.created_on)})\n`)
+    // The tracker answers /projects/<any>/tasks/<id> with the task wherever it lives, so
+    // the loop's first project is not the task's project. Read its own project_id.
+    const own = projects.find((x) => x.id === s.project_id) || p
+    console.log(`#${s.task_number} ${s.name}  (${own.name}, created ${day(s.created_on)})\n`)
     console.log(text(s.body))
-    for (const a of s.attachments || []) console.log(`  [attachment] ${a.name}`)
+    for (const a of s.attachments || []) console.log(`  [attachment] ${a.name} (${Math.round((a.size || 0) / 1024)} KB)`)
+    console.log(`  task page:  ${URL}/projects/${own.id}?modal=Task-${s.id}-${own.id}`)
+    console.log(`  files page: ${URL}/projects/${own.id}/files`)
     const comments = (await api(`/comments/task/${taskId}`)).filter((c) => !c.is_trashed).sort((a, b) => a.created_on - b.created_on)
-    for (const c of comments) console.log(`\n--- ${day(c.created_on)} ${c.created_by_name || c.created_by_id}\n${text(c.body)}`)
+    for (const c of comments) {
+      console.log(`\n--- ${day(c.created_on)} ${c.created_by_name || c.created_by_id}\n${text(c.body)}`)
+      for (const a of c.attachments || []) console.log(`  [attachment] ${a.name} (${Math.round((a.size || 0) / 1024)} KB)`)
+    }
     process.exit(0)
   }
   console.error(`task ${taskId} not found in any project this token can see`); process.exit(1)
@@ -91,7 +99,10 @@ if (process.argv.includes('--changes')) {
       // luôn luôn"). Without a previous look, the latest one only.
       const cs = (await api(`/comments/task/${r.id}`)).filter((c) => !c.is_trashed).sort((a, b) => a.created_on - b.created_on)
       const fresh = sinceTs ? cs.filter((c) => c.created_on > sinceTs) : cs.slice(-1)
-      for (const c of fresh) last += `\n      comment ${day(c.created_on)} ${c.created_by_name || c.created_by_id}: ${text(c.body).replace(/\s+/g, ' ').slice(0, 600)}`
+      // A file on a comment is part of the message ("see screenshot"), and the token
+      // cannot download it, so name it: whoever reads this fetches it by hand.
+      for (const c of fresh) last += `\n      comment ${day(c.created_on)} ${c.created_by_name || c.created_by_id}: ${text(c.body).replace(/\s+/g, ' ').slice(0, 600)}` +
+        (c.attachments || []).map((a) => `\n        [file to download] ${a.name} (${Math.round((a.size || 0) / 1024)} KB)`).join('')
     }
     console.log(`  ${r.why.padEnd(18)} ${day(r.updated)}  ${r.p} #${r.n} (id ${r.id}) ${r.name}${last}`)
   }
