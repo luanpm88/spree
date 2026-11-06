@@ -18,3 +18,4 @@ en:
       order_date: Date
       payment_status: Payment
       printed_on: "Printed %{date}"
+      discount: Discount

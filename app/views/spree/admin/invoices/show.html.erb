@@ -189,7 +189,11 @@
               <td><%= item.name %></td>
               <td class="num"><%= item.quantity %></td>
               <td class="num"><%= item.display_price %></td>
-              <td class="num"><%= item.display_total %></td>
+              <%# Price times quantity, so the column adds up to the Subtotal below. LineItem#total
+                  in Spree 5.6 is amount + adjustment_total, which would already take a product
+                  discount off here while the Subtotal does not, and the discount row below would
+                  then look like it had been taken twice. %>
+              <td class="num"><%= item.display_amount %></td>
             </tr>
           <% end %>
         </tbody>
@@ -200,19 +204,41 @@
           <td class="k"><%= Spree.t(:subtotal) %></td>
           <td class="num"><%= @order.display_item_total %></td>
         </tr>
-        <%# Every eligible adjustment, by its own label, rather than a guessed set of rows.
-            A promotion, a manual discount and a hand-entered freight charge all arrive
-            here, and the quoted-shipping design in DESIGN/PLAN adds more. %>
-        <% @order.adjustments.eligible.each do |adjustment| %>
+        <tr>
+          <td class="k"><%= Spree.t(:shipping) %></td>
+          <td class="num"><%= @order.display_ship_total %></td>
+        </tr>
+        <%# Every discount, wherever Spree hangs it. This used to read @order.adjustments,
+            which are only the ones on the order itself. A free-shipping coupon sits on the
+            shipment and a product discount on the line item, so an invoice with a coupon on
+            delivery printed the full delivery charge, no discount, and a total that did not
+            add up (6 Nov: 74.66 of goods + 30.43 delivery - 30.43 coupon printed as 74.66).
+
+            One row per promotion, all its adjustments summed, named with the code the
+            customer typed, so he can match the invoice to the coupon. %>
+        <% adjustments = @order.all_adjustments.eligible.includes(:source).to_a %>
+        <% adjustments.select(&:promotion?).group_by { |a| a.source.try(:promotion) }.each do |promotion, rows| %>
+          <%
+            name = promotion&.name.presence || rows.first.label
+            applied = promotion && @order.order_promotions.detect { |op| op.promotion_id == promotion.id }
+            code = applied.try(:promotion_code).try(:value).presence || promotion.try(:code).presence
+            code = nil if code && code.to_s.casecmp?(name.to_s)
+          %>
+          <tr>
+            <td class="k"><%= Spree.t(:discount, scope: :admin_invoice, default: 'Discount') %>: <%= name %><%= " (#{code})" if code %></td>
+            <td class="num"><%= Spree::Money.new(rows.sum(&:amount), currency: @order.currency) %></td>
+          </tr>
+        <% end %>
+        <%# Anything else that changes the total and is not tax or a promotion: a manual
+            adjustment or a hand-entered freight charge, on the order or on a line. Tax has
+            its own row below. Picked in Ruby, because SQL NOT IN drops the manual ones,
+            whose source_type is NULL. %>
+        <% adjustments.reject { |a| a.promotion? || a.source_type == 'Spree::TaxRate' }.each do |adjustment| %>
           <tr>
             <td class="k"><%= adjustment.label %></td>
             <td class="num"><%= adjustment.display_amount %></td>
           </tr>
         <% end %>
-        <tr>
-          <td class="k"><%= Spree.t(:shipping) %></td>
-          <td class="num"><%= @order.display_ship_total %></td>
-        </tr>
         <% if @order.additional_tax_total.to_f.positive? %>
           <tr>
             <td class="k"><%= Spree.t(:tax) %></td>
