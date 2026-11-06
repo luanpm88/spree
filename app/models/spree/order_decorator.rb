@@ -44,6 +44,13 @@ module Spree
       # the rest of the number is built: same length, same alphabet, same
       # collision handling.
       base.include Spree::Core::NumberGenerator.new(prefix: prefix)
+
+      # Let the admin lists filter an order by its payments. Draft Orders needs it to
+      # find an unfinished order that has already been paid
+      # (config/initializers/admin_draft_orders.rb): such an order has payment_state
+      # NULL, because Spree only works payment_state out when an order completes, so
+      # the money shows only in its payments. Payment already allows `state`.
+      base.whitelisted_ransackable_associations = base.whitelisted_ransackable_associations | %w[payments]
     end
   end
 

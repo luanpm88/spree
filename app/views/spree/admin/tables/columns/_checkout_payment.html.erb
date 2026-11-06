@@ -1,0 +1,7 @@
+<%# locals: (record:, column:, value:) %>
+<%# Draft Orders: an unfinished order that has already taken money. Blank for every other
+    row, so a paid one stands out. See config/initializers/admin_draft_orders.rb. %>
+<% paid = record.payments.select(&:completed?) %>
+<% if paid.any? %>
+  <span class="badge badge-paid"><%= I18n.t('spree.payment_states.paid', default: 'Paid') %> <%= Spree::Money.new(paid.sum(&:amount), currency: record.currency) %></span>
+<% end %>
