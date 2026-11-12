@@ -358,4 +358,17 @@ for (const code of codes) {
   }
 }
 console.log(`\n${codes.length - failed - skipped} completed, ${failed} failed, ${skipped} skipped`);
+
+// The declined card leaves each walk's order unfinished, and he sees every one
+// under Orders > Draft Orders. 156 of ours had piled up across six shops by 5 Nov,
+// and on one they pushed a customer's order out of sight (DISCOVERIES §85). Same tool and guards as the
+// end of check_all; --keep leaves them for inspection. Not part of the verdict.
+if (!keep) {
+  try {
+    console.log("\n" + execFileSync(join(ROOT, "script/clear_probe_carts"), ["--min-age", "0", ...codes],
+      { encoding: "utf8", timeout: 600000 }).trimEnd());
+  } catch (e) {
+    console.log(`\n  probe carts not cleared, run script/clear_probe_carts: ${String(e.stdout || e.message).trim().slice(0, 300)}`);
+  }
+}
 process.exit(failed ? 1 : 0);

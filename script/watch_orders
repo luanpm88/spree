@@ -109,13 +109,22 @@ PROBE_WINDOW='20 minutes'
 #
 # One line, because a newline inside psql -c survives as a literal \n and psql
 # answers "invalid command \n".
+#
+# The window is anchored on our probe carts, and since 5 Nov those carts are
+# removed from his Draft Orders (script/clear_probe_carts). Removing them took the
+# anchors with them, and 20 of our own browser-walk carts across six shops came
+# back as customers. So every removed probe cart leaves its created_at in
+# PROBE_TIMES on the server, and the window is applied to those as well.
+PROBE_TIMES=/root/.estate-probe-times
 fetch() {
-  local db="$1" what="$2" q
+  local db="$1" what="$2" q anchors
   if [ "$what" = orders ]; then
     q="SELECT extract(epoch from completed_at)::bigint FROM spree_orders
        WHERE completed_at > now() - interval '$((DAYS + 10)) days'
          AND coalesce(email,'') <> '$PROBE_EMAIL' ORDER BY completed_at"
   else
+    anchors=$(run "grep '^${db%_shop}|' $PROBE_TIMES 2>/dev/null | cut -d'|' -f2 | paste -sd, -")
+    case "$anchors" in *[!0-9,]*) anchors="" ;; esac
     q="SELECT extract(epoch from o.created_at)::bigint FROM spree_orders o
        WHERE o.created_at > now() - interval '$((DAYS + 10)) days'
          AND coalesce(o.email,'') <> '$PROBE_EMAIL'
@@ -123,6 +132,9 @@ fetch() {
          AND NOT EXISTS (SELECT 1 FROM spree_orders p WHERE p.email = '$PROBE_EMAIL'
                          AND p.created_at BETWEEN o.created_at - interval '$PROBE_WINDOW'
                                               AND o.created_at + interval '$PROBE_WINDOW')
+         AND NOT EXISTS (SELECT 1 FROM unnest('{${anchors}}'::bigint[]) t
+                         WHERE to_timestamp(t) AT TIME ZONE 'UTC' BETWEEN o.created_at - interval '$PROBE_WINDOW'
+                                                                     AND o.created_at + interval '$PROBE_WINDOW')
        ORDER BY o.created_at"
   fi
   q=$(printf '%s' "$q" | tr '\n' ' ' | tr -s ' ')

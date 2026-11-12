@@ -397,6 +397,19 @@ else
   skip "browser walk of a deployed shop" "pass a host to run it: script/check_all https://host ca"
 fi
 
+# Every walk above that reached the address step left an unfinished order as
+# probe@example.test, and he sees each one under Orders > Draft Orders, newest
+# first. On 5 Nov 156 of ours sat across six shops; on one of them 27 had pushed
+# a paid customer order onto page 2, and he reported it as gone. Last, so every
+# probe has finished.
+# It records each cart's time for watch_orders before removing it, and goes red
+# on a test cart it will not touch (DISCOVERIES §85).
+if [ -f .estate ] && [ -x script/clear_probe_carts ]; then
+  run "our probe carts are cleared from his Draft Orders" script/clear_probe_carts --min-age 0
+else
+  skip "our probe carts are cleared from his Draft Orders" "no .estate on this machine"
+fi
+
 # ── result ──────────────────────────────────────────────────────────────────
 
 printf '\n%s' "$C_BLD"

@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+#
+# Remove the carts our own checkout probes leave in his Draft Orders.
+#
+#   script/clear_probe_carts                    every shop in .estate, carts idle 10+ minutes
+#   script/clear_probe_carts au nz              those shops only
+#   script/clear_probe_carts --min-age 0        also carts touched a moment ago (end of check_all)
+#   script/clear_probe_carts --dry-run          say what would go, change nothing
+#
+# ── why ─────────────────────────────────────────────────────────────────────
+#
+# check_free_checkout walks every live shop to Pay Now as probe@example.test, and
+# the other probes do the same. Each walk leaves an unfinished order, and the admin
+# lists every unfinished order under Orders > Draft Orders, newest first. On 5 Nov
+# 156 of ours sat in his Draft Orders across six shops, and on one of them 27 had
+# pushed a real customer's paid order onto page 2, where he could not find it
+# (DISCOVERIES §85). They were removed by hand that day; this keeps it that way.
+#
+# ── what it will remove, and nothing else ───────────────────────────────────
+#
+# An order with an @example.test email, not completed, no user, no payment, no
+# promotion, no adjustment, no stock reservation, no PayPal order row, nothing
+# shipped, payment sessions only pending Stripe or PayPal ones, and addresses that
+# belong to no user and no real order. A cart that fails any of those is kept and
+# named, and the exit status is 1, so a check that runs this goes red.
+#
+# Order#destroy alone is rolled back silently by Spree 5.6 on a cart with a
+# shipment (the shared test address is only soft deleted), so shipments go first
+# and the order lets go of the test addresses, which are kept for the next probe.
+#
+# ── what it keeps ───────────────────────────────────────────────────────────
+#
+# Before anything is removed, each cart's created_at goes into
+# /root/.estate-probe-times on the server. watch_orders anchors its "this cart was
+# ours" window on our probe carts, and removing them without that record turned 20
+# of our own browser-walk carts back into customers (5 Nov). Each removed row is
+# also appended to /root/sf-geo/probe-carts-removed.log.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+[ -f .estate ] || { echo "no .estate on this machine"; exit 1; }
+set -a; . ./.estate.env; set +a
+SSH_KEY="${SSH_KEY/#\~/$HOME}"; SSH_KEY="${SSH_KEY/\$HOME/$HOME}"
+
+DRY=0; MIN_AGE=10; SHOPS=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1 ;;
+    --min-age) MIN_AGE="${2:?--min-age needs minutes}"; shift ;;
+    -*) echo "unknown flag: $1"; exit 2 ;;
+    *) SHOPS="$SHOPS $1" ;;
+  esac
+  shift
+done
+case "$MIN_AGE" in ''|*[!0-9]*) echo "--min-age takes whole minutes"; exit 2 ;; esac
+# Shop rows only: .estate also carries settings such as LIVE_DOMAINS=.
+[ -n "$SHOPS" ] || SHOPS=$(grep -E '^[a-z0-9_]+\|' .estate | cut -d'|' -f1)
+
+remote() {
+  ssh -i "$SSH_KEY" -p "${SSH_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 \
+    -o ServerAliveInterval=15 "$SSH_HOST" "$@"
+}
+
+# One Ruby program, two modes. list: every candidate, OK or KEEP with the reasons.
+# delete: the ids given, each checked again inside one transaction, all or none.
+RUBY=$(cat <<'RB'
+SESSION_TYPES = %w[Spree::PaymentSessions::Stripe Spree::PaymentSessions::PaypalCheckout]
+def reasons(o)
+  why = []
+  why << 'email' unless o.email.to_s.end_with?('@example.test')
+  why << 'completed' unless o.completed_at.nil?
+  why << 'user' unless o.user_id.nil?
+  why << 'payments' unless o.payments.empty?
+  why << 'cannot be deleted' unless o.can_be_deleted?
+  why << 'promotion' unless o.order_promotions.empty?
+  why << 'adjustment' unless o.all_adjustments.empty?
+  why << 'reservation' if o.respond_to?(:stock_reservations) && o.stock_reservations.exists?
+  why << 'paypal order row' if o.respond_to?(:paypal_checkout_orders) && o.paypal_checkout_orders.exists?
+  why << 'shipped' if o.shipments.any? { |s| s.shipped? || Spree::StockMovement.where(originator: s).exists? }
+  why << 'session' unless o.payment_sessions.all? { |s| s.status == 'pending' && SESSION_TYPES.include?(s.type) }
+  addr = [o.bill_address_id, o.ship_address_id].compact
+  why << 'address owned by a user' if Spree::Address.unscoped.where(id: addr).where.not(user_id: nil).exists?
+  others = Spree::Order.where.not(id: o.id).where('bill_address_id IN (:a) OR ship_address_id IN (:a)', a: addr.presence || [0])
+  why << 'address shared with a real order' unless others.all? { |x| x.email.to_s.end_with?('@example.test') && x.completed_at.nil? }
+  why
+end
+case ENV.fetch('MODE')
+when 'list'
+  Spree::Order.where('email LIKE ?', '%@example.test').where(completed_at: nil)
+              .where('updated_at < ?', ENV.fetch('MIN_AGE').to_i.minutes.ago).order(:id).each do |o|
+    why = reasons(o)
+    puts(why.empty? ? "OK|#{o.id}|#{o.number}|#{o.email}|#{o.created_at.to_i}" : "KEEP|#{o.id}|#{o.number}|#{why.join(', ')}")
+  end
+  puts 'LISTED|'
+when 'delete'
+  want = ENV.fetch('IDS').split(',').map(&:to_i)
+  before = Spree::Order.where.not(completed_at: nil).count
+  ApplicationRecord.transaction do
+    want.each do |id|
+      o = Spree::Order.find(id)
+      why = reasons(o)
+      raise "refusing #{id} #{o.number}: #{why.join(', ')}" if why.any?
+      o.shipments.each(&:destroy!)
+      o.update_columns(bill_address_id: nil, ship_address_id: nil)
+      o.reload.destroy!
+      raise "#{id} still there" if Spree::Order.exists?(id)
+    end
+    raise "completed orders moved: #{before} -> #{Spree::Order.where.not(completed_at: nil).count}" unless Spree::Order.where.not(completed_at: nil).count == before
+  end
+  puts "DONE|#{want.size}"
+end
+RB
+)
+
+status=0
+for shop in $SHOPS; do
+  out=$(printf '%s\n' "$RUBY" | remote "docker exec -i -e MODE=list -e MIN_AGE=$MIN_AGE ${shop}_web bin/rails runner - 2>&1")
+  if ! printf '%s\n' "$out" | grep -q '^LISTED|'; then
+    echo "  $shop  could not read the shop: $(printf '%s\n' "$out" | grep -iE 'error|denied|no such' | head -1 | cut -c1-160)"
+    status=1; continue
+  fi
+  ok=$(printf '%s\n' "$out" | grep '^OK|' || true)
+  keep=$(printf '%s\n' "$out" | grep '^KEEP|' || true)
+  [ -n "$keep" ] && { printf '%s\n' "$keep" | awk -F'|' -v s="$shop" '{ printf "  %s  kept %s (id %s): %s\n", s, $3, $2, $4 }'; status=1; }
+  if [ -z "$ok" ]; then echo "  $shop  no probe cart to clear"; continue; fi
+  n=$(printf '%s\n' "$ok" | grep -c .)
+  ids=$(printf '%s\n' "$ok" | cut -d'|' -f2 | paste -sd, -)
+  if [ "$DRY" -eq 1 ]; then
+    echo "  $shop  would clear $n: $(printf '%s\n' "$ok" | cut -d'|' -f3 | paste -sd' ' -)"
+    continue
+  fi
+  # The record first, so a removal that half happens still leaves its anchor.
+  # R lines: one per removed cart, for the log. A lines: the watch_orders anchors,
+  # which it only takes from probe@example.test, the email its window is built on.
+  stamp=$(date -u +%Y-%m-%dT%H:%MZ)
+  lines=$(printf '%s\n' "$ok" | awk -F'|' -v s="$shop" -v t="$stamp" '
+    { print "R " t "|" s "|" $2 "|" $3 "|" $4 "|" $5 }
+    $4 == "probe@example.test" { print "A " s "|" $5 }')
+  if ! printf '%s\n' "$lines" | remote 'set -e
+      f=/root/.estate-probe-times
+      [ -f "$f" ] || echo "# shop|epoch: created_at of each probe@example.test cart removed (script/clear_probe_carts), read by watch_orders" > "$f"
+      while IFS= read -r l; do
+        case "$l" in "R "*) echo "${l#R }" >> /root/sf-geo/probe-carts-removed.log ;; "A "*) echo "${l#A }" >> "$f" ;; esac
+      done'; then
+    echo "  $shop  could not write the record on the server, nothing removed"; status=1; continue
+  fi
+  res=$(printf '%s\n' "$RUBY" | remote "docker exec -i -e MODE=delete -e IDS=$ids ${shop}_web bin/rails runner - 2>&1" | grep -E '^DONE\||refusing|still there|moved|Error' | head -3)
+  case "$res" in
+    DONE\|*) echo "  $shop  cleared $n: $(printf '%s\n' "$ok" | cut -d'|' -f3 | paste -sd' ' -)" ;;
+    *) echo "  $shop  removal rolled back, nothing removed: $res"; status=1 ;;
+  esac
+done
+exit $status
