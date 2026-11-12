@@ -3,6 +3,17 @@
 //
 //   script/ac_comment 1 draft.md           preview only, sends nothing
 //   script/ac_comment 1 draft.md --send    actually post it
+//   script/ac_comment 1 draft.md --as huy --env .env.ac_huy --send
+//                                          --as names who must be posting; the token's own user is
+//                                          checked against it and nothing is sent on a mismatch
+//   … --off-assignment                    post on a task the poster is not assigned to (e.g.
+//                                          Luan answering a question put to him on Huy's task);
+//                                          refused without it
+//   script/ac_comment 1 draft.md --send --attach report.pdf
+//                                          attach a file (repeat --attach for more)
+//   … --hold-if-new-since <unix time>      exit 3 and send nothing when someone else has commented on
+//                                          the task since then (script/ac_queue passes the time it
+//                                          queued the reply)
 //   script/ac_comment 1 draft.md --env .env.ac_team --project 2
 //                                          another site and project (default
 //                                          .env.activecollab, project 264). The client
@@ -18,7 +29,7 @@
 // to the client, which is how the first one went out. See docs/DISCOVERIES.md.
 
 import { readFileSync, existsSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline/promises'
 
@@ -32,11 +43,13 @@ const die = (m) => { console.error(`${C.red}error${C.off} ${m}`); process.exit(1
 
 const args = process.argv.slice(2)
 const SEND = args.includes('--send')
-const VALUED = ['--env', '--project']
+const VALUED = ['--env', '--project', '--attach', '--as', '--hold-if-new-since']
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined }
 const ENV_PATH = resolve(ROOT, flag('--env') || '.env.activecollab')
 const PROJECT_ID = flag('--project') || process.env.ACTIVECOLLAB_PROJECT_ID || '264'
 const [task, file] = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]))
+const ATTACH = args.filter((a, i) => args[i - 1] === '--attach')
+for (const path of ATTACH) if (!existsSync(path)) die(`no such file to attach: ${path}`)
 if (!task || !file) die('usage: script/ac_comment <task-number|task-id> <file.md> [--env .env.x --project <id>] [--send]')
 if (!existsSync(file)) die(`no such file: ${file}`)
 
@@ -126,6 +139,19 @@ function toHtml(md) {
   return out.join('\n')
 }
 
+// ── who is posting ──────────────────────────────────────────────────────────
+// Two people post on the team tracker from this machine: Luan (shop and 6.0 tasks) and Huy
+// (landing tasks, his own token in .env.ac_huy since 12 Nov 2026). A comment under the wrong
+// name cannot be taken back in the client's eyes, so on the team site --as is required and must
+// match the user the token belongs to.
+const AS = flag('--as')
+const session = await api('/user-session').catch(() => null)
+const meId = session?.logged_user_id ?? session?.user_id ?? null
+const me = meId ? await api(`/users/${meId}`).then((u) => u.single ?? u).catch(() => null) : null
+const meName = me?.display_name || [me?.first_name, me?.last_name].filter(Boolean).join(' ') || `user ${meId}`
+if (/\.env\.ac_(team|huy)$/.test(ENV_PATH) && !AS) die(`say who is posting: --as luan or --as huy (this token is ${meName})`)
+if (AS && !meName.toLowerCase().includes(AS.toLowerCase())) die(`--as ${AS} but this token belongs to ${meName}. Nothing sent. Use the other --env.`)
+
 // ── resolve the task ────────────────────────────────────────────────────────
 
 const payload = await api(`/projects/${PROJECT_ID}/tasks`)
@@ -135,6 +161,33 @@ const target = tasks.find((t) => String(t.task_number) === String(task)) ||
 if (!target) {
   die(`no open task matching "${task}" in project ${PROJECT_ID}\n  open tasks: ` +
       tasks.map((t) => `#${t.task_number} (${t.id}) ${t.name}`).join('\n              '))
+}
+
+// Second lock against the wrong account (Luan, 12 Nov 2026: "tuyệt đối ko được nhầm 2 acc"): on
+// the team site the poster must be one of the task's assignees, unless --off-assignment says the
+// exception is meant. Luan's answer to a question put to him on Huy's task is such an exception;
+// Huy posting on a task that is not his never should be.
+const full = await api(`/projects/${PROJECT_ID}/tasks/${target.id}`).then((t) => t.single ?? t)
+const assignees = full.assignee_ids?.length ? full.assignee_ids : [full.assignee_id].filter(Boolean)
+const OFF = args.includes('--off-assignment')
+if (AS && meId && !assignees.includes(meId) && !OFF) {
+  const names = await Promise.all(assignees.map((id) => api(`/users/${id}`).then((u) => (u.single ?? u).display_name).catch(() => `user ${id}`)))
+  die(`${meName} is not assigned to task #${target.task_number} (assigned: ${names.join(', ') || 'nobody'}). Nothing sent.\n` +
+      `  If ${meName} really is meant to post here, add --off-assignment.`)
+}
+
+// A queued reply (script/ac_queue) goes out up to hours after it was written. If someone else has
+// commented on the task since, the reply may answer a question that has moved on, so it is held
+// for a human to read instead of posted. Exit 3 means held, nothing sent.
+const SINCE = Number(flag('--hold-if-new-since') || 0)
+if (SINCE) {
+  const thread = await api(`/comments/task/${target.id}`).then((r) => r.comments || r).catch(() => null)
+  if (!Array.isArray(thread)) { console.error(`${C.red}held${C.off} could not read the thread to check for new comments; nothing sent`); process.exit(3) }
+  const newer = thread.filter((c) => c.created_on > SINCE && c.created_by_id !== meId)
+  if (newer.length) {
+    console.error(`${C.red}held${C.off} ${newer.length} new comment(s) on task #${target.task_number} since this was queued, by ${[...new Set(newer.map((c) => c.created_by_name))].join(', ')}; nothing sent`)
+    process.exit(3)
+  }
 }
 
 const md = readFileSync(file, 'utf8')
@@ -177,6 +230,10 @@ if (leaked.length) {
   console.log('')
 }
 
+console.log(`${C.bold}as      ${meName}${meId ? ` (user ${meId})` : ''}${C.off}`)
+if (ATTACH.length) console.log(`attach  ${ATTACH.map((p) => basename(p)).join(', ')}`)
+console.log('')
+
 if (!SEND) {
   console.log(`${C.dim}preview only. nothing sent.${C.off}`)
   console.log(`to post it:  script/ac_comment ${args.filter((a) => a !== '--send').join(' ')} --send`)
@@ -186,16 +243,40 @@ if (!SEND) {
 // ── send ────────────────────────────────────────────────────────────────────
 
 const rl = createInterface({ input: process.stdin, output: process.stdout })
-const answer = await rl.question(`${C.yellow}post this to the client's task? ${C.off}[y/N] `)
+const answer = await rl.question(`${C.yellow}post this to the client's task as ${meName}? ${C.off}[y/N] `)
 rl.close()
 if (!/^y(es)?$/i.test(answer.trim())) {
   console.log('not sent.')
   process.exit(0)
 }
 
+// Files go up first and the comment carries their upload codes. The form field must be named
+// `file`: `attachment` (the name in older examples) answers 200 with an empty list and uploads
+// nothing (measured 10 Nov 2026).
+const codes = []
+for (const path of ATTACH) {
+  const form = new FormData()
+  form.append('file', new Blob([readFileSync(path)]), basename(path))
+  let up
+  try {
+    up = await fetch(`${E.ACTIVECOLLAB_URL}/api/v1/upload-files`, {
+    method: 'POST',
+    headers: { 'X-Angie-AuthApiToken': E.ACTIVECOLLAB_TOKEN, 'User-Agent': 'spree-plan-tools/1.0' },
+    body: form,
+    signal: AbortSignal.timeout(300_000), // a 4 MB report took over 2 minutes to upload on 12 Nov 2026
+  })
+  } catch (e) {
+    die(`upload of ${path} failed (${e.name}: ${e.message}); nothing was posted`)
+  }
+  const uploaded = await up.json().catch(() => [])
+  const code = (Array.isArray(uploaded) ? uploaded[0] : uploaded)?.code
+  if (!up.ok || !code) die(`upload of ${path} failed (HTTP ${up.status}); nothing was posted`)
+  codes.push(code)
+}
+
 const res = await api(`/comments/task/${target.id}`, {
   method: 'POST',
-  body: JSON.stringify({ body: html }),
+  body: JSON.stringify({ body: html, ...(codes.length ? { attach_uploaded_files: codes } : {}) }),
 })
 
 // ActiveCollab wraps a created object in { single: ... } on some endpoints and returns
@@ -203,6 +284,13 @@ const res = await api(`/comments/task/${target.id}`, {
 // that had in fact posted, which is the worst way to be wrong about a write.
 const created = res.single ?? res
 
+// Read the comment back from the tracker and say plainly whose name it carries.
+const back = created.id ? await api(`/comments/task/${target.id}`).then((r) => (r.comments || r).find((c) => c.id === created.id)).catch(() => null) : null
+if (back && back.created_by_id !== meId) {
+  console.log(`${C.red}WRONG ACCOUNT${C.off}: comment ${created.id} carries ${back.created_by_name} (user ${back.created_by_id}), not ${meName}. Tell Luan now.`)
+}
+
 console.log('')
-console.log(`${C.green}posted${C.off} comment ${created.id ?? '(id not returned)'} on Task #${target.task_number}`)
+console.log(`${C.green}posted${C.off} comment ${created.id ?? '(id not returned)'} on Task #${target.task_number} as ${back?.created_by_name ?? meName}`)
+if (codes.length) console.log(`        attached ${(created.attachments || []).map((a) => `${a.name} (${a.size} bytes)`).join(', ') || 'NOTHING: check the thread'}`)
 console.log(`${C.dim}run script/ac_sync to fold it back into the plan${C.off}`)

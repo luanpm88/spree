@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""
+Post tracker comments later, spaced out, instead of the moment they are written.
+
+    script/ac_queue add 15 draft.md --as huy --project 1 [--attach report.pdf] [--off-assignment] [--not-before 14:30]
+    script/ac_queue list                 what is waiting, and when each one goes
+    script/ac_queue run                  post the one comment that is due (launchd runs this every 5 minutes)
+    script/ac_queue cancel <id>          take one out, nothing posted
+    script/ac_queue release <id>         post a held one at the next slot after all
+    script/ac_queue install              load the launchd job (once)
+
+Why: on 11 Nov 2026 Huy posted four comments in four minutes (22:01 to 22:04), and on 12 Nov Luan
+posted five in the same minute (13:39) with Huy's three following at 13:45, 13:47 and 13:50.
+Luan: "làm thì cứ làm, việc comment hay phản hồi thì nhớ dãn cách auto chạy ko nhất thiết làm ngay",
+and Luan and Huy must never post so close together that it shows. So the work is done at once
+and the comments wait here.
+
+The rules, for every account together:
+  * the first one goes 10 to 35 minutes after it is queued, never at once;
+  * any two posts, whoever writes them, are 25 to 70 minutes apart, the gap drawn at random;
+  * only between 08:15 and 22:00 on this laptop's clock; a slot outside moves to the next morning,
+    08:15 plus up to 45 minutes;
+  * one post per run, and after each post the rest are pushed back if a laptop that slept has
+    left them bunched up;
+  * a reply is held, not posted, when someone else has commented on that task since it was queued
+    (ac_comment --hold-if-new-since), because it may answer a question that has moved on.
+
+Every post goes through script/ac_comment, so its account check (--as against the token), the
+assignee lock and the read-back of the author all still apply. `add` runs it as a dry run first
+and refuses to queue a comment that would not post. Nothing here bypasses the preview: the
+preview is printed when the comment is queued, and the queue is the decision to send it.
+"""
+import datetime as dt, fcntl, json, os, pathlib, random, re, shutil, subprocess, sys, time
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+Q = ROOT / 'tmp' / 'ac_queue'
+STATE = Q / 'state.json'
+LOG = Q / 'log.txt'
+ENV_FOR = {'luan': '.env.ac_team', 'huy': '.env.ac_huy'}
+FIRST = (10, 35)            # minutes after queueing
+GAP = (25, 70)              # minutes between any two posts
+DAY = ((8, 15), (22, 0))    # local hours a post may go out
+MORNING_JITTER = 45
+PLIST = pathlib.Path.home() / 'Library/LaunchAgents/com.luan.spree.ac-queue.plist'
+rng = random.SystemRandom()
+
+
+def log(msg):
+    Q.mkdir(parents=True, exist_ok=True)
+    line = f'{dt.datetime.now():%Y-%m-%d %H:%M:%S} {msg}'
+    with LOG.open('a') as f:
+        f.write(line + '\n')
+    print(line)
+
+
+def notify(msg):
+    subprocess.run(['osascript', '-e', f'display notification {json.dumps(msg)} with title "ac_queue"'], capture_output=True)
+
+
+def state():
+    return json.loads(STATE.read_text()) if STATE.exists() else {'last_post': 0}
+
+
+def save_state(s):
+    STATE.write_text(json.dumps(s, indent=2))
+
+
+def jobs(status=None):
+    out = []
+    for p in sorted(Q.glob('*/job.json')):
+        j = json.loads(p.read_text())
+        j['_dir'] = p.parent
+        if status is None or j['status'] in status:
+            out.append(j)
+    return sorted(out, key=lambda j: (j['due'], j['id']))
+
+
+def save(j):
+    d = j.pop('_dir')
+    (d / 'job.json').write_text(json.dumps(j, indent=2))
+    j['_dir'] = d
+
+
+def in_day(t):
+    """The same moment if it is inside posting hours, else the next morning's opening plus jitter."""
+    d = dt.datetime.fromtimestamp(t)
+    start = d.replace(hour=DAY[0][0], minute=DAY[0][1], second=0)
+    end = d.replace(hour=DAY[1][0], minute=DAY[1][1], second=0)
+    if d < start:
+        return start.timestamp() + rng.randint(0, MORNING_JITTER * 60)
+    if d > end:
+        return (start + dt.timedelta(days=1)).timestamp() + rng.randint(0, MORNING_JITTER * 60)
+    return t
+
+
+def gap():
+    return rng.randint(GAP[0] * 60, GAP[1] * 60)
+
+
+def reflow(now=None):
+    """Space every waiting job after the last post and after each other; keep each one's not-before."""
+    now = now or time.time()
+    prev = max(state()['last_post'], 0)
+    for j in jobs({'queued'}):
+        earliest = max(j['not_before'], now + 60, prev + gap() if prev else 0)
+        if j['due'] < earliest:
+            j['due'] = in_day(earliest)
+            save(j)
+        elif in_day(j['due']) != j['due']:
+            j['due'] = in_day(j['due'])
+            save(j)
+        prev = j['due']
+
+
+def ac_args(j):
+    a = ['node', str(ROOT / 'script/ac_comment'), str(j['task']), str(j['_dir'] / 'draft.md'),
+         '--env', j['env'], '--project', str(j['project']), '--as', j['as']]
+    for f in j['attach']:
+        a += ['--attach', str(j['_dir'] / f)]
+    if j.get('off_assignment'):
+        a.append('--off-assignment')
+    return a
+
+
+def parse_when(s):
+    now = dt.datetime.now()
+    for fmt in ('%H:%M', '%Y-%m-%d %H:%M'):
+        try:
+            t = dt.datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+        if fmt == '%H:%M':
+            t = now.replace(hour=t.hour, minute=t.minute, second=0)
+            if t < now:
+                t += dt.timedelta(days=1)
+        return t.timestamp()
+    sys.exit(f'--not-before: use HH:MM or "YYYY-MM-DD HH:MM", not {s!r}')
+
+
+def take(argv, name, many=False, boolean=False):
+    vals = []
+    while name in argv:
+        i = argv.index(name)
+        if boolean:
+            argv.pop(i)
+            return True
+        vals.append(argv[i + 1])
+        del argv[i:i + 2]
+    if boolean:
+        return False
+    return vals if many else (vals[0] if vals else None)
+
+
+def cmd_add(argv):
+    who = take(argv, '--as')
+    project = take(argv, '--project')
+    attach = take(argv, '--attach', many=True)
+    off = take(argv, '--off-assignment', boolean=True)
+    not_before = take(argv, '--not-before')
+    env = take(argv, '--env') or ENV_FOR.get(who or '')
+    if who not in ENV_FOR or not project or len(argv) != 2:
+        sys.exit('usage: script/ac_queue add <task> <draft.md> --as luan|huy --project <id> [--attach f]… [--off-assignment] [--not-before HH:MM]')
+    task, draft = argv
+    for f in [draft, *attach]:
+        if not pathlib.Path(f).is_file():
+            sys.exit(f'no such file: {f}')
+
+    now = time.time()
+    jid = f'{dt.datetime.now():%m%d-%H%M%S}-{who}-{task}'
+    d = Q / jid
+    d.mkdir(parents=True)
+    shutil.copy(draft, d / 'draft.md')
+    for f in attach:
+        shutil.copy(f, d / pathlib.Path(f).name)
+    j = {'id': jid, 'task': task, 'project': project, 'as': who, 'env': env, 'attach': [pathlib.Path(f).name for f in attach],
+         'off_assignment': off, 'source': str(pathlib.Path(draft).resolve()), 'queued_at': int(now),
+         'not_before': parse_when(not_before) if not_before else 0, 'status': 'queued', '_dir': d}
+    j['due'] = in_day(max(now + rng.randint(FIRST[0] * 60, FIRST[1] * 60), j['not_before']))
+
+    # The same checks as a real post, now, so a comment that would be refused never waits for hours.
+    r = subprocess.run(ac_args(j), cwd=ROOT, capture_output=True, text=True)
+    print(r.stdout, end='')
+    if r.returncode != 0:
+        shutil.rmtree(d)
+        sys.exit(f'not queued: ac_comment refused it\n{r.stderr}')
+    save(j)
+    reflow(now)
+    j = next(x for x in jobs() if x['id'] == jid)
+    log(f'queued {jid}: task #{task} as {who}, goes at {dt.datetime.fromtimestamp(j["due"]):%a %H:%M}')
+
+
+def cmd_list(_):
+    rows = jobs({'queued', 'held', 'failed'})
+    if not rows:
+        print('nothing waiting')
+        return
+    for j in rows:
+        first = (j['_dir'] / 'draft.md').read_text().strip().splitlines()[0][:70]
+        when = dt.datetime.fromtimestamp(j['due']).strftime('%a %d/%m %H:%M') if j['status'] == 'queued' else j['status'].upper()
+        att = f"  + {', '.join(j['attach'])}" if j['attach'] else ''
+        print(f"{when:<16} {j['as']:<5} p{j['project']} #{j['task']:<4} {j['id']}  {first}{att}")
+        if j.get('reason'):
+            print(f"{'':<16} {j['reason']}")
+
+
+def cmd_run(_):
+    Q.mkdir(parents=True, exist_ok=True)
+    lock = open(Q / '.lock', 'w')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return
+    now = time.time()
+    due = [j for j in jobs({'queued'}) if j['due'] <= now and in_day(now) == now]
+    if not due:
+        return
+    j = due[0]
+    r = subprocess.run(ac_args(j) + ['--send', '--hold-if-new-since', str(j['queued_at'])],
+                       cwd=ROOT, input='y\n', capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    (j['_dir'] / f'run-{int(now)}.txt').write_text(out)
+    posted = re.search(r'posted comment (\d+) on Task #(\d+) as (.+)', out)
+    if r.returncode == 3:
+        j['status'], j['reason'] = 'held', out.strip().splitlines()[-1]
+        save(j)
+        log(f'held {j["id"]}: {j["reason"]}')
+        notify(f'Held, not posted: task #{j["task"]} as {j["as"]}. Someone commented since.')
+    elif r.returncode == 0 and posted and 'WRONG ACCOUNT' not in out:
+        j['status'], j['posted_at'], j['comment_id'] = 'posted', int(time.time()), int(posted.group(1))
+        save(j)
+        s = state(); s['last_post'] = j['posted_at']; save_state(s)
+        dest = ROOT / 'tmp/archive/messages' / dt.datetime.now().strftime('%Y-%m') / f'queued-{j["id"]}'
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(j['_dir']), dest)
+        log(f'posted {j["id"]}: comment {posted.group(1)} on task #{posted.group(2)} as {posted.group(3).strip()}')
+        reflow()
+    else:
+        # Never retried by itself: a half-finished post retried blind is how a comment goes up twice.
+        j['status'], j['reason'] = 'failed', (out.strip().splitlines() or ['no output'])[-1]
+        save(j)
+        log(f'FAILED {j["id"]}: {j["reason"]}')
+        notify(f'Comment NOT posted: task #{j["task"]} as {j["as"]}. See tmp/ac_queue.')
+
+
+def find(jid):
+    for j in jobs():
+        if j['id'] == jid:
+            return j
+    sys.exit(f'no job {jid}; see script/ac_queue list')
+
+
+def cmd_cancel(argv):
+    j = find(argv[0])
+    shutil.rmtree(j['_dir'])
+    log(f'cancelled {argv[0]}')
+
+
+def cmd_release(argv):
+    j = find(argv[0])
+    j['status'], j['queued_at'], j['due'] = 'queued', int(time.time()), 0
+    j.pop('reason', None)
+    save(j)
+    reflow()
+    j = find(argv[0])
+    log(f'released {argv[0]}: goes at {dt.datetime.fromtimestamp(j["due"]):%a %H:%M}')
+
+
+def cmd_install(_):
+    path = os.environ.get('PATH', '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin')
+    PLIST.write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.luan.spree.ac-queue</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>
+  <key>ProgramArguments</key>
+  <array><string>/usr/bin/python3</string><string>{ROOT}/script/ac_queue</string><string>run</string></array>
+  <key>WorkingDirectory</key><string>{ROOT}</string>
+  <key>StartInterval</key><integer>300</integer>
+  <key>StandardOutPath</key><string>{Q}/launchd.log</string>
+  <key>StandardErrorPath</key><string>{Q}/launchd.log</string>
+</dict>
+</plist>
+''')
+    Q.mkdir(parents=True, exist_ok=True)
+    subprocess.run(['launchctl', 'unload', str(PLIST)], capture_output=True)
+    r = subprocess.run(['launchctl', 'load', str(PLIST)], capture_output=True, text=True)
+    print(r.stdout + r.stderr or f'loaded {PLIST}: runs every 5 minutes')
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in ('add', 'list', 'run', 'cancel', 'release', 'install'):
+        sys.exit(__doc__)
+    globals()['cmd_' + sys.argv[1]](sys.argv[2:])
+
+
+if __name__ == '__main__':
+    main()

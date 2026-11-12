@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""
+Rewrite client-facing drafts so they read like a person wrote them, with OpenAI's Codex (GPT).
+
+    script/voice_pass tmp/urgent/luan-6.md tmp/urgent/huy-13.md
+    script/voice_pass --as huy tmp/urgent/reply.md        # who writes it, when the file name does not say
+
+Who writes each draft comes from --as, or from a file name starting luan- or huy-.
+For every draft it writes <draft>.voice.md beside it and prints the old and the new text.
+Nothing is posted and the original is not touched: read the new text, check every fact
+against the original, run script/check_client_message, then post.
+
+Why: on 12 Nov 2026 Luan read a day of tracker comments written to a long rule set and
+said they all sounded the same ("sao nó đồng bộ thế", "loại hết mấy cái rule cứng
+ngắc", "codex gpt quản lý văn phong human like nha"). Style is now this pass; the gate
+only catches technical faults.
+
+What leaves the machine: the drafts only, with order numbers and email addresses
+replaced by placeholders before sending and put back afterwards. Nothing else from the
+repository, no client documents, no docs/VOICE.md.
+"""
+import argparse, os, re, subprocess, sys, tempfile, pathlib
+
+RUNNER = os.path.expanduser('~/.claude/skills/codex-gpt/scripts/codex_run.sh')
+PEOPLE = {
+    'luan': "Luan, who runs the development team for the client. Fluent, practical English from a Vietnamese speaker; friendly and direct; speaks for the business, decides, and asks a question only when he needs an answer.",
+    'huy': "Huy, the developer who builds the client's website pages. Casual and brief; says what he changed on the page and that the before/after report is attached; never formal, never salesy.",
+}
+MASKS = [
+    (re.compile(r'\bE[A-Z]{2}\d{9}\b'), 'ORDER'),           # shop order numbers
+    (re.compile(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+'), 'EMAIL'),  # email addresses
+]
+
+
+def mask(text, table):
+    for rx, name in MASKS:
+        def sub(m):
+            key = f'[{name}{len(table) + 1}]'
+            table[key] = m.group(0)
+            return key
+        text = rx.sub(sub, text)
+    return text
+
+
+def unmask(text, table):
+    for key, value in table.items():
+        text = text.replace(key, value)
+    return text
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--as', dest='who', choices=PEOPLE)
+    ap.add_argument('--effort', default='high')
+    ap.add_argument('--mask', action='append', default=[], metavar='WORD', help='another word to hide from OpenAI, e.g. a person\'s name; repeatable')
+    ap.add_argument('drafts', nargs='+')
+    a = ap.parse_args()
+
+    items, table = [], {}
+    for word in a.mask:
+        MASKS.append((re.compile(r'\b' + re.escape(word) + r'\b'), 'NAME'))
+    for path in a.drafts:
+        who = a.who or next((p for p in PEOPLE if os.path.basename(path).startswith(p + '-')), None)
+        if not who:
+            sys.exit(f'{path}: say who writes it (--as luan|huy, or a file name starting luan- / huy-)')
+        items.append((path, who, mask(pathlib.Path(path).read_text().strip(), table)))
+
+    blocks = '\n\n'.join(f'=== {i + 1} ({who})\n{text}' for i, (_, who, text) in enumerate(items))
+    prompt = f"""You are editing short comments posted on a project tracker for the client, who reads them on his phone.
+
+Who writes them:
+- luan: {PEOPLE['luan']}
+- huy: {PEOPLE['huy']}
+
+Rewrite each comment so it reads like that real person typed it today: natural, warm where it fits, plain words, varied. They are posted the same day, so no two may open, flow or end the same way; a normal greeting with his first name is fine, but do not repeat the same sentence shapes or closing lines across them, and do not swap one repeated habit for another (for example putting his name in every comment, or ending each one on the attachment). Some can be a single line. Contractions are fine. Keep them about as long as now or shorter.
+
+Do not change any fact: every number, date, name, page name, file name, URL, order reference, price, and every question or decision asked must stay exactly as meant. Keep placeholders like [ORDER1] or [NAME3] and mention tokens like @[Full Name](user:1) exactly as written. No markdown headings, no bullet lists unless the original has them, one line per paragraph, no em dashes, no sign-off.
+
+Reply with only the rewritten comments, in the same order, each starting with its line "=== N (person)" exactly as given.
+
+{blocks}
+"""
+    work = pathlib.Path(tempfile.mkdtemp(prefix='voice_pass-'))
+    (work / 'prompt.md').write_text(prompt)
+    out = work / 'answer.md'
+    r = subprocess.run([RUNNER, '-p', str(work / 'prompt.md'), '-C', str(work), '-m', 'gpt-6.1-sol', '-e', a.effort, '-o', str(out)],
+                       capture_output=True, text=True)
+    if not out.exists() or not out.read_text().strip():
+        sys.exit(f'no answer from Codex (exit {r.returncode}); log:\n{r.stdout[-1500:]}{r.stderr[-800:]}')
+
+    answer = out.read_text()
+    parts = re.split(r'^=== (\d+) \((\w+)\)\s*$', answer, flags=re.M)
+    got = {int(parts[i]): parts[i + 2].strip() for i in range(1, len(parts) - 2, 3)}
+    for i, (path, who, original) in enumerate(items):
+        new = got.get(i + 1)
+        if not new:
+            print(f'\n{path}: Codex returned nothing for it; keep the original.')
+            continue
+        new = unmask(new, table)
+        if any(k in new for k in table):
+            print(f'\n{path}: a placeholder survived; check by hand.')
+        dest = re.sub(r'\.md$', '', path) + '.voice.md'
+        pathlib.Path(dest).write_text(new + '\n')
+        print(f'\n=== {path} ({who})\n--- before\n{unmask(original, table)}\n--- after ({dest})\n{new}')
+
+
+if __name__ == '__main__':
+    main()

@@ -63,7 +63,8 @@ for (const p of projects) {
   const lists = Object.fromEntries((t.task_lists || []).map((l) => [l.id, l.name]))
   for (const k of t.tasks || []) {
     if (process.argv.includes('--mine') && me && k.assignee_id !== me) continue
-    rows.push({ p: p.name, n: k.task_number, id: k.id, name: k.name, list: lists[k.task_list_id] || '', updated: k.updated_on, comments: k.comments_count, assignee: k.assignee_id })
+    // A task can have several assignees; assignee_id is only the first of assignee_ids.
+    rows.push({ p: p.name, n: k.task_number, id: k.id, name: k.name, list: lists[k.task_list_id] || '', updated: k.updated_on, comments: k.comments_count, assignee: k.assignee_id, assignees: k.assignee_ids || (k.assignee_id ? [k.assignee_id] : []), body: k.body || '', author: k.created_by_id })
   }
 }
 rows.sort((a, b) => b.updated - a.updated)
@@ -72,7 +73,10 @@ if (process.argv.includes('--changes')) {
   // What was shown last time, per site, in tmp/ (gitignored): task id -> updated_on and
   // comment count. A task is reported when it is new, when updated_on moved, or when a
   // comment arrived; tasks that closed since are reported as gone from the open list.
-  const SEEN = `tmp/ac_seen-${new globalThis.URL(URL).host}.json`
+  // One "last look" per account: Luan's files keep their old names; another account on the same
+  // site (Huy's .env.ac_huy since 12 Nov 2026) keeps its own, so neither run hides the other's news.
+  const account = ['.env.activecollab', '.env.ac_team'].includes(ENV) ? '' : `-${ENV.replace(/^.*\.env\./, '')}`
+  const SEEN = `tmp/ac_seen-${new globalThis.URL(URL).host}${account}.json`
   mkdirSync('tmp', { recursive: true })
   const seen = existsSync(SEEN) ? JSON.parse(readFileSync(SEEN, 'utf8')) : null
   // The mark for next time is taken now, before anything is read, so a comment that
@@ -147,6 +151,45 @@ if (process.argv.includes('--changes')) {
     }
     console.log(`  chat messages from others since the last check: ${chatCount} (${convs.length} conversation(s))`)
     for (const l of chatLines) console.log(l)
+  }
+
+  // Teammates whose work on this site is done from here too: AC_PERSONAS="<user id>:<full name>"
+  // (comma separated) in the env file, which is gitignored, so no name lands in this public repo.
+  // Such a person works only on tasks assigned to them, and every comment that tags them gets an
+  // answer (Luan, 9 Nov 2026). Printed on every run until answered, not only when new, because a
+  // tag read once and then scrolled past is the one that goes unanswered.
+  const personas = (E.AC_PERSONAS || '').split(',').map((s) => s.trim()).filter(Boolean)
+    .map((s) => { const [id, ...rest] = s.split(':'); return { id: Number(id), name: rest.join(':').trim() } })
+    .filter((who) => who.id && who.name)
+  const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  for (const who of personas) {
+    const first = who.name.split(/\s+/)[0]
+    const tags = [
+      new RegExp(`data-user-id="${who.id}"`),
+      new RegExp(`class="[^"]*mention[^"]*"[^>]*>\\s*@?${escape(who.name)}`, 'i'),
+      new RegExp(`^(\\s|<[^>]+>)*(hi|hello|hey|dear)\\s+${escape(first)}\\b`, 'i'),
+    ]
+    const tagged = (html) => tags.some((re) => re.test(html || ''))
+    const mine = rows.filter((r) => r.assignees.includes(who.id))
+    console.log(`  ${who.name}: works only on tasks assigned to them, answers every comment that tags them`)
+    if (!mine.length) console.log('    assigned: none')
+    for (const r of mine) console.log(`    assigned  ${r.p} #${r.n} (id ${r.id}) ${r.name}`)
+    // A task whose own text addresses them but is assigned to someone else: worth knowing, and
+    // still not theirs to work on unless it is assigned.
+    for (const r of rows) {
+      if (!r.assignees.includes(who.id) && r.author !== who.id && tagged(r.body)) console.log(`    named in  ${r.p} #${r.n} (id ${r.id}) ${r.name}, not assigned`)
+    }
+    let open = 0
+    for (const r of rows) {
+      const cs = (await api(`/comments/task/${r.id}`)).filter((c) => !c.is_trashed).sort((a, b) => a.created_on - b.created_on)
+      cs.forEach((c, i) => {
+        if (c.created_by_id === who.id || !tagged(c.body)) return
+        const answered = cs.slice(i + 1).some((later) => later.created_by_id === who.id)
+        if (!answered) open++
+        console.log(`    ${answered ? 'answered ' : 'NO REPLY '} ${r.p} #${r.n} (id ${r.id}): ${day(c.created_on)} ${c.created_by_name || c.created_by_id}: ${text(c.body).replace(/\s+/g, ' ').slice(0, 160)}`)
+      })
+    }
+    if (!open) console.log('    tags waiting for a reply: none')
   }
 
   writeFileSync(SEEN, JSON.stringify({ at: runStart, tasks: now }, null, 1))

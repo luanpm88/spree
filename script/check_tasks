@@ -9,15 +9,22 @@
 #
 # Sites are whichever token files exist: .env.activecollab (the client's current
 # tracker, also synced into the plan by script/ac_sync) and .env.ac_team (the team
-# site). Mail is separate and on demand: script/mail_inbox.
+# site), both Luan's. Then each teammate account worked from here, with its own token,
+# so its chats, mentions and news are read in its own context (Luan, 12 Nov 2026):
+# .env.ac_huy (Huy, the landing pages). Mail is separate and on demand: script/mail_inbox.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 mode="--changes"; [ "${1:-}" = "--all" ] && mode=""
 found=0
-for env in .env.activecollab .env.ac_team; do
+for env in .env.activecollab .env.ac_team .env.ac_huy; do
   [ -f "$env" ] || continue
   found=1
+  [ "$env" = .env.ac_huy ] && echo "=== as Huy (his own token, .env.ac_huy): his chats, mentions and what the others did ==="
   node script/ac_tasks --env "$env" $mode || echo "  ($env: could not read; token refused or site down)"
   echo
 done
 [ "$found" = 1 ] || { echo "no ActiveCollab token files (.env.activecollab, .env.ac_team)"; exit 2; }
+# Replies written but not posted yet: they wait in script/ac_queue so that Luan and Huy never
+# post in the same few minutes (12 Nov 2026). A HELD one needs reading: someone commented since.
+echo "=== queued comments (script/ac_queue) ==="
+python3 script/ac_queue list
