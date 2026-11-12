@@ -2,21 +2,25 @@
 
 Cách deploy Spree lên production, và toàn bộ khảo sát hạ tầng phía sau nó.
 
-**Không dùng CI.** Mọi thứ chạy qua `script/deploy` từ máy bạn. Lý do và cách dùng ở
-[§3](#3-script-deploy--công-cụ-duy-nhất).
+**Không dùng CI.** Mọi thứ chạy bằng script từ máy bạn, và có ba script (§0). Lý do bỏ CI
+và cách dùng `script/deploy` ở [§3](#3-scriptdeploy-cho-máy-tham-chiếu).
 
 - Spree là gì, kiến trúc → [DESIGN.md](DESIGN.md)
 - Chạy trên máy cá nhân → [LOCAL.md](LOCAL.md)
 - Bàn giao cho khách → [HANDOVER.md](HANDOVER.md)
 
-**Trạng thái: đang chạy production.** https://spree.b-teka.com/admin ·
-https://shop.b-teka.com
+**Trạng thái: máy tham chiếu đã dừng từ 12/08/2026** để trả RAM cho máy dùng chung:
+container đã gỡ, volume và dump còn giữ, hai địa chỉ https://spree.b-teka.com/admin ·
+https://shop.b-teka.com trả 502 từ hôm đó. Từ §1 trở xuống là `script/deploy` cho máy
+này. Shop thật deploy bằng `script/shop_host` (bảy shop live, xem
+[MAINTENANCE.md](MAINTENANCE.md) §3) và `script/commercial` (§0).
 
 ---
 
 ## 0. Hai công cụ, hai loại máy
 
-Có **hai** script deploy và chúng không thay thế nhau.
+Có **ba** script deploy và chúng không thay thế nhau: hai cái trong bảng dưới, và
+`script/shop_host` cho bảy shop live (xem [MAINTENANCE.md](MAINTENANCE.md) §3).
 
 | | `script/deploy` | `script/commercial` |
 |---|---|---|
@@ -103,7 +107,7 @@ Docker chèn rule NAT **trước** ufw → app lộ thẳng ra internet dù fire
 
 ---
 
-## 3. `script/deploy` — công cụ duy nhất
+## 3. `script/deploy` cho máy tham chiếu
 
 ### Vì sao bỏ CI
 
@@ -347,7 +351,7 @@ ssh ubuntu@54.169.34.13 'cd ~/spree && docker compose -f docker-compose.prod.yml
   -T -e EMAIL=admin@b-teka.com -e PASSWORD="..." web bin/rails spree:cli:create_admin'
 ```
 
-### Repo private → server cần deploy key
+### Repo private → server cần deploy key (lúc repo còn private; giờ repo đã public)
 
 ```bash
 ssh ubuntu@54.169.34.13 'ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519_spree'

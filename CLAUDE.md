@@ -133,6 +133,11 @@ end
 action, what are we blocked on, what did we promise the client and when. When the
 user says "continue" with no other context, that file is the context.
 
+**Then, before any piece of work, `script/check_tasks`:** what is new, updated or newly
+commented on the ActiveCollab trackers since the last look (Luan's rule, 29 Oct). Work
+follows those tasks alongside his WhatsApp messages; mail on demand with
+`script/mail_inbox --redact`. Skill: `check-inbox-and-tasks`.
+
 `docs/plan.json` is the single source of truth. `docs/PLAN.md` and the dashboard are
 both generated from it, so never edit the markdown by hand.
 
@@ -146,6 +151,15 @@ script/plan check      # validate + fail if PLAN.md is stale
 Update `plan.json` as work happens: a new client message goes in `timeline`, a new
 ask goes in `waiting_on_client`, a finished task moves to `done`. Then run
 `script/plan render`. Bump `meta.updated` and `meta.revision`.
+
+The top of PLAN.md is `status`: the headline, the next action, the story so far and
+`drafts_waiting`, the drafts in `tmp/urgent/` that he has not been sent yet, in
+sending order. When the picture moves, rewrite them and set `status.as_of`; once
+the timeline runs more than three days past it, `script/plan validate` fails, and
+`check_all` with it. A sent draft moves to `tmp/archive/messages/<yyyy-mm>/` and
+comes off the list, so `tmp/urgent/` only ever holds what is still owed. On
+18 Oct the status still described 29 Aug and 27 of 51 "open" questions were long
+settled; that is what this rule is for.
 
 Dashboard: `http://admin.spree.local` (nginx vhost, re-reads the JSON every 10s).
 Verify it with `node script/check_dashboard.mjs`.
@@ -167,13 +181,21 @@ One command, seven shops, and every failure class this project has actually had.
 Run it after touching anything and on any morning somebody asks whether the shops
 are fine. `docs/MAINTENANCE.md` explains each line and what to run when one is red.
 
+`script/health` reads the seven from `.estate`. The commercial shop on its own
+server is not one of them: `script/uptime` checks that one from outside, and only
+when someone runs it. `script/health` also runs from launchd on this laptop at
+09:00 every morning and at every login, and appends each run to `tmp/health.log`,
+so the last run is at the bottom. It runs in `/Users/luan/apps/spree` and
+measures the live shops with whatever branch is checked out there: never switch
+branches in that directory (`docs/PLAN_6-0.md` P0-04).
+
 **Suspect the check before the shop.** On 28 Aug four red lines out of seven were
 the measurement being wrong, so every message names the command that reproduces it.
 
 ## Before you call anything done
 
 ```bash
-script/check_all                          # the static gates
+script/check_all                          # repo gates, plus gates that ssh into every live shop, read both backup buckets and walk each live checkout to Pay Now
 script/check_all https://<host> ca en     # those, plus a browser walk of that shop
 ```
 
@@ -182,7 +204,14 @@ passes, and do not report a shop as working until the browser walk passes: on
 17 Aug a shop rendered perfectly, answered 200 everywhere, and could not take an
 order, because every check up to then read HTML instead of clicking.
 
-The gates it runs, and the failure each one already caught here:
+The browser walk is not proof of a sale either. It stops at the cart, and between
+15 and 21 Sep three shops took no orders for five days while every gate stayed
+green (`docs/DISCOVERIES.md` §66). `node script/check_order_completes.mjs` presses
+Pay Now with Stripe's always-declined card and is not part of `check_all`.
+`script/watch_orders` compares carts started with orders finished, and is the only
+check that would have seen that gap.
+
+The gates `check_all` runs, and the failure each one already caught here:
 
 | Gate | It catches |
 |---|---|
@@ -195,6 +224,7 @@ The gates it runs, and the failure each one already caught here:
 | `check_untracked_source` | A new `.rb`/`.erb`/`.rake` the deploy leaves behind, because it sends `git ls-files`. Three times in one afternoon |
 | `script/plan check` | A stale `PLAN.md`, so the next person reads yesterday |
 | `check_storefront_e2e.mjs` | A shop that renders and cannot sell. It clicks: images decoded, row links, add to cart, the cart, formatting, old addresses |
+| `clear_probe_carts` | Last. Our own probe carts piling up in his Draft Orders: on 5 Nov 156 sat across six shops, the 27 on one of them had pushed a paid customer order onto page 2, and he reported it as gone. Red when it finds a test cart it will not touch |
 | `bin/rails emails:smoke` | Per shop, on the box. Every transactional email is built, and the rendered body is checked for raw `**` and for an unfilled `%{...}`, which I18n does not raise on and prints to the customer |
 
 **Before handing over any message the client will read:**
@@ -204,15 +234,38 @@ script/check_client_message tmp/urgent/<draft>.md      # WhatsApp
 script/check_client_message --tracker <draft>.md       # ActiveCollab
 ```
 
-It fails on hard wrapping, em dashes, the banned words, verb contractions,
-markdown in a chat message, anything that reads as money, a signoff, and over 150
-words. `docs/VOICE.md` carries the reasoning and the part no script can check:
-whether the first line is the answer, whether there is one decision, and whether
-it is true.
+It fails only on what breaks on arrival: hard wrapping, and markdown in a chat
+message. Em dashes, banned words, money words, signoffs and length print as
+warnings. It exists because a draft went over hard wrapped on 21 Sep and the
+lesson had been written down on 21 Aug. A rule that lives only in prose holds
+until the day somebody is busy.
 
-It exists because a draft went over hard wrapped on 21 Sep and the lesson had
-been written down on 21 Aug. A rule that lives only in prose holds until the day
-somebody is busy.
+**The voice is not a rule set any more.** On 12 Nov a day of tracker comments
+written to the full style rules all opened and closed the same way, and the
+client's team lead asked for the rigid rules to go. Write the content (the answer,
+the one question, the facts), then:
+
+```bash
+script/voice_pass tmp/urgent/luan-6.md tmp/urgent/huy-13.md   # the whole batch at once
+```
+
+Codex (GPT) rewrites each draft in its writer's voice (`luan-` or `huy-` file
+name, or `--as`), varied against the others, into `<draft>.voice.md`. Order
+numbers and emails are replaced before anything leaves the machine; `--mask Name`
+hides a name. Then check every fact, number, name and question against the
+original, because GPT never has the last word, run the gate, and queue it:
+
+```bash
+script/ac_queue add 15 tmp/urgent/huy-15.voice.md --as huy --project 1 --attach report.pdf
+script/ac_queue list
+```
+
+Comments are not posted the moment the work is done. On 12 Nov five went up in
+one minute from one account and three more from the other within eleven minutes
+after it. The queue posts one at a time, 25 to 70 minutes apart whoever writes
+them, in working hours only, from launchd, and holds a reply when someone has
+commented on that task since it was queued.
+`docs/VOICE.md` is background on the reader, not a checklist.
 
 **Measure, never infer.** Every claim in a message to the client is something that
 was run, not something the code implies. Twice on 17 Aug a measurement was wrong
@@ -290,7 +343,7 @@ python3 script/pull_page_copy.py https://<his-shop>/pages/about
 ## Building a shop's storefront
 
 ```bash
-script/shop_host storefront <shop>    # override file, both vhosts, certificates, build, start
+script/shop_host storefront <shop> --live   # a live shop: build on its real name. Without --live it builds against the pre-cutover review name and every content page answers 500 (docs/MAINTENANCE.md §3)
 script/shop_host admin_image <shop>   # his picture on the admin sign-in screen
 ```
 
@@ -308,13 +361,15 @@ running system, not what the upstream docs claim. Index: `docs/README.md`.
 | | |
 |---|---|
 | `docs/PLAN.md` | **Start here.** Where the engagement is, what is blocked, what is next |
+| `docs/PLAN_6-0.md` | The 5.6 to 6.0 plan and rehearsal 1 (14 Oct). Gitignored, it names the shops. Read its top section before touching anything 6.0 |
 | `docs/VOICE.md` | **Read before writing to the client.** How messages and tracker comments are written here, built from the real corpus. Gitignored, it quotes him |
 | `docs/DESIGN.md` | Architecture, data model, B2B mechanism, extension points |
 | `docs/LOCAL.md` | Docker dev setup + the failures already hit, with root causes |
-| `docs/DEPLOY.md` | `script/deploy`, server survey, the memory situation |
+| `docs/MAINTENANCE.md` | Keeping the seven live shops up: each health line, the routine after a change, backups, what only the client can do |
+| `docs/DEPLOY.md` | `script/deploy` for the reference build (stopped 12 Aug), `script/commercial`, server survey, the memory situation |
 | `docs/DISCOVERIES.md` | Every non-obvious finding. **Check here first when something behaves oddly.** |
 | `docs/TOOLING.md` | The automation scripts (screenshots, PDFs, permission audit) |
-| `docs/HANDOVER.md` | Client-facing handover (English, standalone) |
+| `docs/HANDOVER.md` | Client-facing handover of the reference build (English, standalone). That build was stopped on 12 Aug; due a rewrite |
 | `docs/USER_GUIDE.md` | Beginner → advanced guide |
 
 ## Development
@@ -339,16 +394,19 @@ Ruby 4.0.1 locally.
 
 ## Deployment
 
-**No CI.** Deployment is a script you run and watch:
+**No CI.** Deployment is a script you run and watch. Which one depends on the box:
 
 ```bash
-script/deploy help
-script/deploy ship backend    # build for amd64 → stream over SSH → release
-script/deploy status
+script/shop_host ship           # the seven live shops: send the source, build it on their server
+script/shop_host refresh        # put every shop onto the image just built. ship alone changes nothing running
+script/commercial ship <shop>   # the commercial shop's own server: send HEAD
+script/commercial up <shop>     # build there, start, wait for health
 ```
 
-The server never builds images (shared 1.9GB box also serving ~28 other sites).
-Details and rationale in `docs/DEPLOY.md`.
+`script/deploy` drives only our reference build, stopped on 12 Aug 2026. That box
+is a shared 1.9GB machine serving ~28 other sites, which is why it never builds.
+Details: `docs/MAINTENANCE.md` §3 for the live shops, `docs/DEPLOY.md` for the
+other two.
 
 ## Coding Conventions
 

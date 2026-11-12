@@ -1,13 +1,12 @@
 # Email template builder for Spree — research notes
 
-> **Status: PAUSED mid-research, 20 Sep.** No code written beyond one symlink
-> experiment that was reverted. Two architecture questions are still open and
-> are recorded at the bottom — they need answering before a plan can be
-> written. Everything above them is measured fact, not proposal.
+> **Status: research record, superseded by `DESIGN.md` on 22 Sep.** Both
+> questions in §6 are answered there: A by a marker the merchant drags in
+> (option 1), B by a view resolver prepended on `Spree::BaseMailer` (option 1).
+> Everything above §6 is measured fact, not proposal.
 
-This file is the research record. The design doc (`DESIGN.md`) and the plan
-(`PLAN.md`) do not exist yet and should not be written until the two open
-questions are settled.
+This file is the research record. The design is `DESIGN.md`. There is no
+`PLAN.md`.
 
 ---
 

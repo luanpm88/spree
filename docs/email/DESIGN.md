@@ -2,7 +2,18 @@
 
 A merchant edits the shop's emails by dragging, not by editing ERB.
 
-> Nothing here is built yet. This is the shape, agreed before code.
+> Written 22 Sep as the shape agreed before code. A first version was built on
+> branch `demo/theme-mechanism` on 23-25 Sep and is not merged into this branch.
+> One part of the design is on this branch already: the admin screen that lists
+> every email a shop sends, built and never sent (1b310da, its gate fixed in
+> 8eed027).
+>
+> Two of the shops are to move to Spree 6.0. The 5.6 to 6.0 upgrade guide
+> (14 Oct) says 6.0 renders every transactional email from Liquid and ignores
+> ERB overrides, and 6.0.0.rc1 adds a `spree_email_templates` table of Spree's
+> own, the name §3 uses and the first version's migration creates. Both are read
+> from upstream, not yet measured here; `docs/PLAN_6-0.md` (gitignored) has the
+> detail.
 >
 > **[probed]** means checked against a running system: Rails 8.1.3 driven with a
 > real resolver, or BuilderJS source read at `~/apps/builderjs`. **[proposed]**

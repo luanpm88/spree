@@ -6717,3 +6717,889 @@ Còn nửa kia của lỗi wording — file rơi xuống `:en` và gửi đi l�
 hiệu khác, **không sinh marker nào cả** — thì một cổng đọc body đã render không
 bao giờ thấy được, theo đúng cấu tạo. `script/check_shop_locales` tồn tại cho
 việc đó và nó đọc file.
+
+## 70. Spree 6.0.0.beta4 đo trên codebase này: một lần chuyển dữ liệu một chiều, không phải nâng gem (28–29 Sep)
+
+Mục 61 dừng ở boot trên beta1. Lần này đọc source của beta4 và registry, rồi cho một
+lượt agent thứ hai **đo lại** 180 kết luận quan trọng nhất với nhiệm vụ bác bỏ chúng.
+Kết quả của lượt hai: 89 đúng, **89 phải sửa**, 2 sai. Chỉ bản đã sửa được ghi ở đây.
+
+**Trạng thái, đo 28 Sep.** Mới nhất là `6.0.0.beta4` (24 Sep), bốn beta trong chín ngày,
+chưa có 6.x stable. `spree_admin` dừng ở 5.6.1, và thư mục `admin` không còn trong cây
+monorepo ở tag `v6.0.0.beta4`: admin của 6.0 là dashboard React ở `/dashboard`.
+`spree_paypal_checkout` 0.7.1 và `spree_adyen` 0.11.0 không có 6.x, và cả hai phụ thuộc
+`spree_admin`. **Bundler không cảnh báo**: nó resolve chúng với 6.0 bằng cách kéo
+`spree_admin` 5.6.1 vào, nên lỗi chỉ lộ ra lúc boot (Adyen mở lại `Spree::PermittedAttributes`,
+class này không còn) hoặc lúc thu tiền (PayPal).
+
+**Dữ liệu.** 285 migration trong core (119 mới, 7 bị bỏ), sau đó là một lượt 47 bước dữ
+liệu (39 bước của 6.0 cộng 8 bước chạy lại từ các bản 5.x). Shop hỏng từ lúc migrate tới
+khi bước cuối xong: khách chưa đăng nhập được, đơn dở dang chưa thành cart, webhook Stripe
+bị từ chối. Những bước **mất dữ liệu thật**: gộp `public_metadata` vào `metadata`, tách
+role theo resource, bỏ `spree_orders.state`, bước cart xoá dòng `state_changes`,
+`sanitize_rich_text` viết đè mô tả sản phẩm tại chỗ, và một migration xoá **mọi liên kết
+shipping method → zone** vì delivery method từ 5.x có `store_id` NULL lúc nó chạy. Rollback
+về 5.6 chỉ có một đường: restore dump. "Bảng legacy giữ tới 6.1 để rollback" chỉ đúng bên
+trong 6.x.
+
+**Code, đọc trong source beta4:**
+
+- `Spree::Order` không còn `adjustments`. Template email nào gọi `@order.adjustments` làm job
+  gửi mail raise, và khách không nhận được gì; lỗi chỉ nằm trong failed jobs của Solid Queue.
+- Trong checkout giai đoạn cart, `package.order` là `nil`. Calculator nào đọc
+  `package.order.ship_address` sẽ raise. Nếu nó có `rescue => e; 0.0` thì báo **giá ship
+  bằng 0**; nếu không có rescue thì lỗi đi thẳng qua cả lượt dựng rate và **mọi** delivery
+  method của package biến mất. Không có rescue nào giữa calculator và `Checkout::Advance`.
+- `ShipmentMailer` chỉ còn là shim của `FulfillmentMailer`, với đường dẫn template cứng
+  `spree/fulfillment_mailer`: template ghi đè ở `spree/shipment_mailer` không được render nữa.
+  `ReimbursementMailer` bị bỏ, thay bằng `ReturnMailer#refunded_email`.
+- Tên event đổi theo model: taxon, taxonomy, classification thành category,
+  product_category. Webhook nào nghe tên cũ im lặng không nhận gì.
+- `NumberGenerator` với prefix riêng không lỗi, và **bị bỏ qua**: `prefix_for` đọc preference
+  của store trước (mặc định `R`), số đơn thành tuần tự từ 1001.
+- `bin/rails emails:smoke` của chính mình gọi `ReimbursementMailer`, nên cổng email phải
+  viết lại trước khi nó xác nhận được gì trên 6.0.
+
+**Thanh toán offline.** Migration `capture_method` biến `auto_capture = false` trở lại thành
+thu lúc checkout. Đó chính là lỗi "đơn chuyển khoản hiện paid khi chưa có đồng nào" ở mục 1.22,
+quay lại.
+
+**Hai rủi ro nằm sẵn trên 5.6, hôm nay.** `gem 'spree', '>= 5.6.0.rc1'` thoả với `6.0.0`
+(đo bằng `Gem::Requirement` trong `ruby:4.0.1`), nên hôm nay nó chỉ còn resolve 5.6.1 vì 6.0
+vẫn là prerelease. Stage dashboard của Dockerfile pack `@spree/cli@^2.4.0`, và template của
+nó khai `@spree/dashboard` là `>=0.13.1 <2.0.0` mà không có lockfile: lần cache miss đầu tiên
+sau khi 1.0.0 lên stable sẽ nướng dashboard 6.0 vào một image 5.6.
+
+**Và một rủi ro vận hành đi kèm.** Khi nhiều shop chạy **một** image tag chung, entrypoint
+chạy `db:prepare` mỗi lần khởi động, và lệnh refresh tạo lại mọi container (không dừng ở shop
+lỗi đầu tiên), thì một lần build 6.0 dưới tag đó là một lần migrate **cả fleet**, lần lượt,
+không dump. Không cần ai gõ "upgrade".
+
+Kế hoạch cụ thể cho estate nằm ở `docs/PLAN_6-0.md` (gitignored, vì nó nêu tên shop).
+
+## 71. Diễn tập 5.6 → 6.0.0.rc3 trên dữ liệu thật của hai shop: bốn lỗi upstream, bốn thay đổi âm thầm (14 Oct)
+
+Chạy trên laptop, từ backup offsite của đêm trước, không chạm shop live nào. Mỗi shop nạp hai
+lần: một bản đối chứng không bao giờ sửa, một bản để migrate. Mọi bước chạy trong một Docker
+network `--internal`: bản copy mang key Stripe thật và webhook thật của shop, và job worker sẽ
+gọi cả hai nếu được ra internet. Đã chứng minh trước khi dùng: `api.stripe.com` không resolve
+được từ bên trong.
+
+**Cách migrate đúng.** Không dùng bộ migration của starter: 169 migration trùng tên có timestamp
+khác, nên chạy thẳng lên DB của mình là nó tạo lại mọi bảng. Đường đúng là đường của guide:
+giữ `db/migrate` của app, chạy `spree:install:migrations` (rc3 chép thêm 125 cái mới), rồi
+`db:migrate`, rồi `spree:upgrade` (51 bước: 3 của 5.4→5.5, 5 của 5.5→5.6 chạy lại, 43 của 6.0).
+
+**Lỗi upstream 1: thứ tự migration làm sập cả lần nâng cấp.** Ở rc3 mọi model đọc cột
+`preferences` như JSON. Migration `add_store_to_spree_option_types` load một `Spree::Store`,
+nhưng cột đó vẫn là YAML text cho tới `convert_preferences_to_json`, bảy migration sau. Store nào
+từng lưu settings (tức là mọi shop thật) làm `db:migrate` dừng ở đó: `NoMethodError:
+with_indifferent_access for an instance of String`. Đường vòng đã chứng minh: migrate tới ngay
+trước migration đó, chạy riêng `db:migrate:up` cho bản convert, rồi chạy phần còn lại. Các
+migration ở giữa không đụng preferences (đã đọc từng cái).
+
+**Lỗi upstream 2: liên kết shipping method ↔ zone bị xoá, không cảnh báo.** Migration
+`promote_shipping_categories_to_delivery_profiles` chỉ chuyển liên kết cho các delivery method
+có `store_id = store.id`. Với dữ liệu 5.x cột đó vừa được thêm và còn NULL (bước data
+`backfill_delivery_and_stock_store_ids` mãi sau mới điền), nên vòng lặp không thấy method nào, rồi
+migration `drop_table` bảng liên kết. Bước `migrate_zones_to_delivery_zones` sau đó chỉ chuyển
+zone mà một method đang trỏ tới, nên tạo ra 0 zone và in "done". Kết quả: shop sau nâng cấp
+không có delivery zone nào, checkout không có chỗ để giao. Sửa được bằng một dòng vá trong bản
+copy migration của app (app sở hữu bản copy đó): gán store cho method `store_id` NULL khi DB chỉ
+có một store.
+
+**Bốn thay đổi theo thiết kế, đều âm thầm:**
+
+- **Mỗi delivery method chỉ còn một zone.** Migration giữ zone đầu tiên theo id của liên kết.
+  Một method nối 9 zone còn lại zone thứ nhất, và zone thứ nhất có thể là một zone đã bị xoá:
+  liên kết trỏ vào zone không còn tồn tại không bị dọn ở 5.x. Phải dọn và gộp zone **trước**
+  khi migrate, không phải sau.
+- **Taxonomy root không có con bị xoá.** `migrate_taxons_to_categories_and_collections` in đúng
+  một dòng: "dropped N childless taxonomy roots". Một shop dựng mỗi danh mục chính thành một
+  taxonomy riêng chưa có danh mục con thì mất hết các danh mục đó.
+  *Giữ lại được (6.0.0 final, đo 29 Oct).* Điều kiện xoá là một query
+  (`spree_core-6.0.0/lib/tasks/categories_and_collections.rake:142-146`): category không có
+  parent, **còn `taxonomy_id`**, và không là parent của dòng nào. Root có con đi qua bước này
+  và chỉ bị cắt `taxonomy_id` ở cuối. Nên đặt `taxonomy_id = NULL` cho đúng các root không con
+  (chỉ những dòng đã có `store_id`, bước `taxon_store_id` chạy trước) **ngay trước** bước đó là
+  ra cùng trạng thái mà root có con nhận được. Trên bản copy một shop 13 root, 1 root có con:
+  không vá thì còn 3 category trên 15, có vá thì "dropped 0", 54 bước đạt, 0 job lỗi, nested
+  set `valid?` true, thêm con dưới một root cũ lưu được ở depth 1, và Store API
+  `categories?q[depth_eq]=0` trả cả 13 (category 0 sản phẩm không bị lọc).
+- **`auto_capture = false` không còn được tôn trọng.** Bước `migrate_capture_methods` để method
+  đó "inheriting the store setting", và model báo `auto_capture? = true`: đơn chuyển khoản lại
+  thành "đã trả" lúc checkout, đúng cái bẫy ở mục 1.22.
+- **Email ERB bị bỏ qua.** Mọi email transactional ở 6.0 render từ Liquid; file ERB ghi đè dưới
+  `app/views/spree/*_mailer/` không còn được dùng và Spree gửi mẫu mặc định, không cảnh báo
+  (guide 5.6→6.0, bản 14 Oct). rc1 còn thêm bảng `spree_email_templates` của riêng Spree.
+
+**Những gì giữ nguyên, đã đo bằng so sánh với bản đối chứng:** sản phẩm, ảnh (đếm attachment),
+giá trị custom field (bằng số metafield), nhóm khách, price list, role, API key, webhook. Mật
+khẩu khách và admin chép sang `password_digest` giống từng byte với hash Devise cũ, nên đăng nhập
+còn chạy, với điều kiện app cũ không dùng pepper. Đơn dở dang thành cart cùng token.
+
+**Hai việc vận hành:** `spree:upgrade` không chờ hàng đợi job, nên phải chạy từng bước và cho
+worker xả queue giữa các bước (bước ảnh và bước cart xếp job). Một payment method trỏ tới gem
+không có bản 6.x (`SubclassNotFound` ở bước 4) chặn cả lần chạy cho tới khi dòng đó được xử lý.
+
+**Thời gian trên shop nhỏ:** 125 migration khoảng 14 giây, 51 bước data khoảng 2 phút 15 giây.
+
+Chi tiết theo shop, các quyết định cần khách, và kịch bản chạy lại nằm trong `docs/PLAN_6-0.md`
+và `tmp/rehearsal6/` (cả hai gitignored).
+
+**Bổ sung cùng ngày: hai lỗi upstream nữa, và bài học là phép đếm không thấy được chúng.**
+
+Bản kế hoạch gửi khách được cho bốn critic đọc độc lập trước khi gửi. Họ tìm ra thứ mà
+phép so đếm ở trên bỏ sót, và từng thứ đã được đo lại trên bản copy:
+
+- **Lỗi upstream 3: delivery method mất calculator.** Sau đủ 51 bước, cột
+  `spree_calculators.calculable_type` vẫn là `Spree::ShippingMethod`, còn 6.0 tìm theo
+  `Spree::DeliveryMethod`. `DeliveryMethod#calculator` trả `nil` cho **mọi** method trên cả
+  hai shop, tức không shop nào tính được phí ship. Đổi tên loại đó là calculator chuẩn của Spree
+  hiện lại; calculator tự viết thì phải có code của mình mới load được.
+- **Lỗi upstream 4: một calculator đã xoá mềm biến method thành hàng số.** Bước
+  `migrate_shipping_to_delivery` đọc cả calculator có `deleted_at`. Một method từng dùng
+  DigitalDelivery (đã thay từ nhiều tháng trước) bị đánh dấu digital, và delivery profile của
+  nó cùng toàn bộ sản phẩm trong đó thành hàng số: không cần địa chỉ, không có phí ship.
+- **Một profile mặc định mới tên "General"** được tạo trên mỗi store. Ở một shop nó không có
+  method nào, ở shop kia chỉ có method digital, nên sản phẩm thêm sau nâng cấp không có cách
+  giao. Phải đặt profile đang dùng làm mặc định trong lúc nâng cấp.
+- Phép đếm ảnh ở trên đếm cả bản resize, logo và export. Ảnh sản phẩm thật là số bản ghi ảnh
+  gắn với product/variant, và con số đó giữ nguyên.
+
+Bài học: số dòng không đổi không có nghĩa là dữ liệu không đổi. Cả bốn điểm trên đều để
+nguyên số dòng; chỉ hỏi chính model ("method này có calculator không, loại gì") mới thấy.
+
+## 72. Spree 6.0.0 final đo lại trên dữ liệu thật: một lỗi đã sửa, ba lỗi còn, một lỗi mới (28 Oct)
+
+Đo trên bản copy từ backup đêm của hai shop sẽ lên 6.0, image `ghcr.io/spree/spree:6.0.0`,
+mạng Docker `--internal`. Hỏi model sau upgrade, không chỉ đếm dòng.
+
+- **Lỗi 1 đã sửa upstream** (từ rc4): `add_store_to_spree_option_types` và hai migration khác giờ
+  đọc store bằng Arel, `db:migrate` chạy một lượt không dừng.
+- **Lỗi 2, 3, 4 của §71 còn nguyên** trên 6.0.0 trơn: cả hai delivery method không zone, không
+  profile, không calculator; một method thành hàng số vì calculator đã xoá mềm; profile mặc
+  định mới "General" giữ toàn bộ sản phẩm và không có method nào. Không đặt hàng được.
+- **Lỗi 5, mới:** migration `create_spree_oauth_tables` (thêm từ rc4 cho MCP/OAuth) tạo
+  `spree_oauth_applications`, `_access_grants`, `_access_tokens` vô điều kiện. Một shop bắt đầu
+  từ Spree 4 vẫn còn ba bảng Doorkeeper cùng tên, nên `db:migrate` dừng với
+  `PG::DuplicateTable`. Trên shop đo được cả ba bảng rỗng; bỏ chúng (chỉ khi rỗng) là đủ.
+- **Một zone mỗi method, liên kết đầu tiên:** nếu liên kết đầu tiên trỏ tới zone đã xoá ở 5.x,
+  id chết đó được giữ nguyên và có thể **trùng id** với một delivery zone mới của profile khác.
+  Đo được đúng trường hợp này: kết quả nhìn đúng tên ("New Zealand") nhưng sai profile. Bỏ liên
+  kết chết trước upgrade thì mỗi method có zone riêng trong đúng profile.
+
+Bộ vá đã chạy hết cả hai shop: một dòng trong copy của migration (lỗi 2), chép calculator xoá
+mềm sang bảng riêng rồi bỏ (lỗi 4), đổi `calculable_type` sau upgrade (lỗi 3), đặt profile mặc
+định, `capture_method = manual` cho chuyển khoản, định dạng số đơn. Kịch bản đầy đủ nằm trong
+file gitignored của dự án.
+
+## 73. Code của mình trên Spree 6.0.0: boot được, và năm chỗ 6.0 đổi mà không báo (28 Oct)
+
+Đo trên bản copy 6.0 của hai shop (sau diễn tập 2), code ở worktree `port/spree-6.0` mount đè
+lên image `ghcr.io/spree/spree:6.0.0` (Gemfile.lock của starter, không đổi một gem). Mọi phép đo
+là request thật qua Store API trong process, hoặc job thật chạy bằng `bin/jobs`, mail vào
+Mailpit.
+
+- **Boot:** `eager_load!` ở production sạch trên cả hai shop, sau khi bỏ Rails admin, Devise,
+  `Spree::PermissionSets`, `Spree.admin`, `PermittedAttributes`, `number_generator.prefix=`, hai
+  subscriber email cũ, và dời decorator user sang `Spree::Customer` (`metadata`, không còn
+  `private_metadata`).
+- **Chặn giá vẫn cần decorator của mình.** Cùng một khách đăng nhập chưa duyệt, kênh
+  `prices_hidden`: Spree 6.0 trơn trả giá, có decorator thì trường giá là `null`; khách đã
+  duyệt thấy giá ở cả hai. `hide_prices?` của 6.0 giống hệt 5.6 từng dòng.
+- **Dashboard thêm khách vào nhóm bằng hàm class.** 6.0 chuyển việc sang
+  `CustomerGroup.add_customers_to` / `remove_customers_from`, và bulk action của dashboard gọi
+  thẳng chúng (`admin/customers_controller.rb`, `apply_groups`). Hook ở hàm instance như trên
+  5.6 sẽ bỏ sót mọi lần duyệt hàng loạt: không ai nhận email duyệt.
+- **Email duyệt gửi hai lần, và lỗi nằm ở code của mình.** Ba job `approval_email` tới hạn cùng
+  một giây (một từ membership mới, hai từ `user.updated` khi sửa khách trong 2 phút grace), mỗi
+  job đọc "chưa báo" trước khi job kia ghi dấu: khách nhận 2 email. Khoá dòng khách quanh
+  kiểm-dựng-ghi (`with_lock`): ba job tới hạn trong 0,25 giây ra đúng 1 email, 0 job lỗi. Cùng
+  hình dạng event có trên 5.6 (lưu form khách vừa gán nhóm vừa sửa), nên nhiều khả năng lỗi đang
+  nằm trên 5.6, **CHƯA ĐO** ở đó. Đăng nhập **không** phát `user.updated` trên 6.0 (đo: hai lần
+  đăng nhập, không job nào).
+- **Webhook catalogue đổi tên mà không báo.** Ảnh phát `media.*`, danh mục `category.*`, gắn
+  sản phẩm vào danh mục `product_category.*`. Chỉ `stock_item.*` còn phát song song một release.
+  Endpoint webhook của cả hai shop đăng ký theo tên 5.6 (`image.*`, `taxon.*`, …) nên trên 6.0
+  storefront không nghe thấy ảnh hay danh mục đổi: đúng lỗi menu cũ một ngày của 2/9.
+- **Email của Spree 6.0 là Liquid + MJML**, không phải ERB. Mail đơn hàng của khách (ERB, 27–33
+  KB mỗi file) không bao giờ được đọc; mail ERB do action của mình tự dựng (welcome, duyệt) vẫn
+  chạy và được bọc layout Liquid. `emails:smoke` dừng ở `Spree::Reimbursement`.
+- **Storefront lên `@spree/sdk` 6.0.0:** 15 lỗi type ở 9 file (từ 0 trên 1.2.1), không lỗi nào là
+  API bị bỏ: tiền thành chuỗi thập phân, `OrderGroup` (đơn chia nhiều seller), sort theo union,
+  params địa chỉ tạo/sửa tách đôi. Sửa xong: 0 lỗi, 459/459 test.
+- **Lưu store là đổi market mặc định.** 6.0 có `after_update :sync_default_market_settings` trên
+  Store: mỗi lần lưu, cột `default_currency` và `default_locale` cũ của store được chép sang
+  market mặc định, là thứ storefront đọc. Trên một shop có market mặc định bán tiền khác với cột
+  của store, lần lưu đầu tiên đổi tiền của cả market đó, không báo gì. Đo được: market mặc định
+  USD thành NZD sau một `store.save!`, và ngôn ngữ market `en` thành `en-NZ` ở shop kia. Upgrade
+  trơn không lưu store nên không lộ; một script sau upgrade, hoặc chủ shop bấm lưu trên
+  dashboard, là đủ. Cho hai cột khớp market trước lần lưu đầu thì mọi lần lưu sau là no-op.
+- **Email trên 6.0, ba điều không ai báo:** bộ lọc `t` của Liquid in `Translation missing: …`
+  viết hoa, nên mọi gate tìm chuỗi thường `translation missing` cho qua hết; 6.0 bỏ khoá
+  `spree.subtotal` mà 5.6 có, nên mọi mail đơn hàng dùng nó in dòng thiếu chữ ngay trên tổng
+  tiền; `OrderMailer#payment_link_email` còn nhưng không endpoint, subscriber hay nút nào gửi nó.
+  Template Liquid của app thắng template của gem (resolver tìm view path của app trước); partial
+  tên tuỳ ý dùng được qua `{% render 'spree/<thư mục>/<tên>' %}`.
+
+
+## 74. Danh mục trên Store API 6.0.0: không có thứ tự, lọc giao không được, danh mục tự động lọt vào menu (29 Oct)
+
+Đo bằng HTTP trên bản copy 6.0.0 của một shop, có code của mình, với một nhánh 5 cấp, một
+danh mục `automatic`, một cây thứ hai và một collection dựng riêng để đo.
+
+- **Danh sách danh mục không có thứ tự.** `GET /api/v3/store/categories` không ORDER BY gì:
+  sau mỗi lần sửa cây, thứ tự đổi theo cách Postgres đọc dòng. Dashboard sắp xếp bằng cách
+  dời node trong nested set (`reposition` gọi `move_to_left_of`/`move_to_right_of`), nên thứ tự
+  đó chỉ nằm ở `lft`. Cột `position` luôn là 0. `lft` không có trong
+  `whitelisted_ransackable_attributes`, nên `sort=lft` bị bỏ qua mà không báo lỗi;
+  `sort=position` thì trùng 0 và rơi về thứ tự id. Dời một danh mục lên đầu trên dashboard: không
+  cách sort nào API nhận đưa nó lên đầu. Sửa: thêm `lft` vào danh sách
+  (`app/models/spree/category_decorator.rb`) và storefront gửi `sort=lft`; đo lại thì đúng thứ tự
+  dashboard. `children` khi `expand` đã theo `lft`. Menu 5.6 đang chạy cũng xáo trộn y như vậy.
+- **`in_category` gồm cả danh mục con** (`in_taxon` dùng `cached_self_and_descendants_ids`):
+  sản phẩm chỉ gắn ở cấp 5 vẫn ra khi lọc theo cấp 1. `expand=children.children.children.children`
+  trả đủ 5 cấp. `expand=ancestors` trả đủ chuỗi cha cho breadcrumb.
+- **Hai bộ lọc danh mục không giao được.** `q[in_category]=A&q[in_categories][]=B` ra 0 dù
+  sản phẩm nằm trong cả A và B: cả hai scope `joins(:product_categories)` vào cùng một dòng nối,
+  nên đòi một dòng nằm trong cả hai tập. Giao giữa danh mục và collection
+  (`q[in_collection]` + `q[in_category]`) hoặc tag (`q[tags_name_in][]` + `q[in_category]`) thì
+  đúng: 1 khi có, 0 khi không.
+- **Danh mục `automatic`**: bị loại khỏi danh sách và khỏi trang chi tiết (`scope.manual`,
+  "Category not found"), nhưng **vẫn có trong `children`** khi expand từ cha. Menu dựng từ expand
+  nên hiện nó, và link dẫn tới trang not found. Danh mục để hiện trên shop phải là Manual; nhóm
+  theo rule thì dùng Collection.
+- Một sản phẩm gắn được nhiều danh mục, kể cả ở hai cây khác nhau, vẫn là một sản phẩm.
+
+## 75. Lượt đi bộ đầu tiên của storefront và dashboard 6.0 trên dữ liệu thật: năm chỗ chỉ lộ ra khi chạy (29 Oct)
+
+Storefront 6.0 (build production) và image 6.0 của mình, trên bản copy một shop B2B ẩn giá,
+Playwright đi từ đăng ký tới in hoá đơn. tsc và 459 test đều xanh trước lượt này.
+
+- **`next build` hỏng, tsc thì không.** Một hàm thường export từ module `"use server"`: Next
+  chỉ cho export async server action ở đó. Chỉ build production mới bắt được.
+- **Khách đã duyệt không thấy giá ở trang sản phẩm và danh mục, giỏ thì có.** Các lượt đọc
+  catalogue chỉ gửi JWT của khách trên surface wholesale; channel ẩn giá chỉ trả giá cho
+  người hỏi được nhận ra. API trả đúng khi có token (đo: guest `price: null`, khách đã duyệt
+  `amount 15.45`). Code storefront 5.6 giống hệt.
+- **Recipe "page action button" của Spree dùng `onSelect`; menu dashboard 6.0 là Base UI,
+  không có `onSelect`.** Item hiện ra và bấm không làm gì. Item có sẵn của Spree dùng
+  `onClick`. Header trang đơn chỉ truyền `resource={{ id, number }}` vào slot
+  `page.actions_dropdown`, nên trạng thái đơn không đọc được ở đó; slot dùng chung cho mọi
+  trang chi tiết, lọc bằng predicate `if` theo prefix id.
+- **Quyền admin trên 6.0 nằm ở `spree_roles.resource` (store), `spree_role_users` chỉ nối user
+  với role.** Admin không có role trên store đăng nhập được nhưng dashboard báo "You don't
+  have access to any store". Admin chuyển từ 5.6 có sẵn role admin của store. Hash Devise
+  bcrypt (không pepper) sang `password_digest` nguyên byte và `has_secure_password` nhận nó.
+- **Email Liquid tự escape mọi `{{ }}` trừ `| raw`** (`lib/spree/core/emails/escaped_output.rb`),
+  capture giữ là HTML an toàn. `Address#to_s` escape từng trường trước khi nối `<br/>`.
+- Dashboard 6.0 có trang và ghi chú "Enterprise preview"; tắt lúc build bằng
+  `VITE_SPREE_ENTERPRISE_PREVIEWS=false`. `.env*` trong `.gitignore` gốc sẽ nuốt file
+  `.env.production` của dashboard và bản ship bằng `git archive` sẽ mất công tắc.
+- Một shop bán ở hai market (hai tiền tệ) mà chữ email ghi cứng một tiền tệ (`US$`, `USD`) in
+  đơn NZD thành "US$53.00, ORDER TOTAL (USD)". Tiền tệ phải lấy từ đơn.
+
+## 76. Spree 6.0.1 (29 Oct): một bước upgrade mới, và dashboard 6.0.0 không mở được khách của shop B2B (30 Oct)
+
+6.0.1 ra 29/10 17:25 UTC, 23 commit sau 6.0.0; `@spree/sdk` cũng có 6.0.1. Đọc từng commit và
+so file nguồn giữa hai tag, rồi đo trên bản copy của mình.
+
+- **Sáu lỗi mình đang vá (#2 tới #6, #8 trong runbook 6.0) không lỗi nào được sửa.** Blob SHA
+  giống hệt giữa `v6.0.0` và `v6.0.1` cho `promote_shipping_categories_to_delivery_profiles`,
+  `create_spree_oauth_tables`, `delivery_migration.rake`, `delivery_method_rules_migration.rake`
+  và `concerns/spree/stores/markets.rb`. So sánh hai tag không có file nào dưới
+  `spree/core/db` hay `spree/core/lib/tasks` đổi ngoài migration lockout bên dưới. Bộ vá
+  vẫn cần và vẫn áp được.
+- **Migration mới `20261029100001_add_lockout_columns_to_spree_admin_users`**: install
+  upgrade từ 5.x có admin model không `:lockable` thì thiếu `failed_attempts`, `locked_at`,
+  và `Spree::AccountLockout` raise lúc admin đăng nhập. Đo: dump 5.6 gốc và bản copy đã lên
+  6.0.0 của cả hai shop đều có đủ hai cột, nên migration (có `unless column_exists?`) không làm
+  gì với mình.
+- **Bước manifest mới `store_regional_settings`**
+  (`Spree::MaintenanceTasks::Upgrade::StoreRegionalSettings`, có dry run): đổi
+  `preferred_timezone` từ tên Rails sang IANA qua `ActiveSupport::TimeZone::MAPPING`
+  (`Auckland` thành `Pacific/Auckland`), và `admin_locale` sang code Spree liệt kê. Time zone
+  không đọc được thì về mặc định, locale không có trong danh sách thì xoá. `Spree::Store` giờ
+  validate cả hai. Giá trị cũ chưa đổi không chặn việc lưu setting khác (`awaiting_upgrade?`).
+- **Đoạn dưới đây SAI ở kết luận, xem phần "Đo trên dashboard thật" cuối mục.** Sáng 30/10
+  mình chạy riêng hàm format với `Auckland`, thấy nó ném lỗi, rồi suy ra dashboard ném lỗi, và
+  câu đó đã vào bản nháp gửi khách. Dashboard không gọi hàm với giá trị thô. Dashboard 6.0.0 format ngày theo time zone của store:
+  `formatStoreDateTime` và `formatStoreDate` trong `dashboard-core/src/lib/formatters.ts`
+  gọi thẳng `formatInTimeZone` của date-fns-tz, không có guard. 11 component dùng nó, trong
+  đó có customer privacy, digital links, email template preview, report builder và tax
+  certificates. Đo với date-fns ^4.4, date-fns-tz ^3.2 (range mà dashboard khai):
+  `formatInTimeZone(parseISO('2026-10-30T01:00:00Z'), 'Auckland', 'PPP p')` ném
+  `RangeError: Invalid time value`; `'Pacific/Auckland'` ra "October 30th, 2026 2:00 PM".
+  `Intl.DateTimeFormat` cũng từ chối `Auckland`.
+- Dữ liệu mình: một shop B2B lưu `timezone: Auckland`, cả trong dump 5.6 lẫn bản copy đã lên
+  6.0.0 (6.0.0 không đổi nó). Shop kia lưu `UTC`, hợp lệ, bước mới bỏ qua. `admin_locale` là
+  `en` và `null`, đều không đổi.
+
+Hệ quả: hai shop lên 6.0.1, không phải 6.0.0. Chép lại migration của 6.0.1 vào bộ migrate
+đã vá, chạy cả bước manifest mới, và sau upgrade kiểm time zone của store là tên IANA.
+
+**Nâng port lên 6.0.1 (30/10), đo:**
+
+- Gemfile của starter 6.0.1 giống hệt 6.0.0; chỉ `Gemfile.lock` đổi (gem spree 6.0.1, aws-sdk,
+  easypost, sentry, csv, msgpack...). Port dùng nguyên lock của starter nên chép lock của image
+  6.0.1 là xong. `railties:install:migrations FROM=spree` trên image 6.0.1 chỉ chép đúng một file:
+  migration lockout.
+- `formatters.ts` của `@spree/dashboard-core` **không đổi** ở 6.0.1: hàm vẫn không có guard. Guard
+  nằm một tầng trên (xem phần đo dưới đây).
+- Starter có `add_batches_to_solid_queue` (cả 6.0.0 lẫn 6.0.1), database của mình chưa bao giờ có
+  bảng `solid_queue_batches`. Vô hại: solid_queue 1.7.0 chỉ ghi `batch_id` khi
+  `SolidQueue::Batch.migrated?` (bảng và cột đều có), và Spree không dùng batch.
+- `pnpm update "@spree/sdk"` trong storefront kéo lại cả terser, watchpack, lightningcss (378 dòng
+  lock). Đổi range trong `package.json` rồi `pnpm install --lockfile-only` thì lock chỉ đổi đúng
+  SDK. SDK 6.0.1 không có dependency, peer như 6.0.0.
+- Docker Desktop không thấy thư mục dưới `/private/tmp/claude-*`: mount ra thư mục rỗng, `pnpm`
+  trong container tự tạo một `package.json` trống và báo "Command not found". Mount từ `/Users`.
+
+**Đo trên dashboard thật (30/10 chiều).** Mỗi khách trên bản copy được gán cùng một mốc
+`email_marketing_consent_updated_at = 2026-10-30 01:00 UTC` (card privacy của trang khách in nó qua
+`formatStoreDateTime`), trình duyệt Playwright đặt `timezoneId` Asia/Ho_Chi_Minh:
+
+| Image | Dữ liệu B2B | Trang khách |
+|---|---|---|
+| Spree 6.0.1 gốc | upgrade bằng 6.0.0, time zone còn `Auckland` | mở được, "8:00 AM" (giờ máy người xem) |
+| image 6.0.1 của mình | upgrade bằng 6.0.1, `Pacific/Auckland` | mở được, "2:00 PM" (giờ NZ) |
+| image 6.0.1 của mình | như trên, đặt lại `Auckland` (bản đối chứng) | mở được, "8:00 AM" |
+| **Spree 6.0.0 gốc** | upgrade bằng 6.0.0, `Auckland` | **"Something went wrong: Cannot convert undefined or null to object"** |
+| image 6.0.0 của mình | upgrade bằng 6.0.1, `Pacific/Auckland` | **cùng lỗi đó** |
+
+- **Time zone kiểu Rails không làm dashboard lỗi.** `StoreProvider` (`dashboard-core`
+  `providers/store-provider.tsx`, giống hệt ở 6.0.0 và 6.0.1) có `resolveTimezone`: tên nào
+  `Intl` từ chối thì dùng time zone của trình duyệt người xem. Mọi component lấy `timezone` từ
+  `useStore()`, nên hàm format không bao giờ nhận `Auckland`. Hậu quả thật: ngày giờ trên
+  dashboard theo máy của người xem, không theo shop. Người ở NZ không thấy khác; người ở nơi khác
+  thấy giờ của mình. Bước `store_regional_settings` của 6.0.1 sửa đúng chỗ đó.
+- **Lỗi thật của 6.0.0 trên shop B2B: trang khách không mở được.** Không phụ thuộc time zone
+  (lỗi cả với `Pacific/Auckland`), có trên image gốc của Spree không có code của mình, và 6.0.1 gốc
+  mở được cùng dữ liệu. Trên shop business, trang khách 6.0.0 mở bình thường (lượt đi bộ 29/10),
+  nên lỗi phụ thuộc dữ liệu khách của shop B2B. Nguyên nhân chưa khoanh tới file; `Object.keys` trên
+  một trường null là dạng của thông báo.
+- Bản đối chứng là phần quyết định: lần chạy đầu của probe báo "không lỗi" ở cả hai bản, vì trang
+  sản phẩm và trang khách chỉ gọi hàm format khi bản ghi có ngày (lịch publish, mốc consent), và dữ
+  liệu shop không có. "Không lỗi" lúc đó không đo được gì.
+- Image Spree gốc chạy `db:prepare` lúc boot với migration timestamp của chính nó, khác của mình,
+  nên chạy lại migration cũ và dừng. Mount `migrate_patched` vào `/rails/db/migrate` như `run.sh`.
+
+## 77. Link đặt lại mật khẩu của khách về trang chủ nếu địa chỉ shop không phải allowed origin (30 Oct)
+
+Đọc email trong Mailpit, không phải đọc code: link là `https://<shop>?token=...`, không có đường
+dẫn. Khách tới trang chủ với một token và không có form nào, và mọi check vẫn xanh vì email gửi
+đi đúng.
+
+`password_resets_controller` chỉ dùng `redirect_url` của storefront khi
+`current_store.allowed_origin?(url)` đúng; ngược lại `CustomerMailer#password_reset_email` rơi về
+`store.storefront_url` trần. Một shop chỉ có `http://localhost` trong `spree_allowed_origins`
+từ seed. Dump 5.6 của shop đó cũng vậy, nên lỗi không do nâng cấp; các shop khác đã liệt kê
+địa chỉ của mình.
+
+Đo 31/10 trên từng shop đang chạy, chỉ đọc (khách là object chưa lưu, mail dựng rồi bỏ, không
+gửi): 6 shop 5.6 đạt, link tới `/account/reset-password`; **1 shop 5.6 cùng lỗi**, allowed origin chỉ
+có địa chỉ backend, 0 khách. Gate `store:urls` vẫn báo "a customer link in an email lands on this
+shop" với shop đó: nó so host, mà link về trang chủ vẫn đúng host. Gate đó không thấy lỗi này.
+
+Thêm đúng địa chỉ storefront: đo end to end trên bản copy, link thành `/account/reset-password`,
+đổi được mật khẩu, đăng nhập bằng mật khẩu mới được. `allowed_origin?` từ chối cả domain khác lẫn
+domain giả dạng `https://<shop>.evil.example`. Admin không bị: link của admin dựng từ host của
+backend, `/dashboard/reset-password`.
+
+Cũng đo cùng lượt trên 6.0.1:
+
+- `auth/refresh` giới hạn **10 lần/phút mỗi IP** (`SPREE_RATE_LIMIT_REFRESH`), login 5, đăng ký 3,
+  reset 3. Mỗi lần tải lại cả trang dashboard là một refresh: script tải lại mỗi 3 giây nhận 429.
+  Chưa đo: Rails thấy IP thật hay IP của proxy. Nếu là proxy thì một giới hạn này dùng chung cho mọi
+  người, và storefront gọi API từ server nên đăng nhập khách cũng có thể chung một IP. Cần đo trước
+  khi một shop có nhiều khách.
+- Bot gửi POST với header Server Action giả tới `/login`, `/signin`: Next ghi "Server Reference ID
+  did not match". Có trên cả shop 5.6, không phải lỗi mới. Đếm lỗi trong log mà không đối chiếu
+  shop chưa đổi thì dễ kết luận sai.
+- Diễn tập trong mạng cách ly không đo được webhook: web không gọi được storefront. Một
+  `category.updated` thật trên shop đã chuyển trả 200.
+
+## 78. Dashboard 6.0.1 có thể làm "đơn giản" cho shop nhỏ, không đụng Spree; PayPal và Adyen chưa có 6.x (1 Nov)
+
+Đo trên bản copy một shop đã lên 6.0.1, image của mình, Playwright, cùng dữ liệu:
+
+| Ai đăng nhập | Menu chính | Trang Settings |
+|---|---|---|
+| Admin đầy đủ (role `admin`) | 11 | 25 |
+| Role giới hạn "Shop owner" (31 key: orders, products, categories, customers, promotions, reports, settings) | 9 | 13 |
+| Role đó + profile menu theo plan (plugin dashboard) | 8 | 8 |
+
+- **Role là cơ chế có sẵn.** Mỗi mục menu mang một `subject` (`dashboard/src/nav/default.ts`,
+  `settings.ts`); mục nào người dùng không có quyền thì tự ẩn. 6.0.1 có role tuỳ chỉnh với
+  quyền theo khu vực (`Spree.permissions.scopes`: analytics, orders, catalog, customers, sellers,
+  loyalty, marketing, settings, access), tạo bằng `Spree::Role.for_resource(store)`,
+  `permissions` là danh sách key `read_*`/`write_*` của audience `:store`. `permissions` không sửa
+  được sau khi tạo (`permissions_immutable`): đổi thì tạo role mới.
+- **Profile menu là API chính thức.** `defineDashboardPlugin({ nav: { remove: [...] },
+  settingsNav: { remove: [...] } })` bỏ được cả mục có sẵn (`dashboard-core/src/plugin.ts`). Chỉ
+  bỏ khỏi menu: route vẫn còn, staff vào thẳng bằng địa chỉ được. Chọn profile lúc build bằng
+  `VITE_SPRIE_PLAN`.
+- Role giới hạn vẫn có 5 request nền bị 403 (commission_lines, seller_transfers, package_types,
+  collections, product_types): không lỗi trên màn hình, nhưng profile thật nên cấp quyền đọc hoặc
+  bỏ phần gọi chúng.
+- Mục "Settings" của marketplace gắn subject `Store`, nên role không ẩn được; chỉ plugin bỏ được.
+- **PayPal và Adyen chưa có 6.x.** `spree_paypal_checkout` 0.7.1 và `spree_adyen` 0.11.0 phụ thuộc
+  `spree_admin`, mà `spree_admin` dừng ở 5.6.1. Repo PayPal trỏ Spree về `5-6-stable` ngày 22/10
+  (PR #19), Adyen ngày 4/8; không có nhánh 6.x. `spree_stripe`, `spree_mcp`, `spree_easypost`,
+  `spree_meilisearch` đều có 6.0.1. `spree_mcp` không có bản 5.x.
+- **5.6 vẫn được sửa nhưng không phát hành.** Nhánh `5-6-stable` có commit tới 27/10; bản 5.6 mới
+  nhất vẫn là 5.6.1 (28/7). Không có 5.6.2 hay 5.6.3. Bảng hỗ trợ bảo mật công khai của Spree chỉ
+  liệt kê 5.0 và 4.10.
+- spree.sh là sandbox miễn phí chính thức của Spree (dashboard 6.x với dữ liệu mẫu); ai xem nó
+  sẽ thấy toàn bộ hệ thống, không phải một shop đã giản lược.
+- Bộ nhớ, đo cùng giờ: web 6.0.1 chạy 2 worker Puma + Solid Queue trong container: 1.92 GB tiến
+  trình thật (cgroup `anon`), sát giới hạn 2 GB, 0 lần OOM. Web 5.6.1 chạy một tiến trình Puma:
+  1.27 GB. Hai cấu hình khác nhau nên không so được 6.0 với 5.6; lần đo 1 worker trên 6.0.1 dở
+  dang vì Docker trên laptop treo.
+
+## 79. Spree 6.0.2 (2 Nov): hai trong sáu bản vá migration của mình đã vào upstream; với shop đã ở 6.0.1 bản này chỉ là ba migration nhỏ và một task không làm gì (3 Nov)
+
+6.0.2 ra 2/11 13:19 UTC, 37 commit sau 6.0.1. Đọc so sánh hai tag, starter `spree-starter` ở tag
+`v6.0.2`, rồi đo trên bản copy database của shop đã lên 6.0.1, lấy lúc 06:13 UTC 3/11.
+
+- **Ba migration mới**, starter cài thành `20261102132856..58_*.spree.rb`:
+  `scope_payment_sources_profile_id_uniqueness_to_payment_method` (bỏ index unique
+  `index_payment_sources_on_type_and_gateway_payment_profile_id`, thêm index rộng hơn có
+  `payment_method_id`; `remove_index` dừng nếu index cũ không có, nên đo trước: có, bảng 0 dòng),
+  `add_last_active_at_to_spree_admin_users`, và `delete_orphaned_spree_option_value_variants`
+  (`DELETE ... WHERE variant_id IS NULL`; đo trước: 0 dòng). Trên bản copy: 13 giây, 0 pending.
+- **Lỗi #2 và #3 trong runbook 6.0 đã sửa upstream.** `promote_shipping_categories_to_delivery_profiles`
+  đổi (+15/-6, "delivery method zones survive ... including methods without a store"), và
+  `spree:migrate_shipping_to_delivery` giờ tự đổi `spree_calculators.calculable_type` sang
+  `Spree::DeliveryMethod` (việc `post.rb` đang làm). Release note bảo shop đã lên 6.0.0/6.0.1 chạy
+  lại task đó. Shop của mình: `post.rb` đã sửa calculator, method nào cũng có zone, `display_on`
+  null, nên chạy lại ra 0 ở mọi dòng; "delivery methods marked digital: 1" là gán lại đúng provider
+  Digital mà method đó đã có. `measure.rb` giống hệt trước và sau. Lỗi #4, #5, #8 không nằm trong
+  danh sách file đổi: coi như còn, đo lại trước ngày chuyển shop B2B.
+- **Gem.** Gemfile của starter không đổi; lock đổi Alba 3.11 → 4.0.2, rack 3.2.8, nokogiri 1.19.6,
+  loofah, rails-html-sanitizer, aws-sdk, bỏ `safely_block`. `spree_core` bỏ phụ thuộc `benchmark`,
+  `highline`, `rexml`, `safely_block`. Code mình không dùng Alba và không dùng bốn gem đó (`safely`
+  trong `script/shop_checklist.rb` là hàm của mình). Chặn giá qua Store API đo lại bằng
+  `price_gate_probe.rb`: khách vãng lai và khách chờ duyệt `price=nil`, khách đã duyệt thấy giá,
+  y như 6.0.1.
+- **Dashboard nhẹ hẳn.** Lockfile của `apps/dashboard` từ 731 xuống 352 gói (bỏ 386: shadcn CLI,
+  cmdk, Radix; thêm 7: năm gói `@spree`, `dompurify`, `@types/trusted-types`), chỉ bốn dependency
+  trực tiếp `@spree/*` đổi. Máy mình (Node 20) không chạy được pnpm 11: tạo lock bằng
+  `node:22-slim` trên server, đúng image mà bước build dùng. Nút Print invoice đã dùng `onClick`
+  từ 6.0 (menu là Base UI), không cần sửa.
+- **Tiếng Việt có sẵn trong gói.** Chuỗi "Xóa hình ảnh" (từ `vi.json`) có trong bundle dashboard
+  6.0.2, không có trong 6.0.1. Chọn ở menu tài khoản góc dưới trái: Preferences → Language →
+  Tiếng Việt (9 ngôn ngữ). Trang Staff có thêm cột Status và Last active.
+- `@spree/sdk` 6.0.2 chỉ đổi CHANGELOG và số version: storefront không build lại.
+- **Server commercial tắt TCP forwarding của ssh** ("administratively prohibited: open failed"), nên
+  không mở tunnel tới stack nháp được. Đi bộ dashboard bằng trình duyệt chạy ngay trên server:
+  `mcr.microsoft.com/playwright:v1.62.0-noble` với `--network container:<proxy nginx>`, mount
+  `node_modules/playwright` của laptop (cùng 1.62.0), nginx đổi `Host` thành tên shop để qua host
+  authorization; trình duyệt thấy `http://localhost:3000`, nên cookie đăng nhập vẫn chạy.
+- **Diễn tập (`tmp/rehearsal6/600/live/rehearse602.sh`), mạng không ra ngoài được:** 6.0.2 healthy sau
+  20 giây; `emails:smoke` 6/6; `shipping:smoke` đạt; một đơn qua Store API (đăng nhập khách đã
+  duyệt, giỏ, địa chỉ NZ có vùng `AUK` vì NZ bắt buộc vùng, Physical $0.00, Bank Transfer, complete)
+  ra `placed`/`authorized`, thanh toán `pending`, số EB + 9 số; 56 trang dashboard 0 lỗi, Print
+  invoice mở hoá đơn đúng số đơn. **Đường lui:** image 6.0.1 chạy trên database đã migrate, healthy
+  sau 18 giây, `measure.rb` giống hệt lúc trước: cột và index mới không làm 6.0.1 lỗi, nên quay lui
+  không cần restore database.
+- **Trên shop thật (3/11, 07:19 UTC):** chờ 10 phút không ai thao tác trong dashboard (chủ shop đang
+  làm trong đó), dừng web, dump khi web đã dừng, migrate, task, chạy 6.0.2: **phục vụ lại sau 43
+  giây**. `measure.rb` giống hệt bản đo 6.0.1 ngay trước đó, `emails:smoke` 6/6, smoke trình duyệt
+  khách vãng lai 20/21 như sau lần lên 6.0.1, dashboard phục vụ bundle có tiếng Việt.
+- **Một tab dashboard mở sẵn bị đăng xuất 4 phút sau lần chuyển:** refresh 200 lúc 07:23:55, refresh
+  401 lúc 07:24:17 (token đã bị thay ở lần trước), rồi trang đăng nhập. `dashboard-core/src/client.ts`
+  giống hệt ở 6.0.1 và 6.0.2; refresh token là cookie, mỗi lần refresh xoá dòng cũ tạo dòng mới;
+  6.0.2 chỉ thêm ghi `last_active_at` và mã hoá IP khi có khoá. Chưa khoanh được nguyên nhân (log
+  container cũ mất khi thay container, nên không so được với trước). Lần chuyển sau (shop B2B): báo
+  trước người dùng dashboard là có thể phải đăng nhập lại.
+
+## 80. Storefront 5.6 trên server estate chết vì hết heap Node vài ngày một lần, và không check nào thấy (3 Nov)
+
+Tìm ra khi `check_all` đỏ hai lần liền ở gate tìm sản phẩm, mỗi lần một shop khác, chạy riêng thì đạt.
+Đo trên server estate, chỉ đọc, khoảng 11:00 UTC 3/11:
+
+- **Sáu trong bảy storefront đã tự khởi động lại 15 đến 28 lần từ 18/9**, trong đó 4 đến 16 lần log
+  ghi `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory`. Số lần còn
+  lại chưa rõ lý do (có thể kernel giết khi vượt 512 MB; chưa đo). Shop B2B, sau đăng nhập: 0 lần.
+  Hết heap gần nhất: 08:08 và 08:14 UTC ngày 3/11, và hai shop ngày 2/11.
+- **Giới hạn heap 259 MB**: container 512 MB, `NODE_OPTIONS` trống, Node 22.23 tự đặt theo giới hạn
+  cgroup. Next 16.2.11. Lúc đo, hai storefront đang ở 477 và 481 MB trên 512.
+- **Heap lớn dần nhiều ngày rồi mới chết.** Bản ghi GC lúc chết: 240 trên 259 MB, `current mu =
+  0.240` (ba phần tư thời gian là dọn rác), process đã chạy 292 775 672 ms, tức 81 giờ. Trong giai
+  đoạn đó trang chậm hẳn. Lúc đầu mình đoán đây là lý do gate tìm sản phẩm đỏ; lần chạy thứ ba lưu
+  lại trang và bác điều đó: gate đỏ vì một redirect trong stream, §81.
+- **Cú cuối là một đợt đi qua các trang danh mục.** 40 giây trước khi chết, log API của shop đó có một
+  trang danh mục mỗi 1 đến 2 giây (mỗi trang ba request: category, products, filters), nhiều danh mục
+  trả 404. Đó là `check_llms_urls`, một gate của chính `check_all`, yêu cầu mọi URL trong file llms,
+  chạy trong lần thứ nhất. Bot làm việc tương tự cả ngày: "Failed to fetch category" 27 đến 88 lần một
+  ngày ở năm shop, 2 ở shop ít chết nhất, 0 ở shop B2B. Lần chết 08:14 ở shop kia không có đợt như vậy.
+- **Khởi động lại nhanh:** chết 08:08:04.0, `Ready` 08:08:05.8. Mất thật là giai đoạn chậm trước đó.
+- **Vì sao không ai thấy:** `script/health` hỏi container có đang chạy không, và container tự khởi
+  động lại thì lúc nào hỏi cũng đang chạy. Chỉ `RestartCount` và dòng `Reached heap limit` trong
+  `docker logs` ghi lại.
+- Shop business (server riêng) không bị: storefront 0 lần restart, 0 lần hết heap từ 30/10, 333 / 512
+  MB.
+- **Chưa biết** cái gì giữ bộ nhớ: cần heap snapshot trên bản copy, không làm trên shop thật.
+  `check_search.mjs` giờ lưu ảnh chụp và chữ trên trang vào `tmp/check_search/` khi duyệt hay tìm ra
+  trống, để lần sau biết trang hiện gì.
+
+## 81. Khách vào từ nước shop không bán nhận trang không có sản phẩm và một redirect phía trình duyệt (3 Nov)
+
+Đây là lý do thật của gate tìm sản phẩm đỏ (§80 đoán sai). Lần chạy `check_all` thứ ba lưu lại trang
+lúc gate bỏ cuộc: URL `/products`, status 200, **5 giây** (không phải 45), trang trắng toàn bộ, chữ
+rỗng, một chunk JS `net::ERR_ABORTED`.
+
+- **Lặp lại được 10 trên 10** ở shop đó: mỗi lần mở mới, 4 đến 5 lần điều hướng khung chính, React
+  #418 (HTML server và client không khớp), sản phẩm hiện sau 3,7 đến 5,1 giây. Bốn shop tanka khác
+  cũng vậy (3,4 đến 7,0 giây). Shop không bị: 1 lần điều hướng, không lỗi, 1,9 đến 2,3 giây.
+- **HTML server không có sản phẩm nào.** 0 link sản phẩm, một bộ khung 12 ô `animate-pulse`, và
+  `<template data-dgst="NEXT_REDIRECT;replace;/ca/en/products;307;">`. Shop không bị: 8 link, 7 đoạn
+  Suspense. Không phải Cloudflare viết lại HTML (không có `__cf_email__`, `email-protection`, Rocket
+  Loader) và không phụ thuộc múi giờ (UTC, Toronto, Hồ Chí Minh như nhau).
+- **Nguyên nhân.** Với địa chỉ không có tiền tố, `src/lib/spree/middleware.ts` lấy nước từ cookie
+  `spree_country`, rồi header `cf-ipcountry` của Cloudflare (nước theo IP), rồi nước mặc định, và
+  rewrite sang `/<nước>/<ngôn ngữ>/...`. Từ Việt Nam là `/vn/...`. Layout
+  `src/app/[country]/[locale]/layout.tsx` không thấy market nào có VN và gọi `redirect()` tới nước đầu
+  tiên của market mặc định (`getDefaultMarketLocaleTarget`, `src/i18n/markets.ts`). Layout nằm trong
+  Suspense nên redirect xảy ra khi stream đã bắt đầu: không thành 307 được, thành lệnh cho trình duyệt
+  tự chuyển trang.
+- **Shop Mỹ bị đưa sang American Samoa.** Market mặc định của nó có AS, GU, MP, PR, US, VI theo thứ
+  tự đó, nên đích là `/as/en/products`.
+- **Đo thẳng vào container, không qua Cloudflare:** không có `cf-ipcountry`, hoặc `US`: 12 sản phẩm,
+  không redirect. `VN`: 0, redirect. Thêm cookie `spree_country=us`: 12, không redirect. Shop Canada
+  với user agent Googlebot: `cf-ipcountry: CA` ra 12, `US` ra 0 và redirect; Google bò chủ yếu từ Mỹ.
+  Ai đã có cookie thì không sao; lần đầu từ nước ngoài, và mọi khách không giữ cookie (bot, gate) thì
+  bị.
+- Không commit nào từ 17/9 đụng layout, middleware, `src/i18n` hay `markets`: HEAD giống hệt, build
+  lại không đủ, phải sửa code.
+- **Một lần đo sai trước đó:** curl qua Cloudflare với `${ck:+-H "Cookie: $ck"}` trong zsh. zsh không
+  tách từ, curl nhận `-H Cookie: ...` thành một đối số, cookie không bao giờ tới, và kết quả nói
+  "cookie không giúp". Viết header ra hẳn thì cookie giúp.
+
+**Đo thêm tối 3/11: cả sáu shop công khai, không phải năm.**
+
+- **Hai shop quốc tế cũng bị**, với khách ngoài danh sách nước của chúng (34 và 33 nước, không có Mỹ
+  hay Việt Nam). Đo thẳng vào container: `cf-ipcountry: NL` ra 12 và 8 sản phẩm, `US` hoặc `VN` ra 0
+  và `NEXT_REDIRECT` sang `/be/en` (Bỉ) và `/kw/en` (Kuwait). Một trong hai được ghi "không bị" ở
+  trên vì lần đo đó đi ra từ Hà Lan, mà Hà Lan có trong danh sách của nó.
+- **Máy này ra Cloudflare là Hà Lan, không phải Việt Nam.** `cdn-cgi/trace` trả `loc=NL`, `colo=AMS`,
+  `warp=off`, và mọi trang lưu ở trên mang `set-cookie: spree_country=nl`. Gate tìm sản phẩm vì vậy
+  chỉ thấy bốn shop một nước chuyển trang, còn hai shop quốc tế thì bình thường với nó. Kết quả gate
+  chạy từ máy này là trải nghiệm của một khách ở Hà Lan.
+- **Mỗi shop có đúng một market**, đọc từ `spree_markets` và `spree_market_countries` của cả bảy DB:
+  bốn shop một nước, shop Mỹ sáu nước (AS đứng đầu), hai shop quốc tế tiền USD, shop sỉ một nước. Nước
+  đoán theo IP chỉ dùng để chọn market, mà mỗi shop chỉ có một, nên nó không đổi giá hay tiền tệ của
+  ai. Thứ duy nhất nó làm ra là vòng chuyển trang này.
+- **Không sửa được bằng "lấy nước của chính shop".** Hai shop quốc tế và shop sỉ build với tên shop
+  trong `NEXT_PUBLIC_DEFAULT_COUNTRY` chứ không phải mã nước. Layout đã có nhánh cho đúng trường hợp
+  đó: tên shop thì dùng market mặc định, không redirect.
+- **Shop business trên server riêng không bị, nhưng vì một lý do mong manh.** Nó không đứng sau
+  Cloudflare (`Server: nginx`, không có `cf-ray`), nên không bao giờ có `cf-ipcountry`, và middleware
+  rơi về nước mặc định `nz`, nước hợp lệ. Thêm header bằng tay thì mọi nước đã thử (AU, US, VN, NL)
+  đều ra 0 sản phẩm và chuyển sang `/cn/en`. Bật proxy Cloudflare cho tên miền đó là nó bị ngay. Lần
+  thêm header bằng tay đó cũng là một probe tự dựng ra thứ nó đo: khách thật của shop này không bao
+  giờ mang header đó tới.
+- **Server không giữ bản storefront cũ nào.** Mỗi lần build ghi đè `storefront-<shop>:latest`, và
+  `docker images -f dangling=true` ra 0. Muốn quay lại được thì phải tự gắn tag cho bản đang chạy
+  trước khi build.
+
+## 82. Server estate không còn chỗ để build storefront, và `shop_host storefront` có thể tự làm sập web (4 Nov)
+
+- **Build storefront trên server bị chặn vì bộ nhớ.** Lần build đầu ngày 4/11 chạy kèm một vòng canh
+  `MemAvailable` mỗi 2 giây, ngưỡng 700 MB. Nó dừng build sau 121 giây, lúc `next build` vừa bắt
+  đầu và bộ nhớ còn 559 MB. Không container nào restart, không có lần OOM nào, cả 7 storefront vẫn
+  trả lời. Nhưng sau đó swap đầy hẳn: còn 8 MB trên 4 GB. Trước lúc build còn 414 MB.
+- **Bộ nhớ lúc đó:** 16 GB, `MemAvailable` khoảng 3,1 GB. Mỗi web 1,08 đến 1,27 GB trên trần 1,5 GB,
+  mỗi storefront 408 đến 480 MB trên trần 512 MB. Build thử trên máy này, cùng code: một process
+  `next build` lên khoảng 1,5 GB, chưa tính worker.
+- **Cách đã dùng:** build trên máy này cho `linux/amd64` (colima, buildx), Node ghim đúng 22.23.2 như
+  image đang chạy, rồi `docker save | gzip | ssh docker load`. Server chỉ còn việc nạp image.
+- **`shop_host storefront` gọi `bin/rails runner` 5 lần, trong chính container web của shop.** Đó là
+  các bước đọc channel, webhook secret, locale, Stripe key, PayPal client id. Web đang ở sát trần cgroup
+  1,5 GB, và một runner cần vài trăm MB. Ngày 18/9, giữa đợt build storefront, kernel đã giết một
+  process ruby trong cgroup của web (`Memory cgroup out of memory`, 04:46:39, anon-rss 661 MB). Nếu
+  process bị giết là bước đọc Stripe key, script chỉ cảnh báo rồi build tiếp một shop không có ô nhập
+  thẻ: đúng lỗi 31/8. Nếu là Puma, web của shop đó sập cho tới khi restart.
+- **Cách đọc thay thế, không cần Rails:**
+  - API URL và key lấy từ env của container storefront đang chạy;
+  - Stripe key và PayPal client id lấy từ `spree_payment_methods.preferences`, là YAML thường, psql
+    đọc được;
+  - tên store đọc bằng psql;
+  - ID danh mục lấy qua Store API.
+
+  Mỗi giá trị đều được đối chiếu với image đang chạy (`grep -rF` trong `/app/.next`). Cả 7 giá trị
+  của 6 shop đều có sẵn trong bản live.
+- **Kernel log có 135 lần OOM kể từ 13/8, đều là OOM trong cgroup (container chạm trần), không lần nào
+  là OOM toàn hệ thống.** Phần lớn rơi vào khoảng 02:0x UTC mỗi đêm và đều là process ruby. Chưa biết
+  job nào chạy lúc đó.
+- **React #418 (HTML server và client lệch nhau) có sẵn trên bản live, với cả khách đúng nước của
+  shop.** Đo bằng trình duyệt sạch, cookie `spree_country=us` trên shop Mỹ: lần nào cũng có #418, 2 lần
+  điều hướng. Shop quốc tế 34 nước, khách từ Hà Lan: #418, 4 lần. Shop quốc tế 33 nước, khách từ Hà
+  Lan: không có #418. Lỗi này không liên quan bản sửa chuyển trang theo nước. Nguyên nhân chưa tìm.
+- **Build trên Mac cho amd64 bằng QEMU thì Node chết, phải tách phần biên dịch ra chạy native.**
+  colima ở đây giả lập amd64 bằng QEMU 7.0.0 (`rosetta: false`). `next build` chạy trong giả lập
+  chết 2 lần liền với `Assertion failed: errno == EEXIST (../deps/uv/src/unix/linux.c: uv__io_poll:
+  1430)`. Lần đầu worker chết SIGSEGV lúc tạo trang tĩnh, sau đó `buildx` treo thêm 75 phút mà không
+  thoát. Lần hai đã chạy `CIRCLE_NODE_TOTAL=2` (Next còn 1 worker) và `UV_USE_IO_URING=0`: build in
+  xong bảng route rồi vẫn chết lúc thoát. Cách chạy được: trong bản Dockerfile dùng riêng cho build
+  local, stage `deps` và `builder` dùng `FROM --platform=$BUILDPLATFORM`, nên biên dịch native arm64.
+  Stage `sharp` và `runner` vẫn là amd64. Build mất 110 giây. Đã đo trước khi đưa lên:
+  - **Không có `.node` arm64 nào được load.** Standalone có kéo theo
+    `.pnpm/@img+sharp-linuxmusl-arm64`. Nhưng `require('sharp')` resolve từ chỗ của `next` rồi resize
+    một ảnh thử, và file nạp vào là `@img/sharp-linuxmusl-x64/...node` do stage `sharp` chép vào.
+  - **Kết quả giống bản live.** Image resize qua `/_next/image` ở w=256 và w=640 ra đúng số byte như
+    bản live. HTML cho khách đúng nước (đã bỏ thẻ và script) giống từng chữ trên `/`, `/products` và
+    một trang sản phẩm.
+  - **Đối chiếu image bằng `RootFS.Layers`, không dùng `.Id`.** Docker trên Mac lưu image bằng
+    containerd nên `.Id` là digest của index, còn trên server `.Id` là digest của config. Các layer
+    giống nhau ở cả hai bên.
+
+## 83. Một kích thước ảnh kẹt hẳn trên một storefront, chỉ restart mới gỡ được (4 Nov)
+
+Khoảng một giờ sau khi đổi image ở một shop, gate mua sản phẩm miễn phí trong `check_all` báo
+`page.goto: Timeout 90000ms` trên trang sản phẩm. curl mở trang đó trong 1 giây. Playwright cho
+thấy trang vẫn hiện ra và sự kiện `load` có xảy ra, nhưng một request không bao giờ trả về:
+`/_next/image?url=/brand/logofooter.png&w=640` (logo ở footer).
+
+- **Chỉ kẹt ở đúng một tổ hợp:** shop đó, w=640, khi trình duyệt xin AVIF/WebP (`accept`). Cùng
+  ảnh đó không có `accept` thì trả PNG trong 0,04 giây. Các kích thước 256, 384, 750, 828, 1080
+  trả ngay, và 5 shop còn lại không kẹt ở kích thước nào. Request qua nginx và request vào thẳng
+  container đều treo. Container dùng 0% CPU, tức là nó đang chờ, không phải đang tính. Log không
+  có dòng nào về ảnh hay sharp.
+- **Không phải do image mới.** Trên hai container sạch, một chạy image cũ, một chạy image mới,
+  cùng request đó trả 200 (0,6 giây và 0,2 giây), các kích thước khác cũng vậy.
+- **Giả thuyết "request đầu bị huỷ giữa chừng" đã thử và sai.** Huỷ request đầu sau 50 ms hoặc
+  10 ms, request tiếp theo vẫn trả 200, trên cả image cũ lẫn image mới. Nguyên nhân chưa biết.
+- **Gỡ bằng `docker restart` container storefront**, cùng image. Container trả 200 lại sau 4
+  giây, w=640 trả trong 0,19 giây, gate qua. Ngày 25/8 cũng gặp đúng kiểu này (ghi trong
+  Dockerfile, phần stage `sharp`): Next gộp các request cùng một kích thước, nên một request treo
+  kéo tất cả các request sau treo theo, và chỉ restart mới hết.
+- **Gate `check_all` "every shop's optimizer is resizing, and none of them hang" không bắt được
+  lỗi này**, vì nó thử các ảnh khác. Gate bắt được là gate mua hàng, nhờ nó đợi `load`.
+
+## 84. Nút PayPal thu tiền trước khi có địa chỉ, rồi đơn không hoàn tất được (4 Nov)
+
+Chủ shop mở task: một đơn của shop US "mới hiện ra", không có phí ship, hoá đơn trống trơn. Đo trên
+database (chỉ đọc): đơn tạo lúc 19:25 UTC ngày 6/9, 11 ngày sau khi shop chuyển. Đơn chuyển từ cart
+sang address lúc 19:26:53, PayPal capture lúc 19:26:55. Sau đó đơn đứng yên ở `address`: không có
+địa chỉ, không có shipment, `completed_at` rỗng, còn `payment_total` bằng tiền hàng. Trên cả 7 shop
+chỉ có đúng một đơn chưa hoàn tất mà đã có payment `completed` hoặc `pending`.
+
+- **Cơ chế.** `spree_paypal_checkout` 0.7.1 dùng payment session khi `use_legacy_api` tắt. Bảng
+  `spree_paypal_checkout_orders` không có dòng nào cho đơn này; dòng nằm trong `spree_payment_sessions`
+  với type `Spree::PaymentSessions::PaypalCheckout`. Theo comment trong gem,
+  `Gateway#complete_payment_session` chỉ capture và tạo payment, "Does NOT complete the order";
+  việc hoàn tất đơn do storefront hoặc webhook làm.
+- **Lỗ hổng nằm ở storefront.** Nút "Pay now" đi qua `validateAndPay`
+  (`CheckoutPageContent.tsx`). Hàm này lấy lại đơn rồi chặn nếu `requirements` còn bước address
+  hoặc delivery. Nút PayPal vẽ sẵn trong popup thì bỏ qua bước đó:
+  `onApprove` → `handleGatewayApproved` (`PaymentSection.tsx`) lưu billing `use_shipping: true`
+  (đơn chuyển sang `address` lúc này), rồi `completeCheckoutPaymentSession` (tiền bị thu), rồi
+  `completeCheckoutOrder`, bước này hỏng vì đơn chưa có địa chỉ. Nút PayPal hiện ngay khi khung thanh
+  toán vào tầm nhìn (`useReachedPaymentStep`), không cần form phía trên đã điền xong. Số tiền session
+  bằng total lúc đó, tức là chưa có ship.
+- **Adyen** cũng đi qua `handleGatewayApproved` nên có cùng đường đi; chưa bật trên shop nào nên chưa
+  đo. Stripe đi qua `validateAndPay` nên không dính.
+- **Vẫn mở trên cả 7 shop.** PayPal bật ở cả 7. `PayPalPaymentForm.tsx` chưa đổi từ bản starter
+  (30/7); sau 6/9 chỉ có một commit sửa checkout (d850d28, sản phẩm miễn phí), không đụng đường đi
+  này. Tần suất trên shop US: 5 PayPal session từ 6/9 đến nay, 4 đơn hoàn tất, đơn hỏng là đơn này.
+- **Cách sửa:** xem phần "Cách sửa" ở cuối mục này. Nút vẫn hiện, nhưng bấm vào sẽ kiểm tra trước,
+  giống `validateAndPay`.
+- **Log ngày 6/9 không còn**, vì container đã được tạo lại. Lời nhắn khách thấy sau khi trả tiền
+  ("Failed to complete order") được suy ra từ code, không đo được.
+
+### Lỗi thứ hai, nặng hơn: PayPal thu số tiền cũ
+
+- **Gem không báo cho PayPal khi tổng đơn đổi.** `SpreePaypalCheckout::Gateway#update_payment_session`
+  chỉ sửa `amount` trong bảng `spree_payment_sessions`, không gọi PayPal. Storefront có effect "khi
+  total đổi thì update session tại chỗ", và với Stripe effect này đúng: `spree_stripe` 1.8.1 gọi
+  `update_payment_intent`. Với PayPal thì PayPal order giữ nguyên số tiền lúc tạo (OrderPresenter lấy
+  `order.total` lúc đó). Khi capture, PayPal thu số cũ, còn Spree tạo payment theo `session.amount`
+  mới, nên trên Spree đơn vẫn hiện `paid`.
+- **Đo trên cả 7 shop:** so số tiền PayPal thực thu (`external_data` → `purchase_units[0].payments.captures[0].amount`)
+  với payment và total trong Spree. Có 19 session PayPal đã thu, 3 đơn lệch:
+  - Một đơn ở shop AU: PayPal order tạo lúc 100.13, sau đó khách nhập mã giảm 20% nên total còn
+    84.40, PayPal vẫn thu 100.13. PayPal API cho thấy chủ shop đã tự hoàn 15.73 ngày 30/10, ghi chú
+    "Order Discount".
+  - Một đơn khác ở shop AU: PayPal order tạo lúc 39.83, khi chưa có ship; sau đó khách chọn giao
+    hàng nên total thành 51.18, PayPal thu 39.83. Phí ship chưa bao giờ được thu, chưa có điều chỉnh.
+  - Đơn US ở trên: 5.25, không có địa chỉ.
+  Stripe không lệch: 4 đơn có `payment_total` khác `total` đều là hoàn tiền do admin làm (3 đơn)
+  hoặc chuyển khoản (1 đơn).
+- **Tái hiện trên shop thật trước khi sửa** (`pp_probe.mjs`, không duyệt thanh toán): chưa nhập địa
+  chỉ, bấm PayPal thì popup vẫn mở với PayPal order 18.50, tức chỉ tiền hàng. Điền địa chỉ và chọn
+  giao hàng thì Spree total thành 27.21, nhưng PayPal order (đọc qua `GET /v2/checkout/orders`) vẫn
+  là 18.50.
+- **Lỗi thứ ba:** `completeCheckoutOrder` coi mọi 422 là thành công. `carts#complete` của Spree trả
+  422 "Could not complete checkout" khi đơn chưa hoàn tất được, nên khách bị chuyển sang trang
+  cảm ơn dù đơn chưa xong.
+
+### Cách sửa (storefront, 4 Nov)
+
+- Bấm nút PayPal sẽ chạy đúng các bước kiểm tra của "Pay now" (`checkReadyToPay`: đồng ý điều khoản,
+  `requirements` không còn bước nào trước payment). Nếu chưa đạt thì `actions.reject()`, popup không mở.
+- PayPal order được tạo ngay lúc bấm (`createOrder` tạo payment session mới), theo total lúc đó.
+  Session tạo lúc khung thanh toán vào tầm nhìn chỉ dùng để vẽ nút, không bao giờ được capture.
+- Trước khi capture: đọc lại đơn sau khi lưu billing. Chỉ capture khi không còn bước nào thiếu, không
+  có gift card hoặc store credit (vì PayPal sẽ thu cả total), và total khớp từng cent với số PayPal
+  order được tạo. Không đạt thì không capture; PayPal order đã duyệt mà không capture thì tự hết hạn.
+- 422 khi complete chỉ được coi là thành công nếu sau một lần đọc lại (1.5 giây) giỏ hàng không còn
+  nữa.
+- Logic kiểm tra nằm ở `lib/utils/paypal-guard.ts`. Test: `paypal-guard.test.ts`,
+  `PaymentSection.paypal.test.tsx`, `payment.test.ts`. Chạy trên code cũ thì 14 test mới đều đỏ.
+
+### Đổi key PayPal trong dashboard là chưa đủ: client id nằm trong bản build storefront (5 Nov)
+
+- Chủ shop cập nhật key PayPal của một shop trong dashboard. Backend nhận key mới ngay: PayPal oauth
+  trả token, và payment session tạo được (201). Nhưng nút PayPal vẫn không hiện. Lý do:
+  `NEXT_PUBLIC_PAYPAL_CLIENT_ID` được nướng vào storefront lúc build, nên SDK PayPal trên trình duyệt
+  vẫn tải bằng client id cũ (id đã bị từ chối). Phải build lại storefront với id mới: thay
+  đúng một build arg, trang khớp từng chữ với bản cũ, sau khi đổi image thì PayPal mở với số tiền đúng.
+- Áp dụng cho cả Stripe: `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` cũng nằm trong bản build. Khi key thanh
+  toán trong dashboard đổi thì phải build lại storefront. `script/shop_host storefront` đọc key từ
+  database lúc build, nên chỉ cần chạy lại lệnh đó.
+
+### `display_on: back_end` nghĩa là khách không bao giờ thấy phương thức đó (5 Nov)
+
+- Spree 5.6.1 `Order#payment_methods` (đây là danh sách mà Store API trả cho giỏ hàng) là
+  `store.payment_methods.active.available_on_front_end`, tức chỉ gồm `display_on` là `front_end`
+  hoặc `both`. Một phương thức `active` nhưng `back_end` thì chỉ có trong dashboard.
+- Bản build storefront chứa code PayPal và client id thật, và phương thức đang `active`, nhưng như
+  vậy không có nghĩa là khách nhìn thấy nút. Hôm 4/11 đã kết luận ngược lại cho shop wholesale chỉ
+  dựa vào hai dấu hiệu đó, và kết luận đó sai. Muốn biết khách thấy gì thì đọc `display_on`, hoặc
+  xem danh sách phương thức của một giỏ hàng.
+
+## 85. Đơn đã trả tiền nhưng chưa hoàn tất không bao giờ nằm trong danh sách Orders của admin (5 Nov)
+
+- Spree admin 5.6.1 có hai danh sách đơn. **Orders** (`Spree::Admin::OrdersController#scope`) lấy
+  `base_scope.complete`, xếp theo `completed_at desc`, nên chỉ có đơn đã có `completed_at`.
+  **Draft Orders** (`CheckoutsController`, `current_store.checkouts` = `-> { incomplete }`) có mọi đơn
+  còn lại, xếp theo `created_at desc`, 25 đơn một trang. Menu Draft Orders nằm dưới Orders.
+- Một đơn đã có payment `completed` nhưng dừng ở bước `address` (lỗi PayPal ở §84) vì vậy chỉ có
+  trong Draft Orders. Khi chủ shop tìm nó trong Orders thì nó "biến mất", dù dòng dữ liệu không
+  đổi gì. Đo ngày 5/11 trên shop US: Orders đếm 57 đơn, đúng con số 57 trong ảnh chụp của khách.
+  Đơn đó không đổi gì kể từ ngày đặt.
+- Log của container `<shop>_web` ghi mỗi request admin dạng `[request-id] GET /admin/orders/or_xxx 200`.
+  Muốn biết thời gian thì dùng `docker logs -t`. Đổi prefix id ra số đơn bằng
+  `Spree::Order.find_by_prefix_id`. Nhờ vậy dựng lại được đường đi: hôm trước đơn được mở từ Draft
+  Orders rồi in hoá đơn, hôm sau lại đi tìm trong Orders. Từ 4/11 log chỉ có GET, không có request
+  nào sửa đơn.
+- Giỏ thử của mình (email `@example.test`) cũng nằm trong Draft Orders. 7 trong 8 đơn nháp mới trên
+  shop US từ 4/11 là giỏ thử, nên chúng đẩy đơn thật của khách xuống các trang sau.
+- Xoá một đơn nháp có shipment thì bị rollback mà không báo lỗi gì (đo ngày 5/11 trong một transaction
+  rollback). `Order belongs_to :ship_address, dependent: :destroy`. Khi đó `Address#destroy` thấy địa
+  chỉ vẫn còn shipment nên chỉ soft delete (`update_column :deleted_at`), Rails coi như địa chỉ chưa bị
+  xoá và rollback cả đơn. `order.destroy` trả về `nil`, `errors` rỗng. Nút Delete trong admin
+  (`OrdersController#destroy`) không kiểm tra giá trị trả về, nên rất có thể nó vẫn báo xoá thành
+  công dù đơn còn nguyên. Cách đã làm cho giỏ thử: xoá shipment trước, cho đơn bỏ địa chỉ dùng chung
+  (`update_columns(bill_address_id: nil, ship_address_id: nil)`), rồi mới `destroy!`, và chạy thử
+  trong transaction rollback trước. Mọi giỏ thử trên một shop dùng chung hai địa chỉ thử. Trước khi
+  xoá đã dump: `/root/sf-geo/us_shop-before-probe-cleanup-20261105.dump`.
+- Payment session đi theo đơn khi xoá. Lúc runtime `Order` có `has_many :payment_sessions,
+  dependent: :destroy`. Grep dòng 177 của `order.rb` không thấy `dependent`, vì nó được khai báo ở
+  chỗ khác. Đọc `Spree::Order.reflect_on_all_associations` mới thấy, nên lần đầu đọc sai, sửa lại cùng
+  ngày. `PaymentSession` là `acts_as_paranoid`. Lúc destroy, cả Stripe lẫn PaypalCheckout chỉ có hai
+  callback: xoá metafields và chụp payload sự kiện. Vì vậy session chỉ bị đặt `deleted_at`, không gọi
+  Stripe hay PayPal. Đơn còn kéo theo `stock_reservations` và `paypal_checkout_orders`, nhưng đo trên
+  cả 7 shop thì giỏ thử không có dòng nào ở hai bảng này. Mỗi đơn
+  xoá phát ra `order.deleted`, `line_item.deleted`, `shipment.deleted`, `payment_session.deleted`
+  vào SolidQueue cho `WebhookEventSubscriber`. Endpoint duy nhất của shop US chỉ đăng ký các sự kiện
+  product, variant, stock, price, taxon, nên đo được 76 job chạy xong và 0 webhook delivery.
+- Xoá giỏ thử làm `watch_orders` đếm sai. Nó loại các giỏ ẩn danh tạo trong vòng ±20 phút quanh
+  một giỏ `probe@example.test`, vì đó là các lượt duyệt bằng trình duyệt của chính mình. Xoá giỏ
+  thử thì mất luôn mốc thời gian đó. Đo ngay sau khi xoá 156 giỏ trên 6 shop: 20 giỏ của mình bị
+  đếm thành khách thật. CA từ 2 lên 8 giỏ, trong khi shop này mới có 5 đơn hoàn tất. Đã sửa: thời
+  điểm tạo của mỗi giỏ thử bị xoá được ghi vào `/root/.estate-probe-times` trước khi xoá, và
+  `watch_orders` cũng loại giỏ quanh các mốc đó. Đếm lại thì về đúng số cũ trên cả 6 shop, cả khi
+  chạy từ máy này lẫn chạy trên server. Từ nay `script/clear_probe_carts` làm việc dọn này ở cuối
+  `check_all` và `check_order_completes`.
+
+## 86. Spree 6.0.3 (5 Nov): với shop đã ở 6.0.2 bản này không có migration nào, chỉ là gem lock và gói dashboard (6 Nov)
+
+6.0.3 ra lúc 13:33 UTC ngày 5/11, gồm 54 commit. Đo bằng cách so hai tag, so starter `spree-starter`
+ở `v6.0.3`, rồi diễn tập trên bản copy database của shop business.
+
+- **Không có migration mới.** Cây `v6.0.2` và `v6.0.3` đều có đúng 306 file `db/migrate/*.rb`. API
+  compare của GitHub chỉ trả tối đa 300 file nên không dùng để kết luận được; phải đọc git tree đệ
+  quy (`truncated=false`). Trên bản copy và trên shop thật: `db:migrate` chạy 0 migration, schema vẫn
+  ở `20261102132858`.
+- **Starter chỉ đổi `Gemfile.lock`** (cộng 2 file spec: `agent_tools_spec.rb`, `swagger_helper.rb`).
+  Gemfile không đổi và giống hệt Gemfile của mình. Lock mới đổi: Rails 8.1.4 → 8.1.4.1, `spree_mcp`
+  6.0.3 với `mcp` 1.9.0, Typelizer 0.14, thêm `json-schema`, và bump nokogiri và aws-sdk. Typelizer
+  0.14 không còn đọc `DISABLE_TYPELIZER`/`ENABLE_TYPELIZER`; code và `.env` của mình không dùng hai
+  biến này.
+- **Dashboard.** `packages/dashboard-starter` có cùng tree SHA ở hai tag, nên chỉ đổi version bốn gói
+  `@spree/*`. Lock tạo bằng pnpm 11.13.1 trong `node:22-slim` (cùng image bước build dùng) chỉ đổi
+  các gói `@spree`, và bỏ `lucide-react` vì 6.0.3 không kéo gói này nữa.
+- **Route mới:** đúng 3 route, `PATCH /api/v3/admin/products/:id/{activate,archive,draft}`. Có route
+  MCP. Dashboard có trang Settings → AI agents; 56 trang đi qua 0 lỗi.
+- **Ship bằng cách đè.** Image build từ `app/` trên server, container không mount `app/`, compose
+  không có build arg. Vì vậy `git archive <commit>` đè lên `app/` cho ra đúng 4 file khác (lock, 2 file
+  dashboard, REVISION), còn file riêng của khách đã có từ lần ship trước. Build ra tag riêng `603-r1`,
+  `:latest` không đổi cho tới lúc chuyển.
+- **Kết quả.** Healthy sau 20 giây trên bản copy. Quay lui image 6.0.2 trên cùng database mất 18 giây,
+  `measure.rb` giống hệt. Trên shop thật: phục vụ lại sau 43 giây, `measure.rb` giống hệt bản đo ngay
+  trước lúc dừng.
+- **`shipping:smoke` đỏ không phải do nâng cấp:** đỏ y hệt trên 6.0.2 ngay trước khi chuyển. Một
+  delivery profile mới tạo không có delivery method nào, trong khi sản phẩm duy nhất của shop đã được
+  chuyển vào đó, nên giỏ hàng không có lựa chọn giao hàng. Store API vẫn trả sản phẩm này cho khách đã
+  được duyệt. Bài học cho probe: `checkout_probe.rb` lấy sản phẩm đầu tiên, nên dừng ở bước giao hàng
+  vì đúng lỗi cấu hình này. Để đo chính bản nâng cấp, trên bản copy đã chuyển sản phẩm về profile mặc
+  định, và ghi rõ là có dựng state đó.
+
+## 87. Coupon trên phí giao hàng không hiện trên hoá đơn admin, và đơn đã trả tiền nhưng chưa hoàn tất có `payment_state` NULL (6 Nov)
+
+- **Promotion gắn vào đúng chỗ nó giảm.** Coupon free shipping là adjustment trên `Spree::Shipment`.
+  Giảm giá sản phẩm là adjustment trên `Spree::LineItem`. Chỉ giảm giá cả đơn mới là adjustment trên
+  `Spree::Order`. `order.adjustments` chỉ trả loại cuối. Muốn lấy đủ mọi cấp phải dùng
+  `order.all_adjustments`. Hoá đơn admin của mình đọc `@order.adjustments`, nên đơn dùng coupon free
+  shipping in ra phí giao hàng, không có dòng giảm, và cộng không ra tổng (74.66 + 30.43 in thành
+  74.66). Đo trên cả 7 shop: 4 đơn hoàn tất có promotion trên shipment, 52 đơn có promotion cấp
+  order, 0 đơn có promotion trên line item.
+- **`LineItem#total` trong 5.6.1 là `amount + adjustment_total`** (alias của `final_amount`), tức đã
+  trừ giảm giá sản phẩm và cộng thuế ngoài. Trong khi đó `order.item_total` là tổng `amount` chưa
+  giảm. Cột Total của từng dòng phải dùng `display_amount` thì mới cộng ra đúng Subtotal.
+- **Đo bằng cách render.** `Spree::Admin::InvoicesController.render(inline: src, assigns: {...},
+  layout: false)` chạy template mới trên dữ liệu thật mà không cần deploy. Dùng `template:` thay
+  cho `inline:` để chạy template đang có trong image. Đã render 764 hoá đơn, 76 hoá đơn có giảm giá:
+  tất cả cộng ra đúng tổng.
+- **Đơn chưa hoàn tất luôn có `payment_state` NULL**, kể cả khi tiền đã thu. Spree chỉ tính trường
+  này lúc đơn hoàn tất. Đo trên 7 shop: 1 đơn nháp có payment `completed`, payment_state NULL, giống
+  52 giỏ chưa trả tiền trên cùng shop. Vì vậy không filter nào trên Draft Orders tìm được nó.
+  Filter phải đi qua bảng payments: `q[payments_state_eq]=completed`, sau khi thêm `payments` vào
+  `whitelisted_ransackable_associations` của Order. Payment đã cho filter theo `state`.
+- **Bảng admin 5.6 mở rộng được mà không cần override view.** Trong `after_initialize` gọi
+  `Spree.admin.tables.checkouts.add :payment, type: :custom, partial: ..., filter_type: :select,
+  ransack_attribute: 'payments_state'`. Cột tự hiện trong bảng và tự có trong menu Filters: trang
+  gửi danh sách field dạng JSON, có `{"key":"payments_state","label":"Payment",...}`. Menu Filters
+  gửi `query_state` dạng JSON, được đổi sang `q[...]` trong `TableConcern#process_table_query_state`.
+- **Deploy chỉ phần đã đổi.** Image chạy trên 7 shop được build từ source ngày 3/9, còn cây local có
+  thêm 20 file chưa ai review. Image mới chỉ là `FROM <image đang chạy>` cộng vài lệnh `COPY` cho
+  đúng các file đã đổi. `docker history` chỉ ra đúng các lớp đó, md5 các file khác giữ nguyên.
+- **Probe trình duyệt suýt đi ra shop thật.** Rails trả redirect tuyệt đối theo header `Host` mà
+  proxy đặt (tên shop thật), nên trình duyệt đang chạy trên bản copy đi theo redirect sang shop thật.
+  Script đã điền email và mật khẩu của tài khoản probe (chỉ có trên bản copy) vào trang đăng nhập
+  admin thật: một lần `POST /admin_user/sign_in` thất bại lúc 06:48:13 UTC. Không tài khoản thật nào
+  bị đụng tới. Cách sửa:
+  - proxy thêm `proxy_redirect https://<shop>/ http://localhost:3000/`, và đặt `Origin` thành tên
+    shop vì Rails kiểm tra Origin khi POST;
+  - script chặn mọi request tới host khác `localhost:3000` (`page.route`), và dừng trước khi gõ gì
+    nếu trang không còn ở trên bản copy.
+
+## 88. Email không có @ vẫn được lưu suốt checkout 5.6.1, thẻ bị trừ rồi đơn mới bị từ chối (11 Nov)
+
+**Đo được.** Một đơn trên một shop live (11 Nov 04:07 UTC): email không có `@`, state `delivery`, địa chỉ đủ, Stripe session completed 04:13:21 và payment completed 04:13:22, sau khi đơn sang delivery lúc 04:12:52. Thử trong bộ nhớ (không lưu): chuyển đơn sang payment báo "Email is invalid".
+
+**Cơ chế, 5.6.1.**
+- `spree_core-5.6.1/app/models/spree/order.rb:243` chỉ kiểm định dạng email khi `require_email`, mà `require_email` là false ở cart/address/delivery (`:1096-1098`). Email sai định dạng được lưu không lỗi suốt các bước đầu.
+- `Spree::Checkout::DefaultRequirements` (`default_requirements.rb:21`) chỉ hỏi `email.present?`, không hỏi định dạng. Store API trả `requirements` rỗng.
+- Storefront: Pay now chỉ dựa vào `requirements` (`CheckoutPageContent.tsx:589-640`), xác nhận thẻ với Stripe (`PaymentSection.tsx:850`), rồi mới gọi complete. Ô email là `type="email"` nhưng không có form submit nên trình duyệt không kiểm; lỗi lưu email bị bỏ qua có chủ ý (`CheckoutPageContent.tsx:324`).
+- Kết quả: tiền đã trừ, complete báo "Email is invalid", đơn nằm ở Draft Orders với cột Payment là Paid (§85, §87). Một đơn khác (7 Sep) là biến thể PayPal không có email nào ("Email can't be blank"), đường đó đã đóng ở dcb794d (§84).
+
+**6.0.3, thử thật trên bản sao local** (Store API, khách vãng lai, chuyển khoản): email có dấu chấm thay `@` bị từ chối ngay lúc lưu, 422 "Email is invalid" (`spree_core-6.0.3/app/models/spree/cart.rb:101` kiểm định dạng ở mọi lần lưu); không có email thì complete bị chặn, 422 "Email address is required" (`lib/spree/checkout/default_requirements.rb:39`); email đúng thì 200. Storefront 6.0 kiểm `requirements` trước khi trả tiền, nên không trừ tiền trước được. Còn lại một điểm: storefront 6.0 cũng bỏ qua lỗi lưu email, khách chỉ thấy "Email address is required" ở Pay now.
+
+**Đếm lúc 11 Nov (chỉ đọc):** đơn chưa hoàn tất mà đã trả tiền: 1 ở mỗi shop trong hai shop, các shop khác 0.
+
+**Cách sửa đề xuất cho 5.6.1 (chưa áp dụng, cần Luân cho phép):** một initializer dùng điểm mở rộng của Spree (`Spree::Checkout::Registry.add_requirement`, `registry.rb:51`), yêu cầu ở bước address là email rỗng hoặc khớp `EmailValidator::EMAIL_REGEX`. Pay now của storefront (PayPal cũng chạy qua đó từ dcb794d) sẽ dừng trước khi trừ tiền và hiện thông báo ở phần địa chỉ; không cần build lại storefront. Thử trong bộ nhớ trên shop đó: requirement này bắt được đơn kia và không bắt nhầm đơn nào trong 200 đơn hoàn tất gần nhất. Kèm theo, nên kiểm định dạng ngay khi rời ô email ở storefront (5.6.1 và 6.0) để khách thấy lỗi tại chỗ.

@@ -13,6 +13,23 @@ It exits non-zero on a failure and prints the command to run for each one. Run i
 after touching anything, and on any morning somebody wants to know the shops are
 fine.
 
+It checks the seven shops listed in `.estate`. The commercial shop on its own
+server is not one of them: `script/uptime` checks it from outside when someone
+runs it, and nothing schedules it. `script/watch_orders`, on cron every 6 hours
+on the estate server, is what notices a shop that keeps taking carts and stops
+finishing orders, which nothing in this file can see. `script/health` also runs
+at 09:00 every morning from launchd on Luan's laptop; the last run is at the end
+of `tmp/health.log`.
+
+Our checkout probes leave unfinished orders as `probe@example.test`, and he sees
+every one under Orders > Draft Orders. `script/clear_probe_carts` removes them,
+and it runs at the end of `check_all` and of `check_order_completes`. Run it by
+hand after any other probe. It only removes a cart that is ours by every measure,
+names any it keeps, and writes each cart's time to `/root/.estate-probe-times`
+before removing it. `watch_orders` reads that file: without it, removing our
+probes turned 20 of our own browser-walk carts back into customers (5 Nov). The
+rows it removed are in `/root/sf-geo/probe-carts-removed.log`.
+
 ---
 
 ## 1. What it checks, and the fault behind each check
@@ -76,7 +93,7 @@ The rule that survives both: **ask the question the customer asks.** A `curl` to
 ### After changing anything in `app/`, `lib/` or `config/`
 
 ```bash
-script/check_all          # every static gate
+script/check_all          # repo gates plus live-shop gates over ssh, both backup buckets, a checkout walk to Pay Now on every shop
 script/shop_host ship     # build the image on the server
 script/shop_host refresh   # put every container onto it, and prove they are on it
 script/health --quick
@@ -95,6 +112,12 @@ script/health <shop>
 which no longer resolves, and the shop's content pages all return 500.
 
 ### After loading a database
+
+**Since 27-28 Aug the database a load replaces is the live shop.**
+`script/shop_host load <shop>`, and `script/shop_host up <shop>` which calls it,
+drops that database after you type the shop name, takes no dump first, then
+switches its payment methods off and points it at its review name. Take and open
+a dump before either, every time.
 
 A load undoes every remediation. In order, and this is what
 `script/cutover_pipeline` does for you:
@@ -121,15 +144,16 @@ script/cutover_pipeline <shop> --verify # the browser part, after he lifts his f
 
 ## 4. Backups
 
-Every destructive step takes one first, and every one of them has been opened to
-prove it reads back:
+Most destructive steps take one first; `shop_host load` does not. Every one of
+them has been opened to prove it reads back:
 
 | When | Where |
 |---|---|
 | before a cutover | `/root/<shop>-precutover-<stamp>.sql.gz` |
-| before replacing a database | `/root/<shop>-before-*.sql.gz` |
+| before removing orders or changing coupon access | `/root/<shop>-before-*.sql.gz`, written by `remove_orders` and `coupon_guest_access`. `shop_host load` writes none |
 | before an env change | `/srv/<dir>/.env.before-<what>-<stamp>` |
 | fresh copy pulled from his server | `tmp/dumps/` here, and `/root/` there |
+| nightly, both servers | Backblaze B2, one bucket per server. `script/backup_b2 verify` lists the estate bucket, and `script/check_backups_offsite` checks last night's copy in both, from inside `check_all`. The estate job is `deploy/estate/spree-backup-b2.sh`, cron 03:15 UTC |
 
 ```bash
 script/pull_live_dump <shop> --dry-run   # say what it would do
@@ -158,7 +182,7 @@ this project once.
 
 | | |
 |---|---|
-| `docs/DISCOVERIES.md` | Every non-obvious finding, with the measurement that proved it. **Read section 8 to 12 before debugging anything here** |
+| `docs/DISCOVERIES.md` | Every non-obvious finding, with the measurement that proved it. **Read sections 8. to 12., the ones dated 27-28 Aug, before debugging anything here.** Numbers 8 to 30 appear twice in that file; these are the ones with a full stop after the number |
 | `docs/CUTOVER.md` | The gates that must hold on changeover day |
 | `docs/PLAN.md` | Where the engagement is |
 | `script/health --explain` | The same list as section 1, from the tool itself |

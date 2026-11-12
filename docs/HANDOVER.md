@@ -1,7 +1,9 @@
 # Project Handover — Spree Commerce
 
 **Handover date:** 30 July 2026
-**Status:** live on production, ready for demo / UAT.
+**Status:** the reference build described here was stopped on 12 August 2026, and its
+addresses answered 502 from that day. Kept as the record of what was handed over on
+30 July; due a rewrite against the live shops.
 
 This document is written for a recipient **who already knows Spree**. It covers where
 to sign in, what is in place, what is not, and what to do next. It is self-contained —

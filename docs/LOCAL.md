@@ -337,3 +337,6 @@ make css      # CSS admin có thể đổi theo version
 ```
 
 `spree:upgrade` chạy các task post-deploy của version mới — **đừng bỏ**.
+
+Lên 6.0 thì khác hẳn: phải chạy `spree:install:migrations` trước `db:migrate`, và có bốn
+lỗi upstream đã gặp trên rc3. Đọc [DISCOVERIES.md §71](DISCOVERIES.md) trước khi thử.
