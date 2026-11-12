@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Time kept per shop, because the client asked for it (28 Oct 2026).
+
+    script/timelog add <shop> <HH:MM> <HH:MM> "<what>" [--date YYYY-MM-DD]
+    script/timelog start <shop> "<what>"      open a block now
+    script/timelog stop                       close the open block now
+    script/timelog report [--since YYYY-MM-DD] [--shop SHOP]
+
+<shop> is a short name (business, b2b, ...) or "both" for work that serves two
+shops at once, which the report splits evenly and says so.
+
+Every block is clock time with a start and an end, taken from when the work
+happened (a log line, a file's timestamp, the clock), never a figure made up
+afterwards. The report adds the blocks up and does not round.
+
+The file is docs/timelog.json, gitignored: it names his shops and this
+repository is public.
+"""
+import json
+import os
+import sys
+from datetime import datetime, date
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PATH = os.path.join(ROOT, "docs", "timelog.json")
+
+
+def load():
+    if not os.path.exists(PATH):
+        return {"entries": [], "open": None}
+    with open(PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save(data):
+    tmp = PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, PATH)
+
+
+def minutes(start, end):
+    a = datetime.strptime(start, "%H:%M")
+    b = datetime.strptime(end, "%H:%M")
+    m = int((b - a).total_seconds() // 60)
+    if m <= 0:
+        sys.exit(f"end {end} is not after start {start}")
+    return m
+
+
+def arg(flag, default=None):
+    if flag in sys.argv:
+        i = sys.argv.index(flag)
+        return sys.argv[i + 1]
+    return default
+
+
+def hm(m):
+    return f"{m // 60}h{m % 60:02d}"
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "report"
+    data = load()
+
+    if cmd == "add":
+        shop, start, end, what = sys.argv[2:6]
+        day = arg("--date", date.today().isoformat())
+        data["entries"].append({"date": day, "shop": shop, "start": start, "end": end,
+                                "minutes": minutes(start, end), "what": what})
+        save(data)
+        print(f"{day} {shop} {start}-{end} {hm(minutes(start, end))}  {what}")
+
+    elif cmd == "start":
+        if data.get("open"):
+            sys.exit(f"a block is already open: {data['open']}")
+        shop, what = sys.argv[2:4]
+        data["open"] = {"date": date.today().isoformat(), "shop": shop,
+                        "start": datetime.now().strftime("%H:%M"), "what": what}
+        save(data)
+        print(f"started {data['open']}")
+
+    elif cmd == "stop":
+        o = data.get("open") or sys.exit("no open block")
+        end = datetime.now().strftime("%H:%M")
+        o.update(end=end, minutes=minutes(o["start"], end))
+        data["entries"].append(o)
+        data["open"] = None
+        save(data)
+        print(f"{o['date']} {o['shop']} {o['start']}-{end} {hm(o['minutes'])}  {o['what']}")
+
+    elif cmd == "report":
+        since = arg("--since", "0000-00-00")
+        only = arg("--shop")
+        rows = [e for e in data["entries"] if e["date"] >= since]
+        per = {}
+        for e in rows:
+            shops = [s.strip() for s in e["shop"].split("+")] if "+" in e["shop"] else [e["shop"]]
+            if shops == ["both"]:
+                shops = ["business", "b2b"]
+            share = e["minutes"] / len(shops)
+            for s in shops:
+                per[s] = per.get(s, 0) + share
+        for e in sorted(rows, key=lambda e: (e["date"], e["start"])):
+            if only and only not in (e["shop"], "both"):
+                continue
+            print(f"{e['date']}  {e['start']}-{e['end']}  {hm(e['minutes']):>6}  {e['shop']:<9} {e['what']}")
+        print()
+        for s, m in sorted(per.items()):
+            if only and s != only:
+                continue
+            print(f"  {s:<10} {hm(round(m))}")
+        print(f"  {'total':<10} {hm(sum(e['minutes'] for e in rows))}"
+              f"   (blocks marked both are split evenly)")
+        if data.get("open"):
+            print(f"\n  open: {data['open']}")
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

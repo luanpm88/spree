@@ -160,6 +160,26 @@ function validate(plan) {
     warnings.push(`meta.updated (${plan.meta.updated}) is older than the newest timeline entry (${newest})`)
   }
 
+  // The status block is the first screen of PLAN.md, the file every session is
+  // sent to first. On 18 Oct it still said "MONDAY. He is doing his own deep
+  // check" from 29 Aug: seven weeks and sixty timeline entries later, nobody had
+  // rewritten it, and nothing failed. meta.updated moved every day, so a date on
+  // the file proved nothing about the block. The block now carries its own date,
+  // and a timeline that runs more than three days past it stops the render.
+  const asOf = plan.status?.as_of
+  if (!ISO.test(asOf ?? '')) {
+    errors.push('status.as_of is missing: date the status block (YYYY-MM-DD) when you rewrite headline, next_action and story')
+  } else if (newest && (Date.parse(newest) - Date.parse(asOf)) / 86400000 > 3) {
+    errors.push(`status was last rewritten ${asOf}, the timeline runs to ${newest}: rewrite status.headline, next_action, story and drafts_waiting, then set status.as_of`)
+  }
+
+  // A draft listed as waiting that is no longer there has either been sent or
+  // moved, and the list is lying about what we owe him.
+  for (const d of plan.status?.drafts_waiting ?? []) {
+    if (!d.file) errors.push('status.drafts_waiting: an entry has no file')
+    else if (!existsSync(join(ROOT, d.file))) warnings.push(`status.drafts_waiting: ${d.file} is not there; sent or moved? take it off the list`)
+  }
+
   return { errors, warnings }
 }
 
@@ -192,6 +212,26 @@ function render(plan) {
   p('> Source of truth is `docs/plan.json`. This file is generated. Dashboard: http://admin.spree.local')
   p('')
 
+  // How the engagement got here, before any list, so a session that opens this
+  // file cold has the story first and the inventory second.
+  if ((plan.status.story ?? []).length) {
+    p(`## The story so far _(as of ${plan.status.as_of})_`)
+    p('')
+    for (const s of plan.status.story) p(`- **${esc(s.when)}** ${esc(s.what)}`)
+    p('')
+  }
+
+  // What we owe him and have not sent. Drafts live in tmp/urgent/, and a draft
+  // that sits there for a week is a promise nobody can see from this file.
+  if ((plan.status.drafts_waiting ?? []).length) {
+    p('## Drafts waiting to be sent')
+    p('')
+    p('| # | Draft | What it says | Send when |')
+    p('|---|---|---|---|')
+    plan.status.drafts_waiting.forEach((d, i) => p(`| ${i + 1} | \`${esc(d.file)}\` | ${esc(d.what)} | ${esc(d.when)} |`))
+    p('')
+  }
+
   if (openWaits.length) {
     p('## Waiting on the client')
     p('')
@@ -201,16 +241,6 @@ function render(plan) {
       const mark = w.severity === 'high' ? '🔴' : w.severity === 'medium' ? '🟡' : '⚪'
       const blocks = (w.blocks ?? []).map((b) => `\`${b}\``).join(', ') || '—'
       p(`| ${mark} | ${esc(w.question)} | ${w.asked_on ?? '—'} | ${esc(w.why_it_matters)} | ${blocks} |`)
-    }
-    p('')
-  }
-
-  const answered = (plan.waiting_on_client ?? []).filter((w) => w.status === 'answered')
-  if (answered.length) {
-    p('### Answered')
-    p('')
-    for (const w of answered) {
-      p(`- **${esc(w.question)}** — ${esc(w.answer)}${w.follow_up ? ` _(still: ${esc(w.follow_up)})_` : ''}`)
     }
     p('')
   }
@@ -369,6 +399,19 @@ function render(plan) {
     p('')
   }
 
+  // Settled questions go last. Up to 18 Oct they sat right under the open ones,
+  // seventy of them, and the three that mattered were lost among the answered.
+  const settled = (plan.waiting_on_client ?? []).filter((w) => w.status === 'answered' || w.status === 'dropped')
+  if (settled.length) {
+    p('## History: questions already settled')
+    p('')
+    for (const w of settled) {
+      const tag = w.status === 'dropped' ? ' _(dropped)_' : ''
+      p(`- **${esc(w.question)}**${tag} — ${esc(w.answer)}${w.follow_up ? ` _(still: ${esc(w.follow_up)})_` : ''}`)
+    }
+    p('')
+  }
+
   return L.join('\n')
 }
 
@@ -386,6 +429,13 @@ function status(plan) {
   console.log('')
   console.log(`${C.bold}NEXT${C.off}  ${plan.status.next_action}`)
   console.log('')
+
+  const drafts = plan.status.drafts_waiting ?? []
+  if (drafts.length) {
+    console.log(`${C.bold}DRAFTS NOT SENT${C.off} ${C.dim}(${drafts.length}, in sending order)${C.off}`)
+    drafts.forEach((d, i) => console.log(`  ${i + 1}. ${d.file}  ${C.dim}${d.when}${C.off}`))
+    console.log('')
+  }
 
   if (active.length) {
     console.log(`${C.bold}IN PROGRESS${C.off}`)

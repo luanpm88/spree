@@ -219,19 +219,30 @@ try {
         // Put the label wherever there is room, so it never runs off the viewport.
         const label = document.createElement('div');
         label.textContent = note.text;
+        // A shot that ends up in a PDF is printed at a fraction of its size, and a 14px
+        // label became 5pt type nobody could read. `fontSize` scales the label and its
+        // width together.
+        const size = note.fontSize || 14;
+        const width = Math.round(420 * size / 14);
         const wantLeft = box.x + box.width + 22;
-        const fitsRight = wantLeft + 430 < window.innerWidth;
+        // A note may name its side ('right', 'above', 'below') when the automatic choice
+        // would cover the content next to the target, such as a heading beside it.
+        const fitsRight = note.place ? note.place === 'right' : wantLeft + width + 10 < window.innerWidth;
         // Above beats below. Below drops the label onto whatever follows the element,
         // which on a page of prose is the sentence you were trying to show.
-        const fitsAbove = box.y > 110;
-        label.style.cssText = 'position:absolute;max-width:420px;white-space:pre-line;' +
-          `background:${c};color:#fff;padding:11px 14px;border-radius:8px;` +
+        const fitsAbove = note.place ? note.place === 'above' : box.y > 110;
+        // Above or below a target near the right edge, the label used to start at the
+        // target and run off the picture. Keep it inside the viewport.
+        const left = Math.max(12, Math.min(box.x, window.innerWidth - width - 12));
+        label.style.cssText = `position:absolute;max-width:${fitsRight ? Math.min(width, window.innerWidth - wantLeft - 12) : width}px;` +
+          `white-space:pre-line;font-size:${size}px;` +
+          `background:${c};color:#fff;padding:${Math.round(size * .8)}px ${size}px;border-radius:8px;` +
           'box-shadow:0 6px 18px rgba(0,0,0,.28);' +
           (fitsRight
             ? `left:${wantLeft}px;top:${Math.max(8, box.y - 6)}px;`
             : fitsAbove
-              ? `left:${Math.max(12, box.x)}px;bottom:${window.innerHeight - box.y + 18}px;`
-              : `left:${Math.max(12, box.x)}px;top:${box.y + box.height + 20}px;`);
+              ? `left:${left}px;bottom:${window.innerHeight - box.y + 18}px;`
+              : `left:${left}px;top:${box.y + box.height + 20}px;`);
         layer.appendChild(label);
 
         const line = document.createElement('div');

@@ -36,12 +36,12 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = process.argv.slice(2);
 const flag = (name, fallback = "") => {
   const i = argv.indexOf(`--${name}`);
-  return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
+  return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : fallback;
 };
 
 const src = argv.find((a) => !a.startsWith("--") && argv[argv.indexOf(a) - 1]?.startsWith("--") !== true);
 if (!src) {
-  console.error("usage: script/build_design_pdf.mjs <file.md> [--title T] [--subtitle S] [--out path.pdf]");
+  console.error("usage: script/build_design_pdf.mjs <file.md> [--title T] [--subtitle S] [--out path.pdf] [--eyebrow E] [--status S] [--spree V] [--developer D] [--foot F]");
   process.exit(2);
 }
 const SRC = resolve(ROOT, src);
@@ -52,6 +52,15 @@ if (!existsSync(SRC)) {
 const OUT = resolve(ROOT, flag("out", SRC.replace(/\.md$/, ".pdf")));
 const TITLE = flag("title", basename(SRC, ".md"));
 const SUBTITLE = flag("subtitle", "");
+// The cover's small print. The defaults are what the design documents always
+// printed, so they build exactly as before; a plan or a report says its own.
+// An empty value drops the line rather than printing an empty label.
+const EYEBROW = flag("eyebrow", "Design");
+const STATUS = flag("status", "Shape agreed, nothing built");
+const SPREE = flag("spree", "5.6.1 Community Edition");
+// Who built what the document reports on, as its own cover line. Empty by default.
+const DEVELOPER = flag("developer", "");
+const FOOT = flag("foot", "Everything marked [probed] was checked against a running system, not reasoned about.");
 
 // The stylesheet the other document already uses. Kept where it is rather than
 // copied in: one design, one file.
@@ -102,15 +111,16 @@ if (missing.length) {
 
 const cover = `
 <div class="cover">
-  <div class="eyebrow">Design</div>
+  ${EYEBROW ? `<div class="eyebrow">${EYEBROW}</div>` : ""}
   <h1>${TITLE}</h1>
   ${SUBTITLE ? `<div class="sub">${SUBTITLE}</div>` : ""}
   <dl>
-    <dt>Status</dt><dd>Shape agreed, nothing built</dd>
-    <dt>Spree</dt><dd>5.6.1 Community Edition</dd>
+    ${STATUS ? `<dt>Status</dt><dd>${STATUS}</dd>` : ""}
+    ${SPREE ? `<dt>Spree</dt><dd>${SPREE}</dd>` : ""}
+    ${DEVELOPER ? `<dt>Developer</dt><dd>${DEVELOPER}</dd>` : ""}
     <dt>Updated</dt><dd>${updated}</dd>
   </dl>
-  <div class="foot">Everything marked [probed] was checked against a running system, not reasoned about.</div>
+  ${FOOT ? `<div class="foot">${FOOT}</div>` : ""}
 </div>`;
 
 const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -124,7 +134,11 @@ pre { font-size: 9.5px; line-height: 1.45; white-space: pre; overflow: hidden; }
 const HTML_OUT = OUT.replace(/\.pdf$/, ".build.html");
 writeFileSync(HTML_OUT, html);
 
-const browser = await chromium.launch();
+// PDF_BROWSER_CHANNEL=chrome prints with the Chrome already installed on this
+// laptop, for when Playwright's own browser has not been downloaded.
+const browser = await chromium.launch(
+  process.env.PDF_BROWSER_CHANNEL ? { channel: process.env.PDF_BROWSER_CHANNEL } : {},
+);
 const page = await browser.newPage();
 await page.setContent(html, { waitUntil: "load" });
 await page.pdf({

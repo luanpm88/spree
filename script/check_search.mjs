@@ -40,8 +40,57 @@
  * working perfectly. That mistake was made three times in one day on this exact
  * question before the rule was written down.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
+
+/**
+ * What went wrong on the page while it loaded: failed requests, error
+ * statuses, console errors. Started before the page is opened.
+ */
+function watch(page) {
+  const seen = [];
+  page.on("requestfailed", (r) =>
+    seen.push(`failed ${r.failure()?.errorText ?? ""} ${r.url()}`),
+  );
+  page.on("response", (r) => {
+    if (r.status() >= 400) seen.push(`${r.status()} ${r.url()}`);
+  });
+  page.on("console", (m) => {
+    if (m.type() === "error") seen.push(`console ${m.text().slice(0, 200)}`);
+  });
+  return seen;
+}
+
+/**
+ * What the page showed when it came back empty, kept rather than guessed.
+ *
+ * On 3 Nov this gate failed in two runs of check_all in a row, on a different
+ * shop each time, and passed every time it was run alone. 45 seconds with
+ * neither a product nor an empty state is not a slow page, and nothing said what
+ * the page was instead: an error, a skeleton that never filled, or another
+ * address. Under tmp/, which is gitignored: it is a picture of his shop.
+ */
+async function keep(page, shop, what, res, seen, t0) {
+  const dir = "tmp/check_search";
+  mkdirSync(dir, { recursive: true });
+  const base = `${dir}/${shop}-${what}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  await page.screenshot({ path: `${base}.png` }).catch(() => {});
+  const text = await page
+    .evaluate(() => document.body?.innerText ?? "")
+    .catch((e) => `(no text: ${e.message})`);
+  writeFileSync(
+    `${base}.txt`,
+    [
+      `url      ${page.url()}`,
+      `status   ${res ? res.status() : "no response"}`,
+      `elapsed  ${Math.round((Date.now() - t0) / 1000)}s`,
+      ...seen.map((s) => `seen     ${s}`),
+      "",
+      text,
+    ].join("\n"),
+  );
+  return `${base}.png`;
+}
 
 /**
  * Credentials for a gated shop, from .shopauth. Never printed, only used.
@@ -170,7 +219,9 @@ for (const shop of SHOPS) {
     // script/shot_sections.mjs, which has been photographing that page for
     // weeks.
     const listing = "/products";
-    await page.goto(`https://${host}${listing}`, {
+    const seen = watch(page);
+    let t0 = Date.now();
+    let res = await page.goto(`https://${host}${listing}`, {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
@@ -188,7 +239,8 @@ for (const shop of SHOPS) {
     if (!browseCount) {
       // Browsing itself is broken, so a search result of zero would say nothing
       // about search. Reported as its own state rather than folded in.
-      rows.push({ shop, host, browseCount, term: "", searchCount: 0, note: "browsing returned nothing, search not judged" });
+      const kept = await keep(page, shop, "browse", res, seen, t0);
+      rows.push({ shop, host, browseCount, term: "", searchCount: 0, note: `browsing returned nothing, search not judged (${kept})` });
       await page.close();
       continue;
     }
@@ -207,7 +259,9 @@ for (const shop of SHOPS) {
       continue;
     }
 
-    await page.goto(
+    seen.length = 0;
+    t0 = Date.now();
+    res = await page.goto(
       `https://${host}${listing}?q=${encodeURIComponent(term)}`,
       { waitUntil: "domcontentloaded", timeout: 60000 },
     );
@@ -216,6 +270,7 @@ for (const shop of SHOPS) {
       'a[href*="/products/"]',
       (a) => a.length,
     );
+    if (!searchCount) console.log(`      ${shop}: kept ${await keep(page, shop, "search", res, seen, t0)}`);
     const counter = await page.evaluate(() => {
       const m = document.body.innerText.match(/(\d+)\s+products?/i);
       return m ? Number(m[1]) : null;

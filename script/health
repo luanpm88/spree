@@ -122,6 +122,20 @@ fail() { printf '    %sFAIL%s  %s\n' "$RE" "$R" "$1"; FAILS=$((FAILS+1)); [[ -n 
 warn() { printf '    %s!%s     %s\n' "$YE" "$R" "$1"; WARNS=$((WARNS+1)); }
 pass() { printf '    %sok%s    %s\n' "$GR" "$R" "$1"; }
 
+# Did a browser check fail to run at all, rather than find a fault?
+#
+# Every browser check here is Playwright on THIS machine. Between 17 and 18 Oct
+# the laptop's whole ~/Library/Caches/ms-playwright directory disappeared, every
+# check crashed at launch, and the lines read "FAIL" with no text and "image URLs
+# 4xx on the path the SERVER uses" on all seven shops, which tells the reader to
+# have the client purge Cloudflare. Every image on every shop was loading. A
+# crash is a fact about the measurement, so it is said as one, with the command
+# that mends it, and never phrased as a fault in the shop.
+unmeasured() {
+  printf '%s' "$1" | grep -qE "Executable doesn't exist|browserType\.launch|triggerUncaughtException|proves nothing about the shop"
+}
+PW_FIX="npx playwright install chromium   (the browser checks could not start on this machine)"
+
 # One status code, or 000, and never the two stuck together.
 #
 # The first version was `curl ... || echo 000`. When curl printed a code for one
@@ -321,17 +335,23 @@ for row in "${ROWS[@]}"; do
       # can somebody who is signed in actually buy.
       if go=$(node script/check_shop_gate.mjs "$host" "$shop" en 2>&1); then
         pass "closed to a stranger ($(printf '%s' "$go" | grep -oE '[0-9]+ check' | tail -1))"
+      elif unmeasured "$go"; then
+        fail "the closed-shop check could not run here, so this is unmeasured" "$PW_FIX"
       else
         fail "the closed shop is not closed" "node script/check_shop_gate.mjs $host $shop en"
       fi
       if sell=$(node script/check_gated_can_sell.mjs "$host" "$shop" 2>&1); then
         printf '    %sok%s    %s\n' "$GR" "$R" "$(printf '%s' "$sell" | tail -1 | sed 's/^ *ok *//;s/^ *//')"
+      elif unmeasured "$sell"; then
+        fail "the signed-in basket check could not run here, so this is unmeasured" "$PW_FIX"
       else
         fail "signed in, this shop cannot put anything in a basket" "node script/check_gated_can_sell.mjs $host $shop"
       fi
     elif out=$(node script/check_shop_images.mjs "$host" "tmp/health/${shop}.png" 2>&1); then
       # sed strips the sub-command's own "ok" so the line does not read "ok ok".
       printf '    %sok%s    %s\n' "$GR" "$R" "$(printf '%s' "$out" | grep -E 'photographs' | tail -1 | sed 's/^ *ok *//;s/^ *//')"
+    elif unmeasured "$out"; then
+      fail "the browser check could not run here, so the images are unmeasured" "$PW_FIX"
     else
       fail "$(printf '%s' "$out" | grep -E 'FAIL' | tail -1 | sed 's/^ *//')" "open tmp/health/${shop}.png and look at it"
     fi
@@ -339,6 +359,8 @@ for row in "${ROWS[@]}"; do
     if [[ -f script/check_image_origin ]]; then
       if o2=$(script/check_image_origin "$shop" "$host" 2>&1); then
         printf '    %sok%s    %s\n' "$GR" "$R" "$(printf '%s' "$o2" | grep -E 'reachable' | tail -1 | sed 's/^ *//')"
+      elif unmeasured "$o2"; then
+        fail "the server-path image sweep could not run here, so this is unmeasured" "$PW_FIX"
       else
         fail "image URLs 4xx on the path the SERVER uses" "he needs to purge the Cloudflare cache for this shop's API hostname"
       fi
@@ -351,7 +373,9 @@ mkdir -p tmp/health
 if [[ $FAILS -gt 0 ]]; then
   printf '%s%s failure(s)%s' "$RE" "$FAILS" "$R"
   [[ $WARNS -gt 0 ]] && printf ', %s to look at' "$WARNS"
-  printf '\n\nWhat to run:%s\n\n' "$REMEDIES"
+  # Same remedy once: seven shops whose browser cannot start would otherwise
+  # print the same install line fourteen times.
+  printf '\n\nWhat to run:%s\n\n' "$(printf '%s' "$REMEDIES" | awk '!seen[$0]++')"
   exit 1
 fi
 if [[ $WARNS -gt 0 ]]; then
