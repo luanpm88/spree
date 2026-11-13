@@ -101,6 +101,17 @@ script/health --quick
 
 `ship` alone changes nothing that is running. `refresh` is what makes it live.
 
+A refresh restarts the shop. Before it, tell him on the tracker, then check that nobody
+has been in the admin or at the checkout for 30 minutes. The log has no Rails `Started`
+lines, so a grep for them reads 0 on a busy day (`docs/DISCOVERIES.md` §91):
+
+```bash
+docker logs --since 30m <shop>_web 2>&1 | grep -E '^\[[0-9a-f-]+\] (GET|POST|PATCH|PUT|DELETE) /admin' | grep -v /admin/up | wc -l
+docker logs --since 30m <shop>_web 2>&1 | grep -cE '^\[[0-9a-f-]+\] (POST|PATCH|PUT|DELETE) /api/v3/store/(carts|checkout|orders)'
+```
+
+Run the same lines with `--since 24h` once: if that is 0 too, the check is wrong, not the shop quiet.
+
 ### After changing anything in `storefront/`
 
 ```bash
