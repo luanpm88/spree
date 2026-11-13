@@ -220,7 +220,14 @@ def cmd_run(_):
     out = r.stdout + r.stderr
     (j['_dir'] / f'run-{int(now)}.txt').write_text(out)
     posted = re.search(r'posted comment (\d+) on Task #(\d+) as (.+)', out)
-    if r.returncode == 3:
+    if r.returncode == 4 and j.get('tries', 0) < 6:
+        # The tracker did not answer before anything was sent (ac_comment exits 4 only then), so
+        # trying again cannot post twice. Six tries, ten minutes apart, then it fails like any other.
+        j['tries'] = j.get('tries', 0) + 1
+        j['due'] = int(now) + 600
+        save(j)
+        log(f'retry {j["id"]}: tracker did not answer (try {j["tries"]} of 6), again at {dt.datetime.fromtimestamp(j["due"]):%H:%M}')
+    elif r.returncode == 3:
         j['status'], j['reason'] = 'held', out.strip().splitlines()[-1]
         save(j)
         log(f'held {j["id"]}: {j["reason"]}')
@@ -257,8 +264,14 @@ def cmd_cancel(argv):
 
 def cmd_release(argv):
     j = find(argv[0])
-    j['status'], j['queued_at'], j['due'] = 'queued', int(time.time()), 0
+    # A held reply is released because someone read the new comment and decided it still fits, so
+    # the hold check starts again from now. A failed one keeps its own time: a comment written
+    # while it waited must still hold it.
+    if j['status'] == 'held':
+        j['queued_at'] = int(time.time())
+    j['status'], j['due'] = 'queued', 0
     j.pop('reason', None)
+    j.pop('tries', None)
     save(j)
     reflow()
     j = find(argv[0])

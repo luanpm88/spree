@@ -149,6 +149,13 @@ const session = await api('/user-session').catch(() => null)
 const meId = session?.logged_user_id ?? session?.user_id ?? null
 const me = meId ? await api(`/users/${meId}`).then((u) => u.single ?? u).catch(() => null) : null
 const meName = me?.display_name || [me?.first_name, me?.last_name].filter(Boolean).join(' ') || `user ${meId}`
+// No answer at all is not a wrong account: on 13 Nov 2026 the queue ran at 08:42, minutes after
+// the laptop woke, the tracker did not answer, and this printed "belongs to user null". Exit 4
+// means nothing was sent and nothing was decided, so script/ac_queue may try again later.
+if (!session || (meId && !me)) {
+  console.error(`${C.red}unreachable${C.off} could not ask the tracker whose token this is; nothing sent`)
+  process.exit(4)
+}
 if (/\.env\.ac_(team|huy)$/.test(ENV_PATH) && !AS) die(`say who is posting: --as luan or --as huy (this token is ${meName})`)
 if (AS && !meName.toLowerCase().includes(AS.toLowerCase())) die(`--as ${AS} but this token belongs to ${meName}. Nothing sent. Use the other --env.`)
 
