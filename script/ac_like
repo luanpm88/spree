@@ -1,0 +1,62 @@
+#!/usr/bin/env node
+// Thumbs up one comment on the team tracker, instead of replying to a comment that is only
+// information ("thanks", "I am working on it"). Luan, 14 Nov 2026: what needs no reply gets a like.
+//
+//   script/ac_like <comment id> <task id> --as luan|huy          dry run: who, which comment
+//   script/ac_like <comment id> <task id> --as luan|huy --go     like it, then read it back
+//
+// --as picks the token: luan = .env.ac_team (user 3), huy = .env.ac_huy (user 4). It refuses when
+// the token is someone else, when the comment is not on that task, when it is not the client's
+// (user 1), or when that account already reacted. Comment ids: script/ac_tasks --task <id> lists
+// the thread; the API id is in GET /comments/task/<task id>.
+//
+// The endpoint is not in the public API docs. It was read from the tracker's own web app on
+// 14 Nov 2026: POST /api/v1/reactions/comment/<id> with {"type":"ThumbsUpReaction"}; the types
+// are listed under available_reactions in GET /initial.
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const ACCOUNTS = { luan: { env: '.env.ac_team', user: 3 }, huy: { env: '.env.ac_huy', user: 4 } }
+const args = process.argv.slice(2)
+const as = args[args.indexOf('--as') + 1]
+const [commentId, taskId] = args.filter((a) => /^\d+$/.test(a))
+const GO = args.includes('--go')
+const acct = ACCOUNTS[as]
+if (!acct || !commentId || !taskId || args.indexOf('--as') < 0) {
+  console.error('usage: script/ac_like <comment id> <task id> --as luan|huy [--go]')
+  process.exit(2)
+}
+
+const E = Object.fromEntries(readFileSync(join(ROOT, acct.env), 'utf8').split('\n')
+  .map((l) => l.match(/^\s*([A-Z_]+)\s*=\s*(.*)$/)).filter(Boolean)
+  .map((m) => [m[1], m[2].trim().replace(/^["']|["']$/g, '')]))
+const BASE = `${E.ACTIVECOLLAB_URL.replace(/\/$/, '')}/api/v1`
+const H = { 'X-Angie-AuthApiToken': E.ACTIVECOLLAB_TOKEN, 'Content-Type': 'application/json' }
+const die = (m) => { console.error(`refused: ${m}. Nothing sent.`); process.exit(1) }
+const get = async (p) => {
+  const r = await fetch(BASE + p, { headers: H })
+  if (!r.ok) die(`GET ${p} answered ${r.status}`)
+  return r.json()
+}
+const thread = async () => { const j = await get(`/comments/task/${taskId}`); return Array.isArray(j) ? j : (j.comments || []) }
+
+const session = await get('/user-session')
+if (session.logged_user_id !== acct.user) die(`the ${acct.env} token is user ${session.logged_user_id}, --as ${as} is user ${acct.user}`)
+const c = (await thread()).find((x) => String(x.id) === String(commentId))
+if (!c) die(`comment ${commentId} is not on task id ${taskId}`)
+if (c.created_by_id !== 1) die(`comment ${commentId} is by ${c.created_by_name}, not the client`)
+const mine = (c.reactions || []).filter((r) => r.created_by_id === acct.user)
+if (mine.length) die(`${as} already reacted (${mine.map((r) => r.class).join(', ')})`)
+
+const text = (c.body_plain_text || '').replace(/\s+/g, ' ').trim().slice(0, 90)
+console.log(`${GO ? 'liking' : 'would like'}  comment ${c.id} on task id ${taskId}, by ${c.created_by_name}: "${text}"  as ${as}`)
+if (!GO) { console.log('dry run, nothing sent. --go to like it.'); process.exit(0) }
+
+const r = await fetch(`${BASE}/reactions/comment/${commentId}`, { method: 'POST', headers: H, body: JSON.stringify({ type: 'ThumbsUpReaction' }) })
+if (!r.ok) die(`POST answered ${r.status}: ${(await r.text()).slice(0, 200)}`)
+const back = (await thread()).find((x) => String(x.id) === String(commentId))
+const who = (back.reactions || []).map((x) => `${x.class} by ${x.created_by_name}`)
+console.log(`read back: ${who.join('; ')}`)
+if (!(back.reactions || []).some((x) => x.created_by_id === acct.user)) die('the like does not read back')

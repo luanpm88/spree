@@ -28,6 +28,7 @@ Bài học rút ra khi viết chúng: [DISCOVERIES.md §4](DISCOVERIES.md).
 | `lib/tasks/demo.rake` | Tạo tài khoản demo cho từng vai trò |
 | `script/voice_pass` | Codex GPT viết lại bản nháp comment/tin nhắn cho tự nhiên, đúng giọng từng người (`luan-`/`huy-` hoặc `--as`), cả mẻ một lần để không câu nào giống câu nào. Ra `<nháp>.voice.md`; số đơn hàng và email được thay bằng ký hiệu trước khi gửi đi, `--mask Tên` giấu thêm tên. Phải soát lại từng con số, tên, câu hỏi trước khi dùng |
 | `script/ac_queue` | Hàng đợi đăng comment: `add` kiểm tra như đăng thật rồi xếp giờ, launchd (`com.luan.spree.ac-queue`, 5 phút một lần) đăng từng cái. Cái đầu sau 10–35 phút, hai comment bất kỳ (Luân hay Huy) cách nhau 25–70 phút, chỉ 08:15–22:00. Có người comment vào task sau lúc xếp thì **giữ lại**, không đăng. `list`, `cancel`, `release` |
+| `script/ac_like` | Like (thumbs up) một comment của khách thay cho trả lời, khi comment chỉ là thông tin ("thanks", "đang làm"). `script/ac_like <comment id> <task id> --as luan\|huy`, mặc định chạy thử, `--go` mới gửi rồi đọc lại. Kiểm token đúng người, comment đúng task và là của khách, chưa react. Endpoint không có trong tài liệu API, đọc từ web app của tracker ngày 14/11: `POST /reactions/comment/<id>` `{type: ThumbsUpReaction}` |
 
 Cần: `npm install` (chỉ Playwright + markdown-it, **không** dùng cho app), và
 `npx playwright install chromium`.
