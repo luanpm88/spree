@@ -1,9 +1,11 @@
+import type { NextRequest, NextResponse } from "next/server";
 import {
   DEFAULT_LOCALE,
   resolveSupportedLocale,
   SUPPORTED_LOCALES,
 } from "@/i18n/locales";
 import { getClient } from "@/lib/spree/config";
+import { createGoneProductCheck } from "@/lib/spree/gone-products";
 import { createMarketsSnapshot } from "@/lib/spree/markets-snapshot";
 import { createSpreeMiddleware } from "@/lib/spree/middleware";
 import {
@@ -24,7 +26,7 @@ const markets = createMarketsSnapshot(() =>
     .then((res) => res.data),
 );
 
-export const proxy = createSpreeMiddleware({
+const localeMiddleware = createSpreeMiddleware({
   defaultCountry: getDefaultCountry(),
   defaultLocale: getDefaultLocale(),
   supportedLocales: SUPPORTED_LOCALES,
@@ -33,6 +35,14 @@ export const proxy = createSpreeMiddleware({
   cleanUrls: cleanUrlsEnabled(),
   markets,
 });
+
+// A deleted product answers 404 instead of 200 + noindex. See gone-products.ts.
+// Off on a shop that requires an account: a crawler only reaches its sign-in.
+const goneProduct = createGoneProductCheck({ enabled: !isAccountRequired() });
+
+export async function proxy(request: NextRequest): Promise<NextResponse> {
+  return goneProduct(request, localeMiddleware(request));
+}
 
 /**
  * What the middleware never sees.

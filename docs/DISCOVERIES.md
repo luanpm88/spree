@@ -7627,3 +7627,25 @@ Trước khi refresh bảy shop cho kiểm email, bước "30 phút không ai tr
 ## 93. Storefronts die at a 259 MB heap inside a 512 MB container, after two to four days (16 Nov)
 
 Open since 3 Nov as "storefronts die of Node heap exhaustion every few days, and pages crawl before each death". Measured read only on the estate server: in seven days one storefront logged 6 `FATAL ERROR: Reached heap limit` (10 restarts in all), another 3, three more 1 each, two none. None sets `NODE_OPTIONS`. Inside a container `v8.getHeapStatistics().heap_size_limit` is 259 MB on Node 22.23.2: V8 sized the heap to about half of the 512 MB memory limit. The last three crashes of one shop came after 351,599 s, 159,599 s and 186,599 s of uptime, each with Mark-Compact at about 240 to 246 MB of 259, `current mu` falling to 0.05 in the last one, which is the minutes of crawling pages before the end: the process spends its time collecting garbage. The container itself was not short of memory at the time; the heap ceiling is what it hits. So the fix is either more heap (and container memory to carry it) or a restart before the ceiling, and finding what grows over days is the real one; not done yet.
+
+## 94. Sản phẩm đã xoá trả 200 + noindex; proxy của Next 16 không đổi được mã của một rewrite, và không thấy header RSC (16 Nov)
+
+Search Console báo một loạt địa chỉ "bị loại vì noindex" trên hai shop. Đó là trang của những sản phẩm đã xoá: trang gọi `notFound()`, hiện chữ not-found và thêm thẻ noindex, nhưng dòng trạng thái vẫn là 200, nên với crawler đó là một trang sống xin đừng index, và nó cứ quay lại. Nguyên nhân là `cacheComponents` (đã ghi ở 5.15): phần khung đi ra kèm 200 trước khi `notFound()` chạy.
+
+Đo trên một app Next 16.2.11 dựng riêng, cùng dáng layout (Suspense bọc trang), `next build && next start`:
+
+| Cách | Mã trả về |
+|---|---|
+| `notFound()` trong trang | 200 + noindex |
+| một trang tĩnh chỉ gọi `notFound()` | 200 + noindex |
+| proxy `NextResponse.rewrite(url, { status: 404 })` | 200, mã bị bỏ |
+| proxy `NextResponse.next({ status: 404 })` | 200, mã bị bỏ |
+| proxy trả một response có body riêng | 404 |
+
+`next/dist/server/lib/router-utils/resolve-routes.js` chỉ giữ mã của proxy khi đó là redirect hoặc response có body riêng; với `x-middleware-rewrite` và `x-middleware-next` nó không trả `statusCode`. Vậy muốn có 404 thật thì proxy phải tự trả body.
+
+Cách làm (`storefront/src/lib/spree/gone-products.ts`): với một lần tải trang `/{country}/{locale}/products/{slug}` (sau rewrite của clean URL), hỏi Store API đúng câu trang sắp hỏi, cùng country và locale. Chỉ 404 kèm `code: record_not_found` mới tính là mất. Đo trong container storefront của shop NZ, chỉ đọc: sản phẩm không tồn tại trả 404 `{"error":{"code":"record_not_found","message":"Product not found"}}` sau 416 ms, sản phẩm có thật 200 sau 105 ms, thiếu key 401 `invalid_token`. Khi mất, proxy lấy lại chính địa chỉ đó từ server mình (127.0.0.1:$PORT, kèm một header bí mật theo tiến trình để bỏ qua kiểm tra), nên khách thấy đúng trang hôm nay, và trả trang đó với 404. Mọi trường hợp không chắc thì để request đi như cũ: hết 2 giây, lỗi mạng, 5xx, 401, 404 không có `record_not_found` (sai địa chỉ API sẽ trả như vậy cho mọi sản phẩm), render nội bộ hỏng, hoặc trang render ra không có noindex. Kết quả tệ nhất là 200 như hôm nay, không bao giờ là 404 cho một sản phẩm đang bán.
+
+Cái bẫy thứ hai, chỉ thấy khi chạy thật: proxy không bao giờ thấy header `rsc`. `next/dist/server/web/adapter.js` (FLIGHT_HEADERS) xoá `rsc`, `next-router-state-tree`, `next-router-prefetch` khỏi request trước khi proxy chạy và bỏ `_rsc` khỏi địa chỉ, rồi gắn lại cho bước render. Bản đầu lọc theo `rsc`, test đơn vị xanh, nhưng trên app đã build một request `rsc: 1` tới sản phẩm đã mất nhận về HTML 404, trong khi sản phẩm còn nhận `text/x-component`. Thứ trình duyệt thật sự đánh dấu là fetch của chính nó: `Sec-Fetch-Dest` là `empty` cho fetch() và `document` cho lần tải trang, còn crawler không gửi header Sec-Fetch nào. Lọc theo đó thì request RSC tới sản phẩm đã mất nhận `text/x-component` 200 của chính Next, và API chỉ bị hỏi một lần (của trang).
+
+Đo lại trên app đã build với API giả: tải trang sản phẩm còn 200; sản phẩm mất 404 có header, footer, noindex (cả địa chỉ có tiền tố lẫn clean URL), khoảng 30 ms; HEAD 404 không render; API 500 thì 200 như hôm nay, SDK thử 3 lần và không ghi nhớ; bấm link phía client từ một sản phẩm sang sản phẩm đã mất đi bằng một fetch, không tải lại trang, và hiện trang not-found. Test đơn vị: 30. Chưa deploy lên shop nào.

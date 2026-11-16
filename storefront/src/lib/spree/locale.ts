@@ -44,7 +44,7 @@ const DEFAULT_LOCALE_COOKIE = "spree_locale";
  * container instead of rebuilding the image. Unset, which is six of the seven
  * shops, nothing changes at all.
  */
-function apiLocale(urlLocale: string | undefined): string | undefined {
+export function apiLocale(urlLocale: string | undefined): string | undefined {
   return process.env.SPREE_API_LOCALE?.trim() || urlLocale;
 }
 
