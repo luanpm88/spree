@@ -151,6 +151,18 @@ script/cutover_pipeline <shop> --go     # the move
 script/cutover_pipeline <shop> --verify # the browser part, after he lifts his freeze
 ```
 
+### What restarts each storefront at night
+
+Each retail storefront restarts once a day at minute 30 of a quiet hour of its own, because
+its Node heap fills in two to four days and the shop crawls for minutes before it dies
+at whatever hour that happens (`docs/DISCOVERIES.md` 93). Root's crontab on the estate
+box runs `/root/storefront-nightly-restart.sh <shop>`, a byte identical copy of
+`deploy/estate/storefront-nightly-restart.sh`; `deploy/estate/README.md` says how it
+decides and how to check the copy. Each run writes one line to
+`/var/log/storefront-nightly-restart.log`. A storefront that started under 12 hours ago
+is skipped, so a refresh after a deploy does not get a second restart. To stop every
+restart at once: `rm /root/storefront-nightly-restart.enabled`.
+
 ---
 
 ## 4. Backups

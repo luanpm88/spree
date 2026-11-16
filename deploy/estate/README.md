@@ -51,3 +51,33 @@ container that does not exist:
   FAIL no databases matched _shop. Refusing to report success.
 === done, 1 failure(s)
 ```
+
+## storefront-nightly-restart.sh
+
+Restarts one shop's storefront container at that shop's quietest hour, so its
+Node heap is emptied before it reaches the 259 MB ceiling (`docs/DISCOVERIES.md`
+93). It lives at `/root/storefront-nightly-restart.sh`, byte identical to this
+copy, and root's crontab calls it once a day per retail shop, at minute 30 of a
+quiet hour picked from 15 days of nginx logs (measured 16 Nov 2026): the hour
+with the fewest browser requests, or for the two smallest shops, which are near
+zero at many hours, a near-empty hour in their local small hours. The times are in the crontab rather than here, because they name the
+shops. The wholesale storefront is left out: it sits behind a login and has never
+reached the ceiling.
+
+It does nothing unless `/root/storefront-nightly-restart.enabled` exists and the
+date written in it (UTC) has arrived, so deleting that file is the off switch.
+It never starts a stopped container, and it skips one that started less than 12
+hours ago, because a deploy has already emptied that heap. Each run appends one
+line to `/var/log/storefront-nightly-restart.log`: uptime and memory before, and
+how many seconds the storefront took to answer again.
+
+Proved on install without restarting anything: a missing flag, a date not yet
+reached and a container that does not exist each end the run before any docker
+command, and `--dry-run` on the six shops said "would restart" for the three up
+30 to 75 hours and skipped the three rebuilt that morning.
+
+To check the copy still matches:
+
+```bash
+ssh <estate> 'cat /root/storefront-nightly-restart.sh' | diff - deploy/estate/storefront-nightly-restart.sh
+```
