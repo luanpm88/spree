@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RegionPreferences } from "@/components/layout/RegionPreferences";
 import type { CountryWithMarket } from "@/contexts/StoreContext";
 import { useStore } from "@/contexts/StoreContext";
@@ -26,6 +26,14 @@ vi.mock("@/contexts/StoreContext", () => ({
 
 vi.mock("@/hooks/useCountrySwitch", () => ({
   useCountrySwitch: vi.fn(),
+}));
+
+vi.mock("@/lib/blocks/content", () => ({
+  MARKET_BY_SHOP: { wholesale: "nz" },
+  HOME_FLAG_BY_SHOP: {
+    "shop-asia": { iso: "hk", label: "HK" },
+    "shop-europe": { iso: "gb", label: "UK" },
+  },
 }));
 
 const mockUseStore = vi.mocked(useStore);
@@ -134,5 +142,91 @@ describe("RegionPreferences", () => {
     expect(
       screen.getByText("Could not update preferences."),
     ).toBeInTheDocument();
+  });
+});
+
+// One home flag per shop (client, 16 Nov 2026). The shop keys are stand-ins: the real
+// table lives in the gitignored content file, because it names the shops.
+describe("RegionPreferences, one home flag per shop", () => {
+  const previousShopKey = process.env.NEXT_PUBLIC_SHOP_KEY;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseCountrySwitch.mockReturnValue({
+      handleCountrySelect: vi.fn().mockResolvedValue(true),
+      isCartLoading: false,
+      isCountryNavigating: false,
+    });
+  });
+
+  afterEach(() => {
+    if (previousShopKey === undefined) delete process.env.NEXT_PUBLIC_SHOP_KEY;
+    else process.env.NEXT_PUBLIC_SHOP_KEY = previousShopKey;
+  });
+
+  function serve(country: string): void {
+    mockUseStore.mockReturnValue({
+      countries,
+      country,
+      currency: "USD",
+      locale: "en",
+      loading: false,
+      storeName: "Spree Store",
+    });
+  }
+
+  it("shows the shop's home flag whatever country the visitor was served", () => {
+    process.env.NEXT_PUBLIC_SHOP_KEY = "shop-asia";
+    serve("kw");
+
+    render(<RegionPreferences variant="header" />);
+
+    expect(
+      document.querySelector('img[src="/flags/1x1/hk.svg"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('img[src="/flags/1x1/kw.svg"]')).toBeNull();
+    expect(screen.getByText("HK")).toBeInTheDocument();
+  });
+
+  it("uses the home flag's own label, and the menu shows the same flag", () => {
+    process.env.NEXT_PUBLIC_SHOP_KEY = "shop-europe";
+    serve("be");
+
+    const { unmount } = render(<RegionPreferences variant="header" />);
+    expect(
+      document.querySelector('img[src="/flags/1x1/gb.svg"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('img[src="/flags/1x1/be.svg"]')).toBeNull();
+    expect(screen.getByText("UK")).toBeInTheDocument();
+    unmount();
+
+    render(<RegionPreferences variant="menu" />);
+    expect(
+      document.querySelector('img[src="/flags/1x1/gb.svg"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('img[src="/flags/1x1/be.svg"]')).toBeNull();
+  });
+
+  it("leaves a shop without a home flag on the country it serves", () => {
+    process.env.NEXT_PUBLIC_SHOP_KEY = "shop-single";
+    serve("ca");
+
+    render(<RegionPreferences variant="header" />);
+
+    expect(
+      document.querySelector('img[src="/flags/1x1/ca.svg"]'),
+    ).not.toBeNull();
+    expect(screen.getByText("ca")).toBeInTheDocument();
+  });
+
+  it("still resolves a shop addressed by a market name through MARKET_BY_SHOP", () => {
+    process.env.NEXT_PUBLIC_SHOP_KEY = "wholesale";
+    serve("wholesale");
+
+    render(<RegionPreferences variant="header" />);
+
+    expect(
+      document.querySelector('img[src="/flags/1x1/nz.svg"]'),
+    ).not.toBeNull();
   });
 });

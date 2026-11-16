@@ -25,9 +25,9 @@ import {
 } from "@/components/ui/native-select";
 import { type CountryWithMarket, useStore } from "@/contexts/StoreContext";
 import { useCountrySwitch } from "@/hooks/useCountrySwitch";
-import { MARKET_BY_SHOP } from "@/lib/blocks/content";
-import { cn } from "@/lib/utils";
+import { HOME_FLAG_BY_SHOP, MARKET_BY_SHOP } from "@/lib/blocks/content";
 import { shopKey } from "@/lib/shop-key";
+import { cn } from "@/lib/utils";
 
 interface RegionPreferencesProps {
   variant: "menu" | "header";
@@ -151,12 +151,17 @@ export function RegionPreferences({ variant }: RegionPreferencesProps) {
   }
 
   const isHeaderVariant = variant === "header";
-  // The 2 letter code to show in the header: the address segment when it is one,
-  // otherwise the market this shop sells into.
+  // The flag to show: the shop's one home flag when it has one (HOME_FLAG_BY_SHOP, the
+  // client's rule of 16 Nov 2026), otherwise the address segment when it is a 2 letter
+  // code, otherwise the market this shop sells into.
   const shop = shopKey();
-  const headerFlag = /^[a-z]{2}$/.test(country)
-    ? country.toLowerCase()
-    : (MARKET_BY_SHOP[shop] ?? "");
+  const homeFlag = HOME_FLAG_BY_SHOP[shop];
+  const headerFlag =
+    homeFlag?.iso ??
+    (/^[a-z]{2}$/.test(country)
+      ? country.toLowerCase()
+      : (MARKET_BY_SHOP[shop] ?? ""));
+  const headerLabel = homeFlag?.label ?? headerFlag;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -180,7 +185,7 @@ export function RegionPreferences({ variant }: RegionPreferencesProps) {
             />
             {headerFlag ? (
               <span className="hidden lg:inline text-xs font-medium uppercase tracking-wide">
-                {headerFlag}
+                {headerLabel}
               </span>
             ) : null}
           </Button>
@@ -194,7 +199,7 @@ export function RegionPreferences({ variant }: RegionPreferencesProps) {
             )}
           >
             <CountryFlag
-              country={country}
+              country={homeFlag?.iso ?? country}
               className={cn(
                 "size-3.5 shrink-0 rounded-full shadow-sm ring-1",
                 "ring-black/10",
