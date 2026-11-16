@@ -306,19 +306,41 @@ for (const name of names) {
 
     // Present is not the same as usable: the card field is an iframe from
     // Stripe and an empty one renders as a grey box that errors nowhere.
-    let typed = false;
-    try {
-      const frame = page
-        .frameLocator("iframe[title*='payment'], iframe[name*='__privateStripeFrame']")
-        .first();
-      await frame
-        .locator("input[name='number'], input#Field-numberInput")
-        .first()
-        .fill("4242424242424242", { timeout: 20000 });
-      typed = true;
-    } catch (_) {}
-    if (!typed && !noPaymentNeeded)
-      problems.push("the card field would not take a number");
+    //
+    // On the one shop where Stripe also offers Link the form takes longer to
+    // build: its number input appeared after about 10 seconds, and one capture
+    // at 30 seconds showed the whole form squeezed to about 100 px wide in
+    // headless Chromium (DISCOVERIES 92). This step went red there twice in one
+    // morning and green at 10:20, while that shop's real orders kept going
+    // through Stripe. So wait for the input to show and to widen before typing,
+    // type even if it never widens, and say what went wrong instead of
+    // swallowing it.
+    if (!noPaymentNeeded) {
+      let typed = false;
+      const why = [];
+      try {
+        const frame = page
+          .frameLocator("iframe[title*='payment'], iframe[name*='__privateStripeFrame']")
+          .first();
+        const input = frame
+          .locator("input[name='number'], input#Field-numberInput")
+          .first();
+        await input.waitFor({ state: "visible", timeout: 45000 });
+        let width = 0;
+        for (let i = 0; i < 20; i++) {
+          width = (await input.boundingBox())?.width ?? 0;
+          if (width >= 120) break;
+          await page.waitForTimeout(1000);
+        }
+        if (width < 120) why.push(`the input stayed ${Math.round(width)} px wide`);
+        await input.fill("4242424242424242", { timeout: 20000 });
+        typed = true;
+      } catch (e) {
+        why.push(String(e?.message ?? e).split("\n")[0].slice(0, 140));
+      }
+      if (!typed)
+        problems.push(`the card field would not take a number (${why.join(", then ")})`);
+    }
 
     const pay = page.getByRole("button", { name: /pay now|place order/i }).first();
     if (!(await pay.count())) problems.push("no pay button");
