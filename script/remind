@@ -1,0 +1,191 @@
+#!/usr/bin/env node
+// What is waiting on Luan or Huy right now, so nothing sits unanswered until somebody
+// happens to look (Luan, 15 Nov 2026: "nếu có gì chờ mình auto nhắc", for tasks, comments
+// and chats, both Huy and Luan). Read only: it posts nothing, likes nothing, and keeps no
+// "last look" of its own, so it never hides news from script/check_tasks.
+//
+//   script/remind              print the list
+//   script/remind --notify     and a macOS notification when the list is not empty
+//   script/remind --install    launchd: 08:47, 11:17, 14:17, 17:17 and 20:17 every day
+//
+// Waiting means:
+//   tracker   an open task whose newest comment is someone else's, not liked by us, with no
+//             reply queued in script/ac_queue, newer than 30 days (older ones are counted, the
+//             old tracker has two from August); or a task someone else opened in the last 14
+//             days that we never commented on. Huy's when it is assigned only to him or the
+//             comment addresses him; Luan's otherwise.
+//   chat      a conversation whose newest message is someone else's, read with each person's
+//             own token.
+//   drafts    docs/plan.json status.drafts_waiting: messages Luan still has to send himself.
+//   queue     a queued comment HELD because someone commented since, or one that FAILED.
+//
+// Sites and people come from the gitignored token files, so no name or host is in this file.
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+process.chdir(ROOT)
+const NOTIFY = process.argv.includes('--notify')
+const DAY = 86400
+
+if (process.argv.includes('--install')) {
+  const label = 'com.luan.spree.remind'
+  const plist = `${process.env.HOME}/Library/LaunchAgents/${label}.plist`
+  const times = [[8, 47], [11, 17], [14, 17], [17, 17], [20, 17]]
+  const node = process.execPath
+  writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key>
+  <array><string>${node}</string><string>${ROOT}/script/remind</string><string>--notify</string></array>
+  <key>WorkingDirectory</key><string>${ROOT}</string>
+  <key>StartCalendarInterval</key>
+  <array>${times.map(([h, m]) => `<dict><key>Hour</key><integer>${h}</integer><key>Minute</key><integer>${m}</integer></dict>`).join('')}</array>
+  <key>StandardOutPath</key><string>${ROOT}/tmp/remind/launchd.log</string>
+  <key>StandardErrorPath</key><string>${ROOT}/tmp/remind/launchd.log</string>
+</dict>
+</plist>
+`)
+  mkdirSync('tmp/remind', { recursive: true })
+  try { execFileSync('launchctl', ['unload', plist], { stdio: 'ignore' }) } catch {}
+  execFileSync('launchctl', ['load', plist])
+  console.log(`loaded ${plist}: ${times.map(([h, m]) => `${h}:${String(m).padStart(2, '0')}`).join(', ')} every day`)
+  process.exit(0)
+}
+
+const readEnv = (f) => Object.fromEntries(readFileSync(f, 'utf8').split('\n').map((l) => l.match(/^\s*([A-Z_]+)\s*=\s*(.*)$/)).filter(Boolean).map((m) => [m[1], m[2].trim()]))
+const text = (h) => (h || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim()
+const ago = (t) => { const d = Math.floor((Date.now() / 1000 - t) / DAY); return d <= 0 ? 'today' : d === 1 ? '1 day' : `${d} days` }
+
+function site(envFile) {
+  const E = readEnv(envFile)
+  const url = E.ACTIVECOLLAB_URL.replace(/\/$/, '')
+  const api = async (p) => {
+    const r = await fetch(`${url}/api/v1${p}`, { headers: { 'X-Angie-AuthApiToken': E.ACTIVECOLLAB_TOKEN } })
+    if (!r.ok) throw new Error(`${envFile} ${p}: HTTP ${r.status}`)
+    return r.json()
+  }
+  return { E, url, api, host: new URL(url).host }
+}
+async function whoAmI(s) { const x = await s.api('/user-session'); return x?.logged_user_id ?? x?.user_id ?? null }
+
+const items = { luan: [], huy: [] }
+const problems = []
+let stale = 0 // someone else's last word on a task, more than 30 days old: counted, not listed
+
+// Replies already queued, per site host + project + task, and the queue's own trouble.
+const queued = new Set()
+if (existsSync('tmp/ac_queue')) {
+  for (const d of readdirSync('tmp/ac_queue')) {
+    const f = join('tmp/ac_queue', d, 'job.json')
+    if (!existsSync(f)) continue
+    const j = JSON.parse(readFileSync(f, 'utf8'))
+    if (!['queued', 'held', 'failed'].includes(j.status)) continue
+    let host = ''
+    try { host = site(j.env || '.env.ac_team').host } catch {}
+    queued.add(`${host}|${j.project}|${j.task}`)
+    if (j.status !== 'queued') items[j.as === 'huy' ? 'huy' : 'luan'].push(`queue: comment for p${j.project} #${j.task} is ${j.status.toUpperCase()}${j.reason ? ` (${j.reason})` : ''}; script/ac_queue list`)
+  }
+}
+
+// Tracker tasks, read with Luan's tokens (they see every project).
+const teamEnv = '.env.ac_team'
+let huyId = null
+if (existsSync('.env.ac_huy')) { try { huyId = await whoAmI(site('.env.ac_huy')) } catch (e) { problems.push(`Huy's token: ${e.message}`) } }
+if (!huyId && existsSync(teamEnv)) {
+  const persona = (readEnv(teamEnv).AC_PERSONAS || '').split(',')[0]
+  if (persona) huyId = Number(persona.split(':')[0]) || null
+}
+let huyFirst = ''
+if (existsSync(teamEnv)) huyFirst = ((readEnv(teamEnv).AC_PERSONAS || '').split(',')[0]?.split(':')[1] || '').trim().split(/\s+/)[0] || ''
+const addressesHuy = (html) => (huyId && new RegExp(`data-user-id="${huyId}"`).test(html || '')) ||
+  (huyFirst && new RegExp(`^(\\s|<[^>]+>)*(hi|hello|hey|dear)\\s+${huyFirst}\\b`, 'i').test(html || ''))
+
+for (const envFile of ['.env.activecollab', teamEnv]) {
+  if (!existsSync(envFile)) continue
+  let s, me
+  try { s = site(envFile); me = await whoAmI(s) } catch (e) { problems.push(e.message); continue }
+  const ours = new Set([me, huyId].filter(Boolean))
+  let projects = []
+  try { projects = await s.api('/projects') } catch (e) { problems.push(e.message); continue }
+  for (const p of projects) {
+    let t
+    try { t = await s.api(`/projects/${p.id}/tasks`) } catch (e) { problems.push(e.message); continue }
+    for (const k of t.tasks || []) {
+      const label = `${p.name} #${k.task_number} ${k.name}`
+      if (queued.has(`${s.host}|${p.id}|${k.task_number}`)) continue
+      const assignees = k.assignee_ids || (k.assignee_id ? [k.assignee_id] : [])
+      const huyOnly = huyId && assignees.includes(huyId) && !assignees.includes(me)
+      let cs = []
+      try { cs = (await s.api(`/comments/task/${k.id}`)).filter((c) => !c.is_trashed).sort((a, b) => a.created_on - b.created_on) } catch (e) { problems.push(e.message); continue }
+      const last = cs[cs.length - 1]
+      if (!last) {
+        if (!ours.has(k.created_by_id) && Date.now() / 1000 - k.created_on < 14 * DAY) {
+          items[huyOnly || addressesHuy(k.body) ? 'huy' : 'luan'].push(`task: ${label}, opened ${ago(k.created_on)} ago by ${k.created_by_name || k.created_by_id}, no reply yet`)
+        }
+        continue
+      }
+      if (ours.has(last.created_by_id)) continue
+      if ((last.reactions || []).some((r) => ours.has(r.created_by_id))) continue
+      if (Date.now() / 1000 - last.created_on > 30 * DAY) { stale++; continue }
+      items[huyOnly || addressesHuy(last.body) ? 'huy' : 'luan'].push(`comment: ${label}, ${last.created_by_name || last.created_by_id} ${ago(last.created_on)} ago: "${text(last.body).slice(0, 90)}"`)
+    }
+  }
+}
+
+// Chats, each with its own person's token.
+for (const [envFile, who] of [['.env.activecollab', 'luan'], [teamEnv, 'luan'], ['.env.ac_huy', 'huy']]) {
+  if (!existsSync(envFile)) continue
+  let s, me
+  try { s = site(envFile); me = await whoAmI(s) } catch (e) { problems.push(e.message); continue }
+  let convs = []
+  try { const r = await s.api('/conversations/for-screen'); convs = Array.isArray(r) ? r : (r.conversations || []) } catch { continue }
+  for (const c of convs) {
+    let ms = []
+    try { const r = await s.api(`/conversations/${c.id}/messages`); ms = Array.isArray(r) ? r : (r.messages || r.items || []) } catch { continue }
+    const last = ms.sort((a, b) => a.created_on - b.created_on)[ms.length - 1]
+    if (last && last.created_by_id !== me) items[who].push(`chat: ${c.name || `chat ${c.id}`}, ${last.created_by_name || last.created_by_id} ${ago(last.created_on)} ago: "${text(last.body).slice(0, 90)}"`)
+  }
+}
+
+// Messages Luan sends himself (WhatsApp), from the plan. An entry with send_at
+// ("YYYY-MM-DD HH:MM", this laptop's clock) stays quiet until then, and from then on it
+// leads the list and the notification: WhatsApp cannot be posted from here, so the
+// schedule is a reminder at the right time (Luan, 16 Nov 2026: "lên lịch gửi nhé").
+const due = [], later = []
+if (existsSync('docs/plan.json')) {
+  const plan = JSON.parse(readFileSync('docs/plan.json', 'utf8'))
+  for (const d of plan.status?.drafts_waiting || []) {
+    if (d.file && !existsSync(d.file)) continue
+    const at = d.send_at ? new Date(d.send_at.replace(' ', 'T')) : null
+    if (at && at > new Date()) { later.push(`${d.send_at.slice(11)} ${d.file}`); continue }
+    if (at) { due.push(d.file); items.luan.unshift(`SEND NOW (WhatsApp, due ${d.send_at.slice(11)}): ${d.file}`); continue }
+    items.luan.push(`draft to send: ${d.file}${d.when ? ` (${String(d.when).slice(0, 40)})` : ''}`)
+  }
+}
+
+const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ')
+const out = [`${stamp} UTC  waiting on Luan: ${items.luan.length}, on Huy: ${items.huy.length}`]
+for (const who of ['luan', 'huy']) {
+  out.push(`${who === 'luan' ? 'Luan' : 'Huy'}:`)
+  out.push(...(items[who].length ? items[who].map((l) => `  ${l}`) : ['  nothing']))
+}
+if (later.length) out.push('scheduled later today or after:', ...later.map((l) => `  ${l}`))
+if (stale) out.push(`(${stale} task(s) where someone else's comment is over 30 days old and unanswered: not listed; script/ac_tasks to see them)`)
+if (problems.length) out.push('could not read:', ...problems.map((p) => `  ${p}`))
+const report = out.join('\n')
+console.log(report)
+mkdirSync('tmp/remind', { recursive: true })
+writeFileSync('tmp/remind/last.txt', `${report}\n`)
+appendFileSync('tmp/remind/log.txt', `${out[0]}\n`)
+
+if (NOTIFY && (items.luan.length || items.huy.length || problems.length)) {
+  const first = (items.luan[0] || items.huy[0] || problems[0] || '').replace(/["\\]/g, "'").slice(0, 110)
+  const title = due.length ? `Send now on WhatsApp: ${due.length}` : `Waiting: Luan ${items.luan.length}, Huy ${items.huy.length}`
+  const script = `display notification "${first}" with title "${title}" subtitle "tmp/remind/last.txt"`
+  try { execFileSync('osascript', ['-e', script]) } catch (e) { console.error(`notification failed: ${e.message}`) }
+}
