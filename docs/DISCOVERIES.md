@@ -7334,6 +7334,11 @@ rỗng, một chunk JS `net::ERR_ABORTED`.
 - **Kernel log có 135 lần OOM kể từ 13/8, đều là OOM trong cgroup (container chạm trần), không lần nào
   là OOM toàn hệ thống.** Phần lớn rơi vào khoảng 02:0x UTC mỗi đêm và đều là process ruby. Chưa biết
   job nào chạy lúc đó.
+  Đo lại ngày 17/11, chỉ đọc (`journalctl -k --since 2026-11-01`): có 4 lần OOM trong cgroup, đều là
+  process ruby uid 1000, anon-rss 641 đến 706 MB. Ba lần đầu rơi vào 1/11, 2/11 và 4/11, lúc 02:0x UTC.
+  Lần thứ tư là 12/11, lúc 14:23 UTC. Sau 4/11 không còn lần nào vào khoảng 02:0x. Cả 3 container bị giết
+  đều đã được tạo lại và ID của chúng không còn, nên không biết đó là shop nào. Không lần nào là process
+  node: storefront chết vì chạm trần heap (§93), không phải trần cgroup.
 - **React #418 (HTML server và client lệch nhau) có sẵn trên bản live, với cả khách đúng nước của
   shop.** Đo bằng trình duyệt sạch, cookie `spree_country=us` trên shop Mỹ: lần nào cũng có #418, 2 lần
   điều hướng. Shop quốc tế 34 nước, khách từ Hà Lan: #418, 4 lần. Shop quốc tế 33 nước, khách từ Hà
@@ -7651,3 +7656,9 @@ Cách làm (`storefront/src/lib/spree/gone-products.ts`): với một lần tả
 Cái bẫy thứ hai, chỉ thấy khi chạy thật: proxy không bao giờ thấy header `rsc`. `next/dist/server/web/adapter.js` (FLIGHT_HEADERS) xoá `rsc`, `next-router-state-tree`, `next-router-prefetch` khỏi request trước khi proxy chạy và bỏ `_rsc` khỏi địa chỉ, rồi gắn lại cho bước render. Bản đầu lọc theo `rsc`, test đơn vị xanh, nhưng trên app đã build một request `rsc: 1` tới sản phẩm đã mất nhận về HTML 404, trong khi sản phẩm còn nhận `text/x-component`. Thứ trình duyệt thật sự đánh dấu là fetch của chính nó: `Sec-Fetch-Dest` là `empty` cho fetch() và `document` cho lần tải trang, còn crawler không gửi header Sec-Fetch nào. Lọc theo đó thì request RSC tới sản phẩm đã mất nhận `text/x-component` 200 của chính Next, và API chỉ bị hỏi một lần (của trang).
 
 Đo lại trên app đã build với API giả: tải trang sản phẩm còn 200; sản phẩm mất 404 có header, footer, noindex (cả địa chỉ có tiền tố lẫn clean URL), khoảng 30 ms; HEAD 404 không render; API 500 thì 200 như hôm nay, SDK thử 3 lần và không ghi nhớ; bấm link phía client từ một sản phẩm sang sản phẩm đã mất đi bằng một fetch, không tải lại trang, và hiện trang not-found. Test đơn vị: 30. Chưa deploy lên shop nào.
+
+## 95. Spree 6.0.5 makes Doorkeeper 6.0.0.rc3 a hard dependency of spree_core; what it breaks is out-of-band OAuth redirects (17 Nov)
+
+Release notes of 6.0.5 (16 Nov): `spree_core` now requires `doorkeeper ~> 6.0.0.rc3`, and rc3 refuses an OAuth application registered with the out-of-band redirect `urn:ietf:wg:oauth:2.0:oob`, so such an app stops authorizing until it gets a real redirect URI. The same release keeps deprecated Ruby APIs until 6.3 and deprecated Store API fields, request names and webhook events until 6.5 (they were to go in 6.1), and lists no migrations.
+
+Measured read only on our installs the same morning. The 6.0.4 shop already carries `doorkeeper (6.0.0.rc2)` in its `Gemfile.lock` (it arrives with 6.0.4 too), has the three tables `spree_oauth_applications`, `spree_oauth_access_grants`, `spree_oauth_access_tokens`, and holds 0 OAuth applications, so the rc3 change has nothing to break there. The seven 5.6.1 shops have no `doorkeeper` line in their `Gemfile.lock` at all. On the 6.0.4 box the postgres container sets no `POSTGRES_USER`, so `psql` from `docker exec` connects as `root` and fails; `-U postgres -d spree_production` works.
