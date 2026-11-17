@@ -1,0 +1,137 @@
+#!/usr/bin/env node
+// Set a task's status label on the team tracker, after showing what changes.
+//
+//   script/ac_label 19 FIXED --as huy --project 1            preview only, changes nothing
+//   script/ac_label 19 FIXED --as huy --project 1 --send     set it, then read the task back
+//   script/ac_label 19 --show --as huy --project 1           the task's labels and the ones on offer
+//   … --env .env.ac_team | .env.ac_huy                       default from --as: luan .env.ac_team, huy .env.ac_huy
+//   … --off-assignment                                       a task the token's user is not assigned to
+//
+// Why (Luan, 17 Nov 2026): "nhớ tìm cách học skill đánh nhãn cho tasks nha để Luan Huy chủ động
+// đánh dấu cái nào xong". Luan and Huy mark their own tasks, so the client can see at a glance what
+// is done. Which label means what is in .claude/skills/check-inbox-and-tasks/SKILL.md.
+//
+// How the tracker itself does it, read from its own web app on 17 Nov 2026 (editTask in
+// /js/index.*.js): PUT /api/v1/projects/<project>/tasks/<task id> with {"labels": [<label id>, …]}.
+// The list replaces the task's labels, so this keeps every label that is not a status (CONFIDENTIAL,
+// URGENT) and swaps the status one. The activity feed does not record label changes, so a label put
+// on by mistake leaves no trace either: read it back, which --send does.
+//
+// The same two locks as script/ac_comment: --as must match the token's own user, and that user must
+// be assigned to the task unless --off-assignment says the exception is meant.
+
+import { readFileSync, existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const C = process.stdout.isTTY
+  ? { dim: '\x1b[2m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', bold: '\x1b[1m', off: '\x1b[0m' }
+  : { dim: '', red: '', green: '', yellow: '', bold: '', off: '' }
+const die = (m) => { console.error(`${C.red}error${C.off} ${m}`); process.exit(1) }
+
+const args = process.argv.slice(2)
+const VALUED = ['--env', '--project', '--as']
+const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined }
+const AS = flag('--as')
+const ENV_FOR = { luan: '.env.ac_team', huy: '.env.ac_huy' }
+const ENV_PATH = resolve(ROOT, flag('--env') || ENV_FOR[AS] || '')
+const PROJECT_ID = flag('--project')
+const SEND = args.includes('--send')
+const SHOW = args.includes('--show')
+const OFF = args.includes('--off-assignment')
+const [task, wanted] = args.filter((a, i) => !a.startsWith('--') && !VALUED.includes(args[i - 1]))
+if (!AS || !ENV_FOR[AS]) die('say who is labelling: --as luan or --as huy')
+if (!PROJECT_ID) die('say which project: --project <id>, as in the task list (script/ac_tasks)')
+if (!task || (!wanted && !SHOW)) die('usage: script/ac_label <task-number> <LABEL> --as luan|huy --project <id> [--send]  |  <task-number> --show …')
+
+// Status labels: one at a time per task. The rest (CONFIDENTIAL, URGENT) are kept as they are.
+const STATUS = new Set(['NEW', 'ASSIGNED', 'IN PROGRESS', 'INPROGRESS', 'CONFIRMED', 'FIXED', 'VERIFIED', 'REOPENED',
+  'BLOCKED', 'PAUSED', 'CANCELED', 'WORKS FOR ME', 'DUPLICATE', 'WONT FIX'])
+
+function env() {
+  if (!existsSync(ENV_PATH)) die(`missing ${ENV_PATH}`)
+  const out = {}
+  for (const line of readFileSync(ENV_PATH, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*)$/)
+    if (m) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, '')
+  }
+  if (!out.ACTIVECOLLAB_TOKEN || !out.ACTIVECOLLAB_URL) die(`${ENV_PATH} needs ACTIVECOLLAB_URL and ACTIVECOLLAB_TOKEN`)
+  out.ACTIVECOLLAB_URL = out.ACTIVECOLLAB_URL.replace(/\/$/, '')
+  return out
+}
+const E = env()
+
+async function api(path, init = {}) {
+  let res
+  try {
+    res = await fetch(`${E.ACTIVECOLLAB_URL}/api/v1${path}`, {
+      ...init,
+      headers: { 'X-Angie-AuthApiToken': E.ACTIVECOLLAB_TOKEN, 'User-Agent': 'spree-plan-tools/1.0', ...(init.body ? { 'Content-Type': 'application/json' } : {}) },
+      signal: AbortSignal.timeout(30_000),
+    })
+  } catch (e) {
+    console.error(`${C.red}unreachable${C.off} ${init.method || 'GET'} ${path}: ${e.name}; nothing changed`)
+    process.exit(4)
+  }
+  const text = await res.text()
+  if (res.status >= 500) { console.error(`${C.red}unreachable${C.off} ${init.method || 'GET'} ${path} -> HTTP ${res.status}; nothing changed`); process.exit(4) }
+  if (!res.ok) die(`${init.method || 'GET'} ${path} -> HTTP ${res.status}\n${text.slice(0, 400)}`)
+  try { return JSON.parse(text) } catch { die(`${path} returned non-JSON:\n${text.slice(0, 300)}`) }
+}
+
+// ── who is labelling ────────────────────────────────────────────────────────
+const session = await api('/user-session')
+const meId = session?.logged_user_id ?? session?.user_id ?? null
+const me = meId ? await api(`/users/${meId}`).then((u) => u.single ?? u) : null
+const meName = me?.display_name || [me?.first_name, me?.last_name].filter(Boolean).join(' ') || `user ${meId}`
+if (!meName.toLowerCase().includes(AS.toLowerCase())) die(`--as ${AS} but this token belongs to ${meName}. Nothing changed.`)
+
+// ── the task, its labels and the labels on offer ───────────────────────────
+const all = await api('/labels')
+const byId = new Map(all.map((l) => [l.id, l]))
+// Two labels may share a name (NEW is 1 and 5 here); the one already used on tasks in this project wins.
+const tasks = (await api(`/projects/${PROJECT_ID}/tasks`)).tasks || []
+const used = new Set(tasks.flatMap((t) => (t.labels || []).map((l) => (typeof l === 'object' ? l.id : l))))
+const target = tasks.find((t) => String(t.task_number) === String(task))
+if (!target) die(`no open task #${task} in project ${PROJECT_ID}`)
+const full = await api(`/projects/${PROJECT_ID}/tasks/${target.id}`).then((t) => t.single ?? t)
+const ids = (full.labels || []).map((l) => (typeof l === 'object' ? l.id : l))
+const names = (list) => list.map((id) => byId.get(id)?.name ?? `#${id}`)
+
+const assignees = full.assignee_ids?.length ? full.assignee_ids : [full.assignee_id].filter(Boolean)
+const assigneeNames = await Promise.all(assignees.map((id) => api(`/users/${id}`).then((u) => (u.single ?? u).display_name).catch(() => `user ${id}`)))
+
+console.log(`task    #${full.task_number} (${full.id})  ${full.name}`)
+console.log(`url     ${E.ACTIVECOLLAB_URL}/projects/${PROJECT_ID}?modal=Task-${full.id}-${PROJECT_ID}`)
+console.log(`by      ${meName} (user ${meId})   assigned: ${assigneeNames.join(', ') || 'nobody'}`)
+console.log(`labels  ${names(ids).join(', ') || '(none)'}`)
+if (SHOW) {
+  console.log(`offered ${all.filter((l) => !l.is_trashed).map((l) => l.name).filter((n, i, a) => a.indexOf(n) === i).join(', ')}`)
+  process.exit(0)
+}
+
+if (!assignees.includes(meId) && !OFF) die(`${meName} is not assigned to task #${full.task_number}. Nothing changed. Add --off-assignment if that is meant.`)
+
+const want = String(wanted).toUpperCase()
+const candidates = all.filter((l) => String(l.name).toUpperCase() === want)
+if (!candidates.length) die(`no label "${wanted}" on this tracker. On offer: ${[...new Set(all.map((l) => l.name))].join(', ')}`)
+const label = candidates.find((l) => used.has(l.id)) || candidates[0]
+const keep = ids.filter((id) => !STATUS.has(String(byId.get(id)?.name).toUpperCase()))
+const next = [...keep, label.id]
+console.log(`becomes ${names(next).join(', ')}`)
+
+if (ids.length === next.length && ids.every((id) => next.includes(id))) {
+  console.log(`${C.green}already so${C.off}, nothing to change`)
+  process.exit(0)
+}
+if (!SEND) {
+  console.log(`\n${C.yellow}preview only.${C.off} nothing changed. add --send to set it.`)
+  process.exit(0)
+}
+
+await api(`/projects/${PROJECT_ID}/tasks/${full.id}`, { method: 'PUT', body: JSON.stringify({ labels: next }) })
+const back = await api(`/projects/${PROJECT_ID}/tasks/${full.id}`).then((t) => t.single ?? t)
+const got = (back.labels || []).map((l) => (typeof l === 'object' ? l.id : l))
+if (got.length !== next.length || !next.every((id) => got.includes(id))) die(`sent ${names(next).join(', ')} but the task now reads ${names(got).join(', ') || '(none)'}`)
+console.log(`${C.green}set${C.off} task #${back.task_number} now reads ${names(got).join(', ')}, by ${meName}`)

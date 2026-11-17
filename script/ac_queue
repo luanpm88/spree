@@ -2,7 +2,14 @@
 """
 Post tracker comments later, spaced out, instead of the moment they are written.
 
-    script/ac_queue add 15 draft.md --as huy --project 1 [--attach report.pdf] [--off-assignment] [--not-before 14:30] [--urgent]
+    script/ac_queue add 15 draft.md --as huy --project 1 [--attach report.pdf] [--off-assignment] [--not-before 14:30] [--urgent] [--label FIXED]
+    script/ac_queue task --project 1 --as luan --title "Title" --body draft.md [--list "Task list"] [--assignee <name>] [--not-before 14:30] [--urgent]
+                                         create a new tracker task at its slot (script/ac_task_create), spaced like a comment
+    script/ac_queue label 17 FIXED --as huy --project 1 [--not-before 09:30]
+                                         set a task's status label in office hours, with no comment (script/ac_label);
+                                         labels notify nobody, so they take no slot and push nothing back
+    script/ac_queue move <id> 10:05      move one waiting job to a time (then everything is re-spaced as usual)
+    script/ac_queue try <id>             rehearse one job now: its preview, exactly as the real run would call it; changes nothing
     script/ac_queue list                 what is waiting, and when each one goes
     script/ac_queue run                  post the one comment that is due (launchd runs this every 5 minutes)
     script/ac_queue cancel <id>          take one out, nothing posted
@@ -31,6 +38,12 @@ The rules, for every account together:
     left them bunched up;
   * a reply is held, not posted, when someone else has commented on that task since it was queued
     (ac_comment --hold-if-new-since), because it may answer a question that has moved on.
+
+--label sets the task's status label (script/ac_label) right after its comment is posted, from the
+same account, so the client sees the task marked done the moment the reply that says so arrives
+(Luan, 17 Nov 2026: "Luan Huy chủ động đánh dấu cái nào xong"). It is checked when the
+comment is queued and set only once the comment is up; a label that fails is logged and notified,
+and the comment stands.
 
 Every post goes through script/ac_comment, so its account check (--as against the token), the
 assignee lock and the read-back of the author all still apply. `add` runs it as a dry run first
@@ -126,9 +139,20 @@ def reflow(now=None):
     prev = max(state()['last_post'], 0)
     for j in jobs({'queued'}):
         urgent = j.get('urgent', False)
-        earliest = max(j['not_before'], now + 60, prev + gap() if prev else 0)
-        if j['due'] < earliest:
-            j['due'] = in_day(earliest, urgent)
+        if j.get('kind') == 'label':
+            # A label notifies nobody, so it keeps its own time, only moved into office hours.
+            want = in_day(max(j['due'], j['not_before']), urgent)
+            if want != j['due']:
+                j['due'] = want
+                save(j)
+            continue
+        # A job already at least the shortest gap after the one before keeps its time. Drawing a new
+        # random gap on every pass pushed jobs later each time anything was posted, added or moved
+        # (17 Nov 2026: a reply planned for 09:15 drifted to 15:23 over one evening). The random gap
+        # is drawn only when a job has to move.
+        floor = max(j['not_before'], now + 60, prev + GAP[0] * 60 if prev else 0)
+        if j['due'] < floor:
+            j['due'] = in_day(max(floor, prev + gap() if prev else 0), urgent)
             save(j)
         elif in_day(j['due'], urgent) != j['due']:
             j['due'] = in_day(j['due'], urgent)
@@ -141,6 +165,23 @@ def ac_args(j):
          '--env', j['env'], '--project', str(j['project']), '--as', j['as']]
     for f in j['attach']:
         a += ['--attach', str(j['_dir'] / f)]
+    if j.get('off_assignment'):
+        a.append('--off-assignment')
+    return a
+
+
+def task_args(j):
+    a = ['node', str(ROOT / 'script/ac_task_create'), '--project', str(j['project']), '--as', j['as'], '--env', j['env'],
+         '--title', j['title'], '--body', str(j['_dir'] / 'draft.md')]
+    if j.get('list'):
+        a += ['--list', j['list']]
+    if j.get('assignee'):
+        a += ['--assignee', j['assignee']]
+    return a
+
+
+def label_args(j):
+    a = ['node', str(ROOT / 'script/ac_label'), str(j['task']), j['label'], '--as', j['as'], '--project', str(j['project']), '--env', j['env']]
     if j.get('off_assignment'):
         a.append('--off-assignment')
     return a
@@ -182,9 +223,10 @@ def cmd_add(argv):
     off = take(argv, '--off-assignment', boolean=True)
     not_before = take(argv, '--not-before')
     urgent = take(argv, '--urgent', boolean=True)
+    label = take(argv, '--label')
     env = take(argv, '--env') or ENV_FOR.get(who or '')
     if who not in ENV_FOR or not project or len(argv) != 2:
-        sys.exit('usage: script/ac_queue add <task> <draft.md> --as luan|huy --project <id> [--attach f]… [--off-assignment] [--not-before HH:MM] [--urgent]')
+        sys.exit('usage: script/ac_queue add <task> <draft.md> --as luan|huy --project <id> [--attach f]… [--off-assignment] [--not-before HH:MM] [--urgent] [--label FIXED]')
     task, draft = argv
     for f in [draft, *attach]:
         if not pathlib.Path(f).is_file():
@@ -199,7 +241,8 @@ def cmd_add(argv):
         shutil.copy(f, d / pathlib.Path(f).name)
     j = {'id': jid, 'task': task, 'project': project, 'as': who, 'env': env, 'attach': [pathlib.Path(f).name for f in attach],
          'off_assignment': off, 'source': str(pathlib.Path(draft).resolve()), 'queued_at': int(now),
-         'not_before': parse_when(not_before) if not_before else 0, 'urgent': urgent, 'status': 'queued', '_dir': d}
+         'not_before': parse_when(not_before) if not_before else 0, 'urgent': urgent, 'label': label.upper() if label else None,
+         'status': 'queued', '_dir': d}
     j['due'] = in_day(max(now + rng.randint(FIRST[0] * 60, FIRST[1] * 60), j['not_before']), urgent)
 
     # The same checks as a real post, now, so a comment that would be refused never waits for hours.
@@ -208,11 +251,94 @@ def cmd_add(argv):
     if r.returncode != 0:
         shutil.rmtree(d)
         sys.exit(f'not queued: ac_comment refused it\n{r.stderr}')
+    if j['label']:
+        r = subprocess.run(label_args(j), cwd=ROOT, capture_output=True, text=True)
+        print(r.stdout, end='')
+        if r.returncode != 0:
+            shutil.rmtree(d)
+            sys.exit(f'not queued: ac_label refused the label {j["label"]}\n{r.stderr}')
     save(j)
     reflow(now)
     j = next(x for x in jobs() if x['id'] == jid)
     log(f'queued {jid}: task #{task} as {who}, goes at {dt.datetime.fromtimestamp(j["due"]):%a %H:%M}'
         + (' (urgent: office hours do not apply)' if urgent else ''))
+
+
+def new_job(who, project, task, kind, not_before, urgent, env, extra):
+    now = time.time()
+    jid = f'{dt.datetime.now():%m%d-%H%M%S}-{who}-{task}'
+    d = Q / jid
+    d.mkdir(parents=True)
+    j = {'id': jid, 'kind': kind, 'task': task, 'project': project, 'as': who, 'env': env, 'attach': [],
+         'off_assignment': False, 'queued_at': int(now), 'not_before': parse_when(not_before) if not_before else 0,
+         'urgent': urgent, 'label': None, 'status': 'queued', '_dir': d, **extra}
+    return j, d, now
+
+
+def cmd_task(argv):
+    who = take(argv, '--as')
+    project = take(argv, '--project')
+    title = take(argv, '--title')
+    body = take(argv, '--body')
+    lst = take(argv, '--list')
+    assignee = take(argv, '--assignee')
+    not_before = take(argv, '--not-before')
+    urgent = take(argv, '--urgent', boolean=True)
+    env = take(argv, '--env') or ENV_FOR.get(who or '')
+    if who not in ENV_FOR or not project or not title or not body or argv:
+        sys.exit('usage: script/ac_queue task --project <id> --as luan|huy --title "Title" --body draft.md [--list "Task list"] [--assignee name] [--not-before HH:MM] [--urgent]')
+    if not pathlib.Path(body).is_file():
+        sys.exit(f'no such file: {body}')
+    j, d, now = new_job(who, project, 'new', 'task', not_before, urgent, env,
+                        {'title': title, 'list': lst, 'assignee': assignee, 'source': str(pathlib.Path(body).resolve())})
+    shutil.copy(body, d / 'draft.md')
+    j['due'] = in_day(max(now + rng.randint(FIRST[0] * 60, FIRST[1] * 60), j['not_before']), urgent)
+    r = subprocess.run(task_args(j), cwd=ROOT, capture_output=True, text=True)
+    print(r.stdout, end='')
+    if r.returncode != 0:
+        shutil.rmtree(d)
+        sys.exit(f'not queued: ac_task_create refused it\n{r.stderr}')
+    save(j)
+    reflow(now)
+    j = next(x for x in jobs() if x['id'] == j['id'])
+    log(f'queued {j["id"]}: new task "{title}" as {who}, goes at {dt.datetime.fromtimestamp(j["due"]):%a %H:%M}'
+        + (' (urgent: office hours do not apply)' if urgent else ''))
+
+
+def cmd_label(argv):
+    who = take(argv, '--as')
+    project = take(argv, '--project')
+    not_before = take(argv, '--not-before')
+    off = take(argv, '--off-assignment', boolean=True)
+    env = take(argv, '--env') or ENV_FOR.get(who or '')
+    if who not in ENV_FOR or not project or len(argv) != 2:
+        sys.exit('usage: script/ac_queue label <task> <LABEL> --as luan|huy --project <id> [--not-before HH:MM] [--off-assignment]')
+    task, label = argv
+    j, d, now = new_job(who, project, task, 'label', not_before, False, env, {'label': label.upper(), 'off_assignment': off})
+    j['due'] = in_day(max(now + rng.randint(FIRST[0] * 60, FIRST[1] * 60), j['not_before']))
+    r = subprocess.run(label_args(j), cwd=ROOT, capture_output=True, text=True)
+    print(r.stdout, end='')
+    if r.returncode != 0:
+        shutil.rmtree(d)
+        sys.exit(f'not queued: ac_label refused it\n{r.stderr}')
+    save(j)
+    log(f'queued {j["id"]}: label {j["label"]} on task #{task} as {who}, goes at {dt.datetime.fromtimestamp(j["due"]):%a %H:%M}')
+
+
+def cmd_try(argv):
+    j = find(argv[0])
+    kind = j.get('kind', 'comment')
+    if kind == 'task':
+        steps = [task_args(j)]
+    elif kind == 'label':
+        steps = [label_args(j)]
+    else:
+        steps = [ac_args(j)] + ([label_args(j)] if j.get('label') else [])
+    for a in steps:
+        print('$', ' '.join(a[1:]))
+        r = subprocess.run(a, cwd=ROOT, capture_output=True, text=True)
+        print(r.stdout + r.stderr, end='')
+        print(f'(exit {r.returncode}; a rehearsal, nothing was sent)\n')
 
 
 def cmd_list(_):
@@ -221,11 +347,18 @@ def cmd_list(_):
         print('nothing waiting')
         return
     for j in rows:
-        first = (j['_dir'] / 'draft.md').read_text().strip().splitlines()[0][:70]
+        kind = j.get('kind', 'comment')
+        if kind == 'label':
+            first = f"(label only) set {j['label']}"
+        elif kind == 'task':
+            first = f'NEW TASK "{j["title"]}"'[:70]
+        else:
+            first = (j['_dir'] / 'draft.md').read_text().strip().splitlines()[0][:70]
         when = dt.datetime.fromtimestamp(j['due']).strftime('%a %d/%m %H:%M') if j['status'] == 'queued' else j['status'].upper()
         att = f"  + {', '.join(j['attach'])}" if j['attach'] else ''
         urg = '  URGENT, any hour' if j.get('urgent') else ''
-        print(f"{when:<16} {j['as']:<5} p{j['project']} #{j['task']:<4} {j['id']}  {first}{att}{urg}")
+        lab = f"  then label {j['label']}" if j.get('label') and kind == 'comment' else ''
+        print(f"{when:<16} {j['as']:<5} p{j['project']} #{j['task']:<4} {j['id']}  {first}{att}{lab}{urg}")
         if j.get('reason'):
             print(f"{'':<16} {j['reason']}")
 
@@ -250,6 +383,10 @@ def cmd_run(_):
     if not due:
         return
     j = due[0]
+    if j.get('kind') == 'label':
+        return run_label(j, now)
+    if j.get('kind') == 'task':
+        return run_task(j, now)
     r = subprocess.run(ac_args(j) + ['--send', '--hold-if-new-since', str(j['queued_at'])],
                        cwd=ROOT, input='y\n', capture_output=True, text=True)
     out = r.stdout + r.stderr
@@ -271,10 +408,23 @@ def cmd_run(_):
         j['status'], j['posted_at'], j['comment_id'] = 'posted', int(time.time()), int(posted.group(1))
         save(j)
         s = state(); s['last_post'] = j['posted_at']; save_state(s)
+        if j.get('label'):
+            lr = subprocess.run(label_args(j) + ['--send'], cwd=ROOT, capture_output=True, text=True)
+            lout = lr.stdout + lr.stderr
+            (j['_dir'] / f'label-{int(now)}.txt').write_text(lout)
+            set_line = next((ln for ln in lout.splitlines() if ln.startswith('set ') or 'already so' in ln), None)
+            if lr.returncode == 0 and set_line:
+                j['labelled'] = j['label']
+                save(j)
+            else:
+                notify(f'Posted, but the label {j["label"]} was NOT set on task #{j["task"]}. See tmp/ac_queue/log.txt.')
         dest = ROOT / 'tmp/archive/messages' / dt.datetime.now().strftime('%Y-%m') / f'queued-{j["id"]}'
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(j['_dir']), dest)
         log(f'posted {j["id"]}: comment {posted.group(1)} on task #{posted.group(2)} as {posted.group(3).strip()}')
+        if j.get('label'):
+            log(f'labelled {j["id"]}: task #{j["task"]} {j["label"]}' if j.get('labelled')
+                else f'LABEL NOT SET {j["id"]}: task #{j["task"]} {j["label"]}; the comment stands, set it with script/ac_label')
         reflow()
     else:
         # Never retried by itself: a half-finished post retried blind is how a comment goes up twice.
@@ -282,6 +432,55 @@ def cmd_run(_):
         save(j)
         log(f'FAILED {j["id"]}: {j["reason"]}')
         notify(f'Comment NOT posted: task #{j["task"]} as {j["as"]}. See tmp/ac_queue.')
+
+
+def archive(j):
+    dest = ROOT / 'tmp/archive/messages' / dt.datetime.now().strftime('%Y-%m') / f'queued-{j["id"]}'
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(j['_dir']), dest)
+
+
+def run_label(j, now):
+    r = subprocess.run(label_args(j) + ['--send'], cwd=ROOT, capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    (j['_dir'] / f'run-{int(now)}.txt').write_text(out)
+    ok = r.returncode == 0 and any(ln.startswith('set ') or 'already so' in ln for ln in out.splitlines())
+    if r.returncode == 4 and j.get('tries', 0) < 6:
+        j['tries'] = j.get('tries', 0) + 1
+        j['due'] = int(now) + 600
+        save(j)
+        log(f'retry {j["id"]}: tracker did not answer (try {j["tries"]} of 6), again at {dt.datetime.fromtimestamp(j["due"]):%H:%M}')
+    elif ok:
+        j['status'], j['posted_at'] = 'posted', int(time.time())
+        save(j)
+        archive(j)
+        log(f'labelled {j["id"]}: task #{j["task"]} {j["label"]} as {j["as"]}')
+    else:
+        j['status'], j['reason'] = 'failed', (out.strip().splitlines() or ['no output'])[-1]
+        save(j)
+        log(f'FAILED {j["id"]}: {j["reason"]}')
+        notify(f'Label NOT set: task #{j["task"]} {j["label"]} as {j["as"]}. See tmp/ac_queue.')
+
+
+def run_task(j, now):
+    r = subprocess.run(task_args(j) + ['--go'], cwd=ROOT, capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    (j['_dir'] / f'run-{int(now)}.txt').write_text(out)
+    created = re.search(r'created\s+task #(\d+) \(id (\d+)\) by (.+?),', out)
+    if r.returncode == 0 and created and 'WRONG ACCOUNT' not in out:
+        j['status'], j['posted_at'], j['created_task'] = 'posted', int(time.time()), int(created.group(1))
+        save(j)
+        s = state(); s['last_post'] = j['posted_at']; save_state(s)
+        archive(j)
+        log(f'created {j["id"]}: task #{created.group(1)} "{j["title"]}" as {created.group(3).strip()}')
+        reflow()
+    else:
+        # Not retried by itself, like a comment. ac_task_create refuses a second task with the same
+        # title, so a release after a half-finished run cannot create two.
+        j['status'], j['reason'] = 'failed', (out.strip().splitlines() or ['no output'])[-1]
+        save(j)
+        log(f'FAILED {j["id"]}: {j["reason"]}')
+        notify(f'Task NOT created: "{j["title"]}" as {j["as"]}. See tmp/ac_queue.')
 
 
 def find(jid):
@@ -311,6 +510,23 @@ def cmd_release(argv):
     reflow()
     j = find(argv[0])
     log(f'released {argv[0]}: goes at {dt.datetime.fromtimestamp(j["due"]):%a %H:%M}')
+
+
+def cmd_move(argv):
+    if len(argv) != 2:
+        sys.exit('usage: script/ac_queue move <id> HH:MM|"YYYY-MM-DD HH:MM"')
+    lock = open(Q / '.lock', 'w')
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    j = find(argv[0])
+    if j['status'] != 'queued':
+        sys.exit(f'{j["id"]} is {j["status"]}, not waiting; release it first')
+    old = j['due']
+    j['not_before'] = parse_when(argv[1])
+    j['due'] = in_day(j['not_before'], j.get('urgent', False))
+    save(j)
+    reflow()
+    j = find(argv[0])
+    log(f'moved {j["id"]}: {dt.datetime.fromtimestamp(old):%a %H:%M} -> {dt.datetime.fromtimestamp(j["due"]):%a %H:%M} (asked {argv[1]})')
 
 
 def cmd_reflow(_):
@@ -348,7 +564,7 @@ def cmd_install(_):
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ('add', 'list', 'run', 'cancel', 'release', 'reflow', 'install'):
+    if len(sys.argv) < 2 or sys.argv[1] not in ('add', 'task', 'label', 'try', 'move', 'list', 'run', 'cancel', 'release', 'reflow', 'install'):
         sys.exit(__doc__)
     globals()['cmd_' + sys.argv[1]](sys.argv[2:])
 

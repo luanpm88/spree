@@ -54,5 +54,24 @@ It reads the two hosts from `.env.sprie` and checks each token reads before it f
 - Access details arriving by mail (passwords, keys) go into a gitignored `.env.*` file, never into the plan, a message or the chat, and Luan is told once to have them changed.
 - A new client message or ask goes into `docs/plan.json` (timeline, waiting_on_client), then `script/plan render`.
 - These scripts never send, move, flag or delete. Replies stay drafts in `tmp/urgent/` that pass `script/check_client_message`.
-- The ActiveCollab token was issued with write access on purpose: Luan wants task status updated through the API when he asks for it. Write only on his request for that task (say which task and what changes, then do it), never as a side effect of reading.
+- The ActiveCollab token was issued with write access on purpose: Luan wants task status updated through the API when he asks for it. Write only on his request for that task (say which task and what changes, then do it), never as a side effect of reading. Status labels are the exception below: Luan asked for them to be kept up to date without asking each time.
+
+## Status labels on the team tracker
+
+Since 17 Nov 2026 Luan and Huy mark their own tasks, so the client sees at a glance what is done (Luan: "nhớ tìm cách học skill đánh nhãn cho tasks nha để Luan Huy chủ động đánh dấu cái nào xong"). Nobody on our side had set a label before; the ones on the board were put on by others, and the tracker's activity feed does not record label changes, so who set which cannot be read back.
+
+```bash
+script/ac_label 19 --show --as huy --project 1         # the task's labels and the ones on offer
+script/ac_label 19 FIXED --as huy --project 1          # preview, changes nothing
+script/ac_label 19 FIXED --as huy --project 1 --send   # set it, then read the task back
+script/ac_queue add 19 draft.md --as huy --project 1 --attach r.pdf --label FIXED
+                                                       # set it right after that comment posts
+```
+
+- The labels we set: **IN PROGRESS** when the work starts (with the "I am on it" comment), **FIXED** when the work is live and the comment with the before/after PDF is posted. A task still waiting on the client's answer keeps IN PROGRESS.
+- Theirs, never ours: ASSIGNED, CONFIRMED, VERIFIED, REOPENED, and completing the task. A task that comes back REOPENED goes to IN PROGRESS when the work restarts.
+- One status label per task: the new one replaces the old, and CONFIDENTIAL and URGENT stay.
+- From the account that owns the task, as for comments: Huy's tasks with `--as huy`, Luan's with `--as luan`. Both scripts refuse a token that is not the one named, and a task the user is not assigned to.
+- With the comment, not before it: `--label` on the queued comment, so the label changes when the reply that says so arrives, in office hours.
+- How it works: the tracker's own web app sends `PUT /api/v1/projects/<project>/tasks/<id>` with `{"labels": [<label ids>]}` (read from its `editTask`, 17 Nov 2026). The list replaces the task's labels, which is why the script keeps the non-status ones.
 - Mail without a token: when Claude in Chrome is connected and Luan is signed in to his webmail there, the inbox can be read in the browser instead. Reading only; deleting or sending stays his.
