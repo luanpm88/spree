@@ -263,8 +263,9 @@ script/ac_queue list
 Comments are not posted the moment the work is done. On 12 Nov five went up in
 one minute from one account and three more from the other within eleven minutes
 after it. The queue posts one at a time, 25 to 70 minutes apart whoever writes
-them, in working hours only, from launchd, and holds a reply when someone has
-commented on that task since it was queued.
+them, in office hours only (Monday to Friday, 08:15 to 12:00 and 13:00 to 17:00;
+`--urgent` for the one that cannot wait), from launchd, and holds a reply when
+someone has commented on that task since it was queued.
 `docs/VOICE.md` is background on the reader, not a checklist.
 
 **Measure, never infer.** Every claim in a message to the client is something that
