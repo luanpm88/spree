@@ -1,0 +1,160 @@
+#!/usr/bin/env node
+// Create a task on the team tracker (myprojekts.com), after showing it to you.
+//
+//   script/ac_task_create --project 2 --lists
+//        the project's task lists, to pick one (reads only)
+//   script/ac_task_create --project 2 --as luan --title "Spree 6.0.5 needs Doorkeeper" --body draft.md
+//        preview only, creates nothing
+//   … --list "<task list name>"        put it in that task list (name or id, see --lists)
+//   … --assignee luan|huy|<user id>    who it is assigned to (default: the poster)
+//   … --go                             actually create it, then read it back
+//
+// Luan, 17 Nov 2026: what arrives on WhatsApp goes onto myprojekts as a task, so the
+// record is in one place ("để lên hết myproject"). The task is created under the name the
+// token belongs to; --as must match it, as in script/ac_comment, because a task under
+// the wrong name cannot be taken back in the client's eyes. The body is converted from
+// markdown to HTML (the tracker does not render markdown). Updates on the task go
+// through script/ac_queue like every other comment.
+
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const die = (m) => { console.error(`error ${m}`); process.exit(1) }
+
+const args = process.argv.slice(2)
+const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined }
+const ENV_FOR = { luan: '.env.ac_team', huy: '.env.ac_huy' }
+const AS = flag('--as')
+const ENV_PATH = resolve(ROOT, flag('--env') || ENV_FOR[AS] || '.env.ac_team')
+const PROJECT_ID = flag('--project') || die('say which project: --project <id> (the tracker URL shows it)')
+
+function env() {
+  if (!existsSync(ENV_PATH)) die(`missing ${ENV_PATH}`)
+  const out = {}
+  for (const line of readFileSync(ENV_PATH, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*)$/)
+    if (m) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, '')
+  }
+  if (!out.ACTIVECOLLAB_TOKEN || !out.ACTIVECOLLAB_URL) die(`${ENV_PATH} lacks ACTIVECOLLAB_TOKEN or ACTIVECOLLAB_URL`)
+  out.ACTIVECOLLAB_URL = out.ACTIVECOLLAB_URL.replace(/\/$/, '')
+  return out
+}
+const E = env()
+
+async function api(path, init = {}) {
+  const res = await fetch(`${E.ACTIVECOLLAB_URL}/api/v1${path}`, {
+    ...init,
+    headers: {
+      'X-Angie-AuthApiToken': E.ACTIVECOLLAB_TOKEN,
+      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    signal: AbortSignal.timeout(30_000),
+  })
+  const text = await res.text()
+  if (!res.ok) die(`${init.method || 'GET'} ${path} -> HTTP ${res.status}\n${text.slice(0, 500)}`)
+  try { return JSON.parse(text) } catch { die(`${path} returned non-JSON:\n${text.slice(0, 300)}`) }
+}
+
+const project = await api(`/projects/${PROJECT_ID}`).then((p) => p.single ?? p)
+const lists = await api(`/projects/${PROJECT_ID}/task-lists`).then((r) => r.task_lists ?? r)
+
+if (args.includes('--lists')) {
+  console.log(`${E.ACTIVECOLLAB_URL} project ${PROJECT_ID}: ${project.name}`)
+  for (const l of lists) console.log(`  ${l.id}  ${l.name}${l.is_completed ? '  (completed)' : ''}`)
+  process.exit(0)
+}
+
+// ── who is creating it ──────────────────────────────────────────────────────
+if (!AS) die('say who is creating it: --as luan or --as huy')
+const session = await api('/user-session')
+const meId = session?.logged_user_id ?? session?.user_id
+const me = await api(`/users/${meId}`).then((u) => u.single ?? u)
+const meName = me.display_name || [me.first_name, me.last_name].filter(Boolean).join(' ')
+if (!meName.toLowerCase().includes(AS.toLowerCase())) die(`--as ${AS} but this token belongs to ${meName}. Nothing created.`)
+
+// ── what ────────────────────────────────────────────────────────────────────
+const title = (flag('--title') || '').trim() || die('give it a --title')
+const bodyFile = flag('--body')
+if (bodyFile && !existsSync(bodyFile)) die(`no such file: ${bodyFile}`)
+const md = bodyFile ? readFileSync(bodyFile, 'utf8') : ''
+
+let list = null
+const listArg = flag('--list')
+if (listArg) {
+  list = lists.find((l) => String(l.id) === listArg) ||
+         lists.find((l) => l.name.toLowerCase() === listArg.toLowerCase()) ||
+         die(`no task list "${listArg}" in project ${PROJECT_ID}; see --lists`)
+}
+
+const users = await api('/users').then((r) => r.users ?? r)
+const assigneeArg = flag('--assignee')
+const assignee = !assigneeArg
+  ? me
+  : users.find((u) => String(u.id) === assigneeArg) ||
+    users.find((u) => (u.display_name || '').toLowerCase().includes(assigneeArg.toLowerCase())) ||
+    die(`no user matching "${assigneeArg}"`)
+
+// No second task with the same title: a retried run must not create two.
+const open = await api(`/projects/${PROJECT_ID}/tasks`).then((r) => r.tasks ?? [])
+const same = open.find((t) => t.name.trim().toLowerCase() === title.toLowerCase())
+if (same) die(`an open task with this title already exists: #${same.task_number} (id ${same.id}). Nothing created.`)
+
+// ── markdown -> the HTML the tracker renders (same rules as script/ac_comment) ──
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+const inline = (s) => esc(s)
+  .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2">$1</a>')
+  .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  .replace(/`([^`]+)`/g, '<code>$1</code>')
+function toHtml(text) {
+  const out = []
+  let open_ = null
+  const close = () => { if (open_) { out.push(`</${open_}>`); open_ = null } }
+  for (const raw of text.split('\n')) {
+    const line = raw.trimEnd()
+    if (!line.trim()) { close(); continue }
+    const ul = line.match(/^\s*[-*]\s+(.*)$/)
+    if (ul) { if (open_ !== 'ul') { close(); out.push('<ul>'); open_ = 'ul' } out.push(`<li>${inline(ul[1])}</li>`); continue }
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/)
+    if (ol) { if (open_ !== 'ol') { close(); out.push('<ol>'); open_ = 'ol' } out.push(`<li>${inline(ol[1])}</li>`); continue }
+    close()
+    out.push(`<p>${inline(line)}</p>`)
+  }
+  close()
+  return out.join('\n')
+}
+const html = toHtml(md)
+
+const bar = '─'.repeat(72)
+console.log(`site      ${E.ACTIVECOLLAB_URL}`)
+console.log(`project   ${PROJECT_ID}: ${project.name}`)
+console.log(`list      ${list ? `${list.name} (${list.id})` : '(none)'}`)
+console.log(`title     ${title}`)
+console.log(`assigned  ${assignee.display_name} (user ${assignee.id})`)
+console.log(`as        ${meName} (user ${meId})`)
+console.log(bar)
+console.log(md.trim() || '(no description)')
+console.log(bar)
+const dashes = (md + title).match(/[—–]/g)
+if (dashes) console.log(`warning   ${dashes.length} em/en dash(es)`)
+
+if (!args.includes('--go')) {
+  console.log('preview only. nothing created. Add --go to create it.')
+  process.exit(0)
+}
+
+const res = await api(`/projects/${PROJECT_ID}/tasks`, {
+  method: 'POST',
+  body: JSON.stringify({
+    name: title,
+    body: html,
+    assignee_id: assignee.id,
+    ...(list ? { task_list_id: list.id } : {}),
+  }),
+})
+const created = res.single ?? res
+const back = await api(`/projects/${PROJECT_ID}/tasks/${created.id}`).then((t) => t.single ?? t)
+if (back.created_by_id !== meId) console.log(`WRONG ACCOUNT: task ${back.id} carries user ${back.created_by_id}, not ${meName}. Tell Luan now.`)
+console.log(`created   task #${back.task_number} (id ${back.id}) by ${back.created_by_name ?? meName}, assigned user ${back.assignee_id}`)
+console.log(`url       ${E.ACTIVECOLLAB_URL}/projects/${PROJECT_ID}?modal=Task-${back.id}-${PROJECT_ID}`)
