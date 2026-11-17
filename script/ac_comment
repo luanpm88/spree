@@ -273,10 +273,20 @@ for (const path of ATTACH) {
     signal: AbortSignal.timeout(300_000), // a 4 MB report took over 2 minutes to upload on 12 Nov 2026
   })
   } catch (e) {
-    die(`upload of ${path} failed (${e.name}: ${e.message}); nothing was posted`)
+    // No answer in time. The comment goes up only after every file has, so nothing was sent and
+    // script/ac_queue may try again (exit 4, as for an unreachable tracker above).
+    console.error(`${C.red}unreachable${C.off} upload of ${path} failed (${e.name}: ${e.message}); nothing was posted`)
+    process.exit(4)
   }
   const uploaded = await up.json().catch(() => [])
   const code = (Array.isArray(uploaded) ? uploaded[0] : uploaded)?.code
+  // 17 Nov 2026, 11:56: a 2.6 MB report answered HTTP 524 (Cloudflare stopped waiting for the
+  // tracker), the queue marked Huy's comment failed, and the tracker answered in a second shortly
+  // after. A 5xx is the server not managing; a 4xx or a 200 without a code is a real refusal.
+  if (up.status >= 500) {
+    console.error(`${C.red}unreachable${C.off} upload of ${path} failed (HTTP ${up.status}); nothing was posted`)
+    process.exit(4)
+  }
   if (!up.ok || !code) die(`upload of ${path} failed (HTTP ${up.status}); nothing was posted`)
   codes.push(code)
 }
