@@ -23,8 +23,8 @@ import argparse, os, re, subprocess, sys, tempfile, pathlib
 
 RUNNER = os.path.expanduser('~/.claude/skills/codex-gpt/scripts/codex_run.sh')
 PEOPLE = {
-    'luan': "Luan, who runs the development team for the client. Fluent, practical English from a Vietnamese speaker; friendly and direct; speaks for the business, decides, and asks a question only when he needs an answer.",
-    'huy': "Huy, the developer who builds the client's website pages. Casual and brief; says what he changed on the page and that the before/after report is attached; never formal, never salesy.",
+    'luan': "Luan, who runs the development team for the client. Practical, friendly and direct; speaks for the business; explains every decision in plain words a business owner understands; asks one clear question only when he needs an answer.",
+    'huy': "Huy, the developer who builds the client's website pages. Friendly, short and clear. He says what the client asked for, what the client will now see and on which page, and whether the client needs to do anything. Everyday words only, never developer terms; never formal, never salesy.",
 }
 MASKS = [
     (re.compile(r'\bE[A-Z]{2}\d{9}\b'), 'ORDER'),           # shop order numbers
@@ -72,9 +72,17 @@ Who writes them:
 - luan: {PEOPLE['luan']}
 - huy: {PEOPLE['huy']}
 
+The reader is the client: a busy business owner, not a developer. On 18 Nov he said Huy's work is good but he often cannot tell what Huy's comments mean. So every comment must be understood on the first read:
+- Plain everyday English. Short sentences, about 15 words or fewer, one idea each.
+- Start from what he asked for, in his own words when the draft gives them. Then say what he will now see and where (the page, and the place on the page). Then say whether he needs to do anything.
+- No developer terms: pixel, frame, resolution, retina, server, embed, redirect, forward, URL, cache, deploy, field, render, code, component. If one cannot be avoided, explain it in everyday words (for example "sharper on Mac and iPhone screens" instead of "high-resolution").
+- If he must do something, make it one clear request, with short numbered steps when there is more than one step.
+- No idioms or phrasal verbs that a reader could misread (swap in, clear up, go through).
+- You may leave out a technical detail he does not need. Never leave out a fact he asked for, a number or name he gave, a date, a decision, a question, or the attachment.
+
 Rewrite each comment so it reads like that real person typed it today: natural, warm where it fits, plain words, varied. They are posted the same day, so no two may open, flow or end the same way; a normal greeting with his first name is fine, but do not repeat the same sentence shapes or closing lines across them, and do not swap one repeated habit for another (for example putting his name in every comment, or ending each one on the attachment). Some can be a single line. Contractions are fine. Keep them about as long as now or shorter.
 
-Do not change any fact: every number, date, name, page name, file name, URL, order reference, price, and every question or decision asked must stay exactly as meant. Keep placeholders like [ORDER1] or [NAME3] and mention tokens like @[Full Name](user:1) exactly as written. No markdown headings, no bullet lists unless the original has them, one line per paragraph, no em dashes, no sign-off.
+Do not change any fact: every number, date, name, page name, file name, order reference, price, and every question or decision asked must stay exactly as meant. Keep placeholders like [ORDER1] or [NAME3] and mention tokens like @[Full Name](user:1) exactly as written. No markdown headings, no bullet lists unless the original has them, one line per paragraph, no em dashes, no sign-off.
 
 Reply with only the rewritten comments, in the same order, each starting with its line "=== N (person)" exactly as given.
 

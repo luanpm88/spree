@@ -57,6 +57,7 @@ BANNED='sorry|apolog(y|ies|ise|ize)|unfortunate(ly)?|inconvenience|however|moreo
 # how that page should behave.
 MONEY='\bquote[ds]?\b|\bpricing\b|\bcheaper\b|\bexpensive\b|\bbudget\b|\bcosts?\b|worth it'
 SAFE='Request a Quote'
+JARGON='\bpixels?\b|\b[0-9]+ ?px\b|high-resolution|\bretina\b|\bframe\b|\bembed(ded)? (code|form code)?\b|\bredirect(s|ed|ing)?\b|\bforwards to\b|\bURL\b|\bcache[ds]?\b|\bdeploy(ed|s|ment)?\b|\bconfig\b|\bviewport\b|\bCSS\b|\bHTML\b|\bslug\b|\bcommit(ted)?\b|\bendpoint\b|\bwebhook\b|\bpayload\b|\brender(ed|s)?\b|\bmarkup\b|\bcomponent\b|\brepo\b|\bmigration\b|\bschema\b|\bquery\b|\bAPI key\b|\bon the server\b'
 
 for f in "${FILES[@]}"; do
   [ -f "$f" ] || { printf '%s  no such file%s\n' "$R" "$O"; total_bad=$((total_bad+1)); continue; }
@@ -102,6 +103,16 @@ for f in "${FILES[@]}"; do
   # Luan's instruction rather than style: effort is time with this client. A warning,
   # because the word list cannot tell his own words ("quote requests") from ours.
   [ -n "$hit" ] && note "reads as money? Make sure we are not pricing our own work: $(echo "$hit" | head -1 | cut -c1-70)"
+
+  # Plain English (18 Nov 2026). The client said Huy's work was good but he often could not tell
+  # what Huy's comments meant: they described how the page works inside (frames, pixels,
+  # high-resolution screens, embed codes, servers, redirects) instead of what he will see.
+  # The reader is a business owner, not a developer. A warning, because a word like "server" is
+  # sometimes the right one (he sells hosting).
+  hit=$(grep -noiE "$JARGON" "$f" | head -4 | tr '\n' ' ' || true)
+  [ -n "$hit" ] && note "developer word, say what he will see instead: $hit"
+  long=$(tr '\n' ' ' < "$f" | sed -E 's/([.!?]) /\1\n/g' | awk 'NF > 24 { printf "%d words: %s…\n", NF, substr($0, 1, 60) }' | head -2)
+  [ -n "$long" ] && note "long sentence, split it: $(echo "$long" | head -1)"
 
 
   # ── the ones that differ by channel ───────────────────────────────────────
