@@ -92,6 +92,12 @@ if (existsSync('tmp/ac_queue')) {
   }
 }
 
+// Tasks Luan has said need nothing from us, so they are not listed (19 Nov 2026: an empty task
+// another person opened and assigned to nobody here). tmp/remind/mute.json holds a list of
+// "host|project id|task number", the same key as the queue's; gitignored, so no name is in this file.
+const muted = new Set()
+try { if (existsSync('tmp/remind/mute.json')) for (const k of JSON.parse(readFileSync('tmp/remind/mute.json', 'utf8'))) muted.add(k) } catch (e) { problems.push(`tmp/remind/mute.json: ${e.message}`) }
+
 // Tracker tasks, read with Luan's tokens (they see every project).
 const teamEnv = '.env.ac_team'
 let huyId = null
@@ -117,7 +123,7 @@ for (const envFile of ['.env.activecollab', teamEnv]) {
     try { t = await s.api(`/projects/${p.id}/tasks`) } catch (e) { problems.push(e.message); continue }
     for (const k of t.tasks || []) {
       const label = `${p.name} #${k.task_number} ${k.name}`
-      if (queued.has(`${s.host}|${p.id}|${k.task_number}`)) continue
+      if (queued.has(`${s.host}|${p.id}|${k.task_number}`) || muted.has(`${s.host}|${p.id}|${k.task_number}`)) continue
       const assignees = k.assignee_ids || (k.assignee_id ? [k.assignee_id] : [])
       const huyOnly = huyId && assignees.includes(huyId) && !assignees.includes(me)
       let cs = []
