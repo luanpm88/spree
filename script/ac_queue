@@ -375,10 +375,17 @@ def cmd_run(_):
         # launchd runs every 5 minutes, so a slot in the last minutes before 12:00 or 17:00 can be
         # missed. Left alone it would go out in the first minutes of the next opening, which is
         # the pattern the jitter exists to avoid; it moves like any slot outside hours instead.
+        moved = False
         for j in jobs({'queued'}):
             if j['due'] <= now and not j.get('urgent'):
                 j['due'] = in_day(now)
                 save(j)
+                moved = True
+        # Each moved job drew its own jitter, so two of them could land minutes apart at the next
+        # opening (19 Nov 2026: 08:33 and 08:37). The post-time reflow would have spaced the second,
+        # but the list, the reminders and the reports read these times; space them now.
+        if moved:
+            reflow(now)
     due = [j for j in jobs({'queued'}) if j['due'] <= now and (j.get('urgent') or open_now(now))]
     if not due:
         return

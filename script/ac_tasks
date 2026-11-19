@@ -246,9 +246,11 @@ if (process.argv.includes('--changes')) {
       const cs = await commentsOf(r.id)
       cs.forEach((c, i) => {
         if (c.created_by_id === who.id || !tagged(c.body)) return
-        const answered = cs.slice(i + 1).some((later) => later.created_by_id === who.id)
-        if (!answered) open++
-        console.log(`    ${answered ? 'answered ' : 'NO REPLY '} ${r.p} #${r.n} (id ${r.id}): ${day(c.created_on)} ${c.created_by_name || c.created_by_id}: ${text(c.body).replace(/\s+/g, ' ').slice(0, 160)}`)
+        const replied = cs.slice(i + 1).some((later) => later.created_by_id === who.id)
+        // A comment that asks nothing gets a like, not a reply (Luan, 14 Nov 2026), and the like answers it.
+        const liked = (c.reactions || []).some((x) => x.created_by_id === who.id)
+        if (!replied && !liked) open++
+        console.log(`    ${replied ? 'answered ' : liked ? 'liked    ' : 'NO REPLY '} ${r.p} #${r.n} (id ${r.id}): ${day(c.created_on)} ${c.created_by_name || c.created_by_id}: ${text(c.body).replace(/\s+/g, ' ').slice(0, 160)}`)
       })
     }
     if (!open) console.log('    tags waiting for a reply: none')
