@@ -59,7 +59,8 @@ if (process.argv.includes('--install')) {
 
 const readEnv = (f) => Object.fromEntries(readFileSync(f, 'utf8').split('\n').map((l) => l.match(/^\s*([A-Z_]+)\s*=\s*(.*)$/)).filter(Boolean).map((m) => [m[1], m[2].trim()]))
 const text = (h) => (h || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim()
-const ago = (t) => { const d = Math.floor((Date.now() / 1000 - t) / DAY); return d <= 0 ? 'today' : d === 1 ? '1 day' : `${d} days` }
+// "today", "1 day ago", "3 days ago": the lines read "opened today", never "today ago".
+const ago = (t) => { const d = Math.floor((Date.now() / 1000 - t) / DAY); return d <= 0 ? 'today' : d === 1 ? '1 day ago' : `${d} days ago` }
 
 function site(envFile) {
   const E = readEnv(envFile)
@@ -74,6 +75,7 @@ function site(envFile) {
 async function whoAmI(s) { const x = await s.api('/user-session'); return x?.logged_user_id ?? x?.user_id ?? null }
 
 const items = { luan: [], huy: [] }
+const links = new Map() // a line of items -> what a click on its notification opens
 const problems = []
 let stale = 0 // someone else's last word on a task, more than 30 days old: counted, not listed
 
@@ -129,16 +131,21 @@ for (const envFile of ['.env.activecollab', teamEnv]) {
       let cs = []
       try { cs = (await s.api(`/comments/task/${k.id}`)).filter((c) => !c.is_trashed).sort((a, b) => a.created_on - b.created_on) } catch (e) { problems.push(e.message); continue }
       const last = cs[cs.length - 1]
+      const page = `${s.url}/projects/${p.id}?modal=Task-${k.id}-${p.id}`
       if (!last) {
         if (!ours.has(k.created_by_id) && Date.now() / 1000 - k.created_on < 14 * DAY) {
-          items[huyOnly || addressesHuy(k.body) ? 'huy' : 'luan'].push(`task: ${label}, opened ${ago(k.created_on)} ago by ${k.created_by_name || k.created_by_id}, no reply yet`)
+          const line = `task: ${label}, opened ${ago(k.created_on)} by ${k.created_by_name || k.created_by_id}, no reply yet`
+          items[huyOnly || addressesHuy(k.body) ? 'huy' : 'luan'].push(line)
+          links.set(line, page)
         }
         continue
       }
       if (ours.has(last.created_by_id)) continue
       if ((last.reactions || []).some((r) => ours.has(r.created_by_id))) continue
       if (Date.now() / 1000 - last.created_on > 30 * DAY) { stale++; continue }
-      items[huyOnly || addressesHuy(last.body) ? 'huy' : 'luan'].push(`comment: ${label}, ${last.created_by_name || last.created_by_id} ${ago(last.created_on)} ago: "${text(last.body).slice(0, 90)}"`)
+      const line = `comment: ${label}, ${last.created_by_name || last.created_by_id} ${ago(last.created_on)}: "${text(last.body).slice(0, 90)}"`
+      items[huyOnly || addressesHuy(last.body) ? 'huy' : 'luan'].push(line)
+      links.set(line, page)
     }
   }
 }
@@ -154,7 +161,7 @@ for (const [envFile, who] of [['.env.activecollab', 'luan'], [teamEnv, 'luan'], 
     let ms = []
     try { const r = await s.api(`/conversations/${c.id}/messages`); ms = Array.isArray(r) ? r : (r.messages || r.items || []) } catch { continue }
     const last = ms.sort((a, b) => a.created_on - b.created_on)[ms.length - 1]
-    if (last && last.created_by_id !== me) items[who].push(`chat: ${c.name || `chat ${c.id}`}, ${last.created_by_name || last.created_by_id} ${ago(last.created_on)} ago: "${text(last.body).slice(0, 90)}"`)
+    if (last && last.created_by_id !== me) items[who].push(`chat: ${c.name || `chat ${c.id}`}, ${last.created_by_name || last.created_by_id} ${ago(last.created_on)}: "${text(last.body).slice(0, 90)}"`)
   }
 }
 
@@ -169,8 +176,8 @@ if (existsSync('docs/plan.json')) {
     if (d.file && !existsSync(d.file)) continue
     const at = d.send_at ? new Date(d.send_at.replace(' ', 'T')) : null
     if (at && at > new Date()) { later.push(`${d.send_at.slice(11)} ${d.file}`); continue }
-    if (at) { due.push(d.file); items.luan.unshift(`SEND NOW (WhatsApp, due ${d.send_at.slice(11)}): ${d.file}`); continue }
-    items.luan.push(`draft to send: ${d.file}${d.when ? ` (${String(d.when).slice(0, 40)})` : ''}`)
+    if (at) { const line = `SEND NOW (WhatsApp, due ${d.send_at.slice(11)}): ${d.file}`; due.push(d.file); items.luan.unshift(line); links.set(line, `file://${ROOT}/${d.file}`); continue }
+    { const line = `draft to send: ${d.file}${d.when ? ` (${String(d.when).slice(0, 40)})` : ''}`; items.luan.push(line); links.set(line, `file://${ROOT}/${d.file}`) }
   }
 }
 
@@ -190,8 +197,17 @@ writeFileSync('tmp/remind/last.txt', `${report}\n`)
 appendFileSync('tmp/remind/log.txt', `${out[0]}\n`)
 
 if (NOTIFY && (items.luan.length || items.huy.length || problems.length)) {
-  const first = (items.luan[0] || items.huy[0] || problems[0] || '').replace(/["\\]/g, "'").slice(0, 110)
+  const firstItem = items.luan[0] || items.huy[0] || problems[0] || ''
+  const first = firstItem.replace(/["\\]/g, "'").slice(0, 110)
   const title = due.length ? `Send now on WhatsApp: ${due.length}` : `Waiting: Luan ${items.luan.length}, Huy ${items.huy.length}`
-  const script = `display notification "${first}" with title "${title}" subtitle "tmp/remind/last.txt"`
-  try { execFileSync('osascript', ['-e', script]) } catch (e) { console.error(`notification failed: ${e.message}`) }
+  // A click opens what the first line is about: the task on the tracker, or the draft to send,
+  // else the whole list. One group, so each run replaces the last notification instead of
+  // piling up stale ones (Luan, 19 Nov 2026: "mở ko ra gì cả", a click opened nothing and an
+  // old "Send now" stayed after its drafts were parked). osascript cannot do either.
+  const open = links.get(firstItem) || `file://${ROOT}/tmp/remind/last.txt`
+  const tn = ['/opt/homebrew/bin/terminal-notifier', '/usr/local/bin/terminal-notifier'].find((p) => existsSync(p))
+  try {
+    if (tn) execFileSync(tn, ['-title', title, '-message', first, '-subtitle', 'click to open', '-open', open, '-group', 'spree-remind'])
+    else execFileSync('osascript', ['-e', `display notification "${first}" with title "${title}" subtitle "tmp/remind/last.txt"`])
+  } catch (e) { console.error(`notification failed: ${e.message}`) }
 }
