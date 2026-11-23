@@ -104,7 +104,7 @@ if save:
         return json.loads(out) if out.strip() else None
     def day(ts):
         import datetime
-        return datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else "-"
+        return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%d") if ts else "-"
     try:
         email = os.environ["AC_EMAIL"].strip().lower()
         me = next(u for u in api("GET", "/users") if (u.get("email") or "").lower() == email)
@@ -118,12 +118,14 @@ if save:
         if not newest:
             print("(older tokens not checked: the new one was not found in the list)", file=sys.stderr)
         if older:
-            tty = open("/dev/tty", "r+")
+            # Two handles: a terminal is not seekable, and Python refuses "r+" on one (23 Nov 2026,
+            # "File or stream is not seekable" on Huy's first run).
+            tty_in, tty_out = open("/dev/tty"), open("/dev/tty", "w")
             for x in older:
-                tty.write(f'Revoke your older token "{x.get("client_name")}" (made {day(x.get("created_on"))}, '
-                          f'last used {day(x.get("last_used_on"))})? [y/N] ')
-                tty.flush()
-                if tty.readline().strip().lower() == "y":
+                tty_out.write(f'Revoke your older token "{x.get("client_name")}" (made {day(x.get("created_on"))}, '
+                              f'last used {day(x.get("last_used_on"))})? [y/N] ')
+                tty_out.flush()
+                if tty_in.readline().strip().lower() == "y":
                     try:
                         api("DELETE", f"/users/{me['id']}/api-subscriptions/{x['id']}")
                         print("  revoked", file=sys.stderr)
