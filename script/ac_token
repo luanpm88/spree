@@ -4,6 +4,13 @@
 #
 #   script/ac_token
 #   AC_HOST=https://<site> AC_SAVE=.env.ac_team script/ac_token
+#   AC_HOST=https://<site> AC_SAVE=.env.ac_huy AC_CLIENT_NAME="Huy Nguyen" script/ac_token
+#
+# The token carries the account owner's own name (AC_CLIENT_NAME, or asked for). Every
+# token is listed by that name under the user's profile, where the site owner can see it.
+# Until 23 Nov this script named every token "spree-plan-sync / internal", a tool's name
+# on a person's account, while Luan's own token read "Luan Pham" (Luan, 23 Nov 2026).
+# After saving, it offers to revoke this account's older tokens, one by one.
 #
 # With AC_SAVE the token goes straight into that file (created mode 600, ACTIVECOLLAB_URL
 # and ACTIVECOLLAB_TOKEN), and is never printed: a token in terminal scrollback is a
@@ -25,19 +32,22 @@ if [ -n "$SAVE" ] && ! git check-ignore -q "$SAVE" 2>/dev/null; then
   echo "refusing: $SAVE is not gitignored" >&2; exit 2
 fi
 
+NAME="${AC_CLIENT_NAME:-}"
+if [ -z "$NAME" ]; then read -rp "Your own name, as it should show on this token: " NAME; fi
+[ -n "$NAME" ] || { echo "a name is needed" >&2; exit 2; }
 read -rp  "ActiveCollab email: "    AC_EMAIL
 read -rsp "ActiveCollab password: " AC_PASS; echo
 echo
 
-AC_EMAIL="$AC_EMAIL" AC_PASS="$AC_PASS" AC_HOST="$HOST" AC_SAVE="$SAVE" python3 - <<'PY'
+AC_EMAIL="$AC_EMAIL" AC_PASS="$AC_PASS" AC_HOST="$HOST" AC_SAVE="$SAVE" AC_NAME="$NAME" python3 - <<'PY'
 import json, os, sys, urllib.error, urllib.request
 
 host = os.environ["AC_HOST"].rstrip("/")
 body = json.dumps({
     "username": os.environ["AC_EMAIL"],
     "password": os.environ["AC_PASS"],
-    "client_name": "spree-plan-sync",
-    "client_vendor": "internal",
+    "client_name": os.environ["AC_NAME"],
+    "client_vendor": os.environ["AC_NAME"],
 }).encode()
 
 # Cloudflare in front of the site answers 403 "error code: 1010" to Python's default
@@ -75,10 +85,54 @@ if not data.get("is_ok") or not token:
 
 save = os.environ.get("AC_SAVE")
 if save:
+    # Keep every other line of an existing file (AC_PERSONAS and the like); replace only these two.
+    kept = []
+    if os.path.exists(save):
+        kept = [l for l in open(save).read().splitlines()
+                if l.strip() and not l.startswith(("ACTIVECOLLAB_URL=", "ACTIVECOLLAB_TOKEN="))]
     fd = os.open(save, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write(f"ACTIVECOLLAB_URL={host}\nACTIVECOLLAB_TOKEN={token}\n")
+        f.write("\n".join([f"ACTIVECOLLAB_URL={host}", f"ACTIVECOLLAB_TOKEN={token}", *kept]) + "\n")
     print(f"token saved to {save} (mode 600, {len(token)} characters); nothing printed", file=sys.stderr)
+
+    # Offer to revoke this account's older tokens. Asked one by one on the terminal, default no.
+    # stdin here is this script, so the answers are read from /dev/tty.
+    def api(method, path):
+        r = urllib.request.Request(f"{host}/api/v1{path}", method=method, headers={
+            "X-Angie-AuthApiToken": token, "User-Agent": "spree-plan-tools/1.0", "Content-Type": "application/json"})
+        out = urllib.request.urlopen(r, timeout=20).read().decode()
+        return json.loads(out) if out.strip() else None
+    def day(ts):
+        import datetime
+        return datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else "-"
+    try:
+        email = os.environ["AC_EMAIL"].strip().lower()
+        me = next(u for u in api("GET", "/users") if (u.get("email") or "").lower() == email)
+        # The listing shows only a short code, not the token, so the one just issued is found
+        # as the newest subscription carrying the name given above. No match, no offer.
+        subs = api("GET", f"/users/{me['id']}/api-subscriptions")
+        mine = [x for x in subs if x.get("client_name") == os.environ["AC_NAME"]]
+        newest = max(mine, key=lambda x: x.get("created_on") or 0) if mine else None
+        older = [x for x in subs if newest and x["id"] != newest["id"]
+                 and (x.get("created_on") or 0) <= (newest.get("created_on") or 0)]
+        if not newest:
+            print("(older tokens not checked: the new one was not found in the list)", file=sys.stderr)
+        if older:
+            tty = open("/dev/tty", "r+")
+            for x in older:
+                tty.write(f'Revoke your older token "{x.get("client_name")}" (made {day(x.get("created_on"))}, '
+                          f'last used {day(x.get("last_used_on"))})? [y/N] ')
+                tty.flush()
+                if tty.readline().strip().lower() == "y":
+                    try:
+                        api("DELETE", f"/users/{me['id']}/api-subscriptions/{x['id']}")
+                        print("  revoked", file=sys.stderr)
+                    except urllib.error.HTTPError as e:
+                        print(f"  not revoked (HTTP {e.code}): remove it in your profile, under API subscriptions", file=sys.stderr)
+    except StopIteration:
+        print("(older tokens not checked: could not find this email in the user list)", file=sys.stderr)
+    except Exception as e:
+        print(f"(older tokens not checked: {e})", file=sys.stderr)
     sys.exit(0)
 
 print(token)

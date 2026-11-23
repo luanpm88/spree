@@ -8,6 +8,10 @@ Post tracker comments later, spaced out, instead of the moment they are written.
     script/ac_queue label 17 FIXED --as huy --project 1 [--not-before 09:30]
                                          set a task's status label in office hours, with no comment (script/ac_label);
                                          labels notify nobody, so they take no slot and push nothing back
+    script/ac_queue like <comment id> <task id> --as luan|huy [--not-before 14:30]
+                                         thumbs up a client comment at its slot (script/ac_like), spaced like a comment:
+                                         a like is an action on the tracker too, and from two accounts on one machine
+                                         it must not land minutes after the other account's post (Luan, 23 Nov 2026)
     script/ac_queue move <id> 10:05      move one waiting job to a time (then everything is re-spaced as usual)
     script/ac_queue try <id>             rehearse one job now: its preview, exactly as the real run would call it; changes nothing
     script/ac_queue list                 what is waiting, and when each one goes
@@ -187,6 +191,10 @@ def label_args(j):
     return a
 
 
+def like_args(j):
+    return ['node', str(ROOT / 'script/ac_like'), str(j['comment']), str(j['task']), '--as', j['as']]
+
+
 def parse_when(s):
     now = dt.datetime.now()
     for fmt in ('%H:%M', '%Y-%m-%d %H:%M'):
@@ -325,6 +333,30 @@ def cmd_label(argv):
     log(f'queued {j["id"]}: label {j["label"]} on task #{task} as {who}, goes at {dt.datetime.fromtimestamp(j["due"]):%a %H:%M}')
 
 
+def cmd_like(argv):
+    who = take(argv, '--as')
+    not_before = take(argv, '--not-before')
+    urgent = take(argv, '--urgent', boolean=True)
+    env = ENV_FOR.get(who or '')
+    if who not in ENV_FOR or len(argv) != 2 or not all(a.isdigit() for a in argv):
+        sys.exit('usage: script/ac_queue like <comment id> <task id> --as luan|huy [--not-before HH:MM] [--urgent]')
+    comment, task = argv
+    j, d, now = new_job(who, '-', task, 'like', not_before, urgent, env, {'comment': int(comment)})
+    j['due'] = in_day(max(now + rng.randint(FIRST[0] * 60, FIRST[1] * 60), j['not_before']), urgent)
+    # The dry run refuses the wrong account, a comment not on that task, one not by the client,
+    # and one this account already liked, so a bad like never waits in the queue.
+    r = subprocess.run(like_args(j), cwd=ROOT, capture_output=True, text=True)
+    print(r.stdout, end='')
+    if r.returncode != 0 or 'would like' not in r.stdout:
+        shutil.rmtree(d)
+        sys.exit(f'not queued: ac_like refused it\n{r.stdout}{r.stderr}')
+    save(j)
+    reflow(now)
+    j = next(x for x in jobs() if x['id'] == j['id'])
+    log(f'queued {j["id"]}: like comment {comment} on task id {task} as {who}, goes at {dt.datetime.fromtimestamp(j["due"]):%a %H:%M}'
+        + (' (urgent: office hours do not apply)' if urgent else ''))
+
+
 def cmd_try(argv):
     j = find(argv[0])
     kind = j.get('kind', 'comment')
@@ -332,6 +364,8 @@ def cmd_try(argv):
         steps = [task_args(j)]
     elif kind == 'label':
         steps = [label_args(j)]
+    elif kind == 'like':
+        steps = [like_args(j)]
     else:
         steps = [ac_args(j)] + ([label_args(j)] if j.get('label') else [])
     for a in steps:
@@ -352,6 +386,8 @@ def cmd_list(_):
             first = f"(label only) set {j['label']}"
         elif kind == 'task':
             first = f'NEW TASK "{j["title"]}"'[:70]
+        elif kind == 'like':
+            first = f"(like) comment {j['comment']} on task id {j['task']}"
         else:
             first = (j['_dir'] / 'draft.md').read_text().strip().splitlines()[0][:70]
         when = dt.datetime.fromtimestamp(j['due']).strftime('%a %d/%m %H:%M') if j['status'] == 'queued' else j['status'].upper()
@@ -394,6 +430,8 @@ def cmd_run(_):
         return run_label(j, now)
     if j.get('kind') == 'task':
         return run_task(j, now)
+    if j.get('kind') == 'like':
+        return run_like(j, now)
     r = subprocess.run(ac_args(j) + ['--send', '--hold-if-new-since', str(j['queued_at'])],
                        cwd=ROOT, input='y\n', capture_output=True, text=True)
     out = r.stdout + r.stderr
@@ -467,6 +505,26 @@ def run_label(j, now):
         save(j)
         log(f'FAILED {j["id"]}: {j["reason"]}')
         notify(f'Label NOT set: task #{j["task"]} {j["label"]} as {j["as"]}. See tmp/ac_queue.')
+
+
+def run_like(j, now):
+    r = subprocess.run(like_args(j) + ['--go'], cwd=ROOT, capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    (j['_dir'] / f'run-{int(now)}.txt').write_text(out)
+    back = re.search(r'read back: ThumbsUpReaction by (.+)', out)
+    if r.returncode == 0 and back:
+        j['status'], j['posted_at'] = 'posted', int(time.time())
+        save(j)
+        s = state(); s['last_post'] = j['posted_at']; save_state(s)
+        archive(j)
+        log(f'liked {j["id"]}: comment {j["comment"]} on task id {j["task"]} as {back.group(1).strip()}')
+        reflow()
+    else:
+        # Not retried by itself: ac_like refuses a second like, so a release cannot like twice.
+        j['status'], j['reason'] = 'failed', (out.strip().splitlines() or ['no output'])[-1]
+        save(j)
+        log(f'FAILED {j["id"]}: {j["reason"]}')
+        notify(f'Like NOT set: comment {j["comment"]} as {j["as"]}. See tmp/ac_queue.')
 
 
 def run_task(j, now):
@@ -571,7 +629,7 @@ def cmd_install(_):
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ('add', 'task', 'label', 'try', 'move', 'list', 'run', 'cancel', 'release', 'reflow', 'install'):
+    if len(sys.argv) < 2 or sys.argv[1] not in ('add', 'task', 'label', 'like', 'try', 'move', 'list', 'run', 'cancel', 'release', 'reflow', 'install'):
         sys.exit(__doc__)
     globals()['cmd_' + sys.argv[1]](sys.argv[2:])
 

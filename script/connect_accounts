@@ -6,7 +6,8 @@
 #
 #   script/connect_accounts            both
 #   script/connect_accounts mail       only the mailbox
-#   script/connect_accounts tasks      only ActiveCollab
+#   script/connect_accounts tasks      only ActiveCollab (Luan, .env.ac_team)
+#   script/connect_accounts huy        Huy's own ActiveCollab token (.env.ac_huy), run by Huy
 #
 # The hosts come from .env.sprie (gitignored; MAILBOX_WEBMAIL_URL, ACTIVECOLLAB_NEW_URL),
 # because this repository is public. Change a password that was ever pasted or shown on
@@ -28,4 +29,10 @@ if [ "$what" = both ] || [ "$what" = tasks ]; then
   echo "── ActiveCollab: $(host ACTIVECOLLAB_NEW_URL)"
   AC_HOST="$(host ACTIVECOLLAB_NEW_URL)" AC_SAVE=.env.ac_team script/ac_token
   script/ac_tasks >/dev/null && echo "   ActiveCollab reads: ok"
+fi
+
+if [ "$what" = huy ]; then
+  echo "── ActiveCollab for Huy: $(host ACTIVECOLLAB_NEW_URL)"
+  AC_HOST="$(host ACTIVECOLLAB_NEW_URL)" AC_SAVE=.env.ac_huy AC_CLIENT_NAME="${AC_CLIENT_NAME:-Huy Nguyen}" script/ac_token
+  node script/ac_tasks --env .env.ac_huy >/dev/null && echo "   ActiveCollab reads as Huy: ok"
 fi
