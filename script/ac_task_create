@@ -7,6 +7,7 @@
 //        preview only, creates nothing
 //   … --list "<task list name>"        put it in that task list (name or id, see --lists)
 //   … --assignee luan|huy|<user id>    who it is assigned to (default: the poster)
+//   … --attach <file> [--attach <file>]  files on the task itself (uploaded first, as in ac_comment)
 //   … --go                             actually create it, then read it back
 //
 // Luan, 17 Nov 2026: what arrives on WhatsApp goes onto myprojekts as a task, so the
@@ -17,7 +18,7 @@
 // through script/ac_queue like every other comment.
 
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -79,6 +80,8 @@ const title = (flag('--title') || '').trim() || die('give it a --title')
 const bodyFile = flag('--body')
 if (bodyFile && !existsSync(bodyFile)) die(`no such file: ${bodyFile}`)
 const md = bodyFile ? readFileSync(bodyFile, 'utf8') : ''
+const ATTACH = args.flatMap((a, i) => (a === '--attach' && args[i + 1] ? [args[i + 1]] : []))
+for (const f of ATTACH) if (!existsSync(f)) die(`no such file to attach: ${f}`)
 
 let list = null
 const listArg = flag('--list')
@@ -103,7 +106,11 @@ if (same) die(`an open task with this title already exists: #${same.task_number}
 
 // ── markdown -> the HTML the tracker renders (same rules as script/ac_comment) ──
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+// A mention, @[Jane Doe](user:1), becomes the span ActiveCollab's editor inserts, as in
+// script/ac_comment, so the person tagged is notified when the task is created.
 const inline = (s) => esc(s)
+  .replace(/@\[([^\]]+)\]\(user:(\d+)\)/g,
+    '<span class="new_mention" data-type="user" data-context="" data-user-id="$2">$1</span>')
   .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2">$1</a>')
   .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   .replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -133,6 +140,9 @@ console.log(`list      ${list ? `${list.name} (${list.id})` : '(none)'}`)
 console.log(`title     ${title}`)
 console.log(`assigned  ${assignee.display_name} (user ${assignee.id})`)
 console.log(`as        ${meName} (user ${meId})`)
+if (ATTACH.length) console.log(`attach    ${ATTACH.map((f) => basename(f)).join(', ')}`)
+const mentions = [...md.matchAll(/@\[([^\]]+)\]\(user:(\d+)\)/g)].map((m) => `${m[1]} (user ${m[2]})`)
+if (mentions.length) console.log(`tags      ${mentions.join(', ')}`)
 console.log(bar)
 console.log(md.trim() || '(no description)')
 console.log(bar)
@@ -144,6 +154,31 @@ if (!args.includes('--go')) {
   process.exit(0)
 }
 
+// Files first, as in script/ac_comment: the form field must be `file`, and the task carries
+// the upload codes. A 5xx or no answer exits 4 so script/ac_queue tries again; nothing was created.
+const codes = []
+for (const path of ATTACH) {
+  const form = new FormData()
+  form.append('file', new Blob([readFileSync(path)]), basename(path))
+  let up
+  try {
+    up = await fetch(`${E.ACTIVECOLLAB_URL}/api/v1/upload-files`, {
+      method: 'POST',
+      headers: { 'X-Angie-AuthApiToken': E.ACTIVECOLLAB_TOKEN, 'User-Agent': 'spree-plan-tools/1.0' },
+      body: form,
+      signal: AbortSignal.timeout(600_000),
+    })
+  } catch (e) {
+    console.error(`unreachable: upload of ${path} failed (${e.name}: ${e.message}); no task created`)
+    process.exit(4)
+  }
+  if (up.status >= 500) { console.error(`unreachable: upload of ${path} answered HTTP ${up.status}; no task created`); process.exit(4) }
+  const uploaded = await up.json().catch(() => [])
+  const code = (Array.isArray(uploaded) ? uploaded[0] : uploaded)?.code
+  if (!up.ok || !code) die(`upload of ${path} failed (HTTP ${up.status}); no task created`)
+  codes.push(code)
+}
+
 const res = await api(`/projects/${PROJECT_ID}/tasks`, {
   method: 'POST',
   body: JSON.stringify({
@@ -151,10 +186,16 @@ const res = await api(`/projects/${PROJECT_ID}/tasks`, {
     body: html,
     assignee_id: assignee.id,
     ...(list ? { task_list_id: list.id } : {}),
+    ...(codes.length ? { attach_uploaded_files: codes } : {}),
   }),
 })
 const created = res.single ?? res
 const back = await api(`/projects/${PROJECT_ID}/tasks/${created.id}`).then((t) => t.single ?? t)
 if (back.created_by_id !== meId) console.log(`WRONG ACCOUNT: task ${back.id} carries user ${back.created_by_id}, not ${meName}. Tell Luan now.`)
 console.log(`created   task #${back.task_number} (id ${back.id}) by ${back.created_by_name ?? meName}, assigned user ${back.assignee_id}`)
+if (ATTACH.length) {
+  const got = (back.attachments ?? []).map((a) => a.name)
+  console.log(`attached  ${got.length} of ${ATTACH.length}: ${got.join(', ')}`)
+  if (got.length !== ATTACH.length) console.log(`MISSING ATTACHMENTS on task ${back.id}. Tell Luan now.`)
+}
 console.log(`url       ${E.ACTIVECOLLAB_URL}/projects/${PROJECT_ID}?modal=Task-${back.id}-${PROJECT_ID}`)

@@ -3,7 +3,7 @@
 Post tracker comments later, spaced out, instead of the moment they are written.
 
     script/ac_queue add 15 draft.md --as huy --project 1 [--attach report.pdf] [--off-assignment] [--not-before 14:30] [--urgent] [--label FIXED]
-    script/ac_queue task --project 1 --as luan --title "Title" --body draft.md [--list "Task list"] [--assignee <name>] [--not-before 14:30] [--urgent]
+    script/ac_queue task --project 1 --as luan --title "Title" --body draft.md [--list "Task list"] [--assignee <name>] [--attach f]… [--not-before 14:30] [--urgent]
                                          create a new tracker task at its slot (script/ac_task_create), spaced like a comment
     script/ac_queue label 17 FIXED --as huy --project 1 [--not-before 09:30]
                                          set a task's status label in office hours, with no comment (script/ac_label);
@@ -181,6 +181,8 @@ def task_args(j):
         a += ['--list', j['list']]
     if j.get('assignee'):
         a += ['--assignee', j['assignee']]
+    for f in j.get('attach') or []:
+        a += ['--attach', str(j['_dir'] / f)]
     return a
 
 
@@ -292,14 +294,19 @@ def cmd_task(argv):
     assignee = take(argv, '--assignee')
     not_before = take(argv, '--not-before')
     urgent = take(argv, '--urgent', boolean=True)
+    attach = take(argv, '--attach', many=True)
     env = take(argv, '--env') or ENV_FOR.get(who or '')
     if who not in ENV_FOR or not project or not title or not body or argv:
-        sys.exit('usage: script/ac_queue task --project <id> --as luan|huy --title "Title" --body draft.md [--list "Task list"] [--assignee name] [--not-before HH:MM] [--urgent]')
-    if not pathlib.Path(body).is_file():
-        sys.exit(f'no such file: {body}')
+        sys.exit('usage: script/ac_queue task --project <id> --as luan|huy --title "Title" --body draft.md [--list "Task list"] [--assignee name] [--attach f]… [--not-before HH:MM] [--urgent]')
+    for f in [body, *attach]:
+        if not pathlib.Path(f).is_file():
+            sys.exit(f'no such file: {f}')
     j, d, now = new_job(who, project, 'new', 'task', not_before, urgent, env,
                         {'title': title, 'list': lst, 'assignee': assignee, 'source': str(pathlib.Path(body).resolve())})
     shutil.copy(body, d / 'draft.md')
+    for f in attach:
+        shutil.copy(f, d / pathlib.Path(f).name)
+    j['attach'] = [pathlib.Path(f).name for f in attach]
     j['due'] = in_day(max(now + rng.randint(FIRST[0] * 60, FIRST[1] * 60), j['not_before']), urgent)
     r = subprocess.run(task_args(j), cwd=ROOT, capture_output=True, text=True)
     print(r.stdout, end='')
