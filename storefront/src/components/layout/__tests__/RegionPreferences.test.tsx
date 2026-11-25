@@ -33,6 +33,7 @@ vi.mock("@/lib/blocks/content", () => ({
   HOME_FLAG_BY_SHOP: {
     "shop-asia": { iso: "hk", label: "HK" },
     "shop-europe": { iso: "gb", label: "UK" },
+    "shop-markets": { iso: "hk", label: "HK", currency: "USD" },
   },
 }));
 
@@ -228,5 +229,77 @@ describe("RegionPreferences, one home flag per shop", () => {
     expect(
       document.querySelector('img[src="/flags/1x1/nz.svg"]'),
     ).not.toBeNull();
+  });
+});
+
+// The client, 24 Nov 2026 (tracker #7): a home flag that names a currency stands for
+// that currency only; picking another market shows that market's flag.
+describe("RegionPreferences, a home flag tied to its currency", () => {
+  const previousShopKey = process.env.NEXT_PUBLIC_SHOP_KEY;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_SHOP_KEY = "shop-markets";
+    mockUseCountrySwitch.mockReturnValue({
+      handleCountrySelect: vi.fn().mockResolvedValue(true),
+      isCartLoading: false,
+      isCountryNavigating: false,
+    });
+  });
+
+  afterEach(() => {
+    if (previousShopKey === undefined) delete process.env.NEXT_PUBLIC_SHOP_KEY;
+    else process.env.NEXT_PUBLIC_SHOP_KEY = previousShopKey;
+  });
+
+  function serve(country: string, currency: string): void {
+    mockUseStore.mockReturnValue({
+      countries,
+      country,
+      currency,
+      locale: "en",
+      loading: false,
+      storeName: "Spree Store",
+    });
+  }
+
+  it("keeps the home flag for prices in its own currency", () => {
+    serve("kw", "USD");
+    render(<RegionPreferences variant="header" />);
+    expect(
+      document.querySelector('img[src="/flags/1x1/hk.svg"]'),
+    ).not.toBeNull();
+    expect(screen.getByText("HK")).toBeInTheDocument();
+  });
+
+  it("shows the NZ flag when the visitor is priced in NZ dollars", () => {
+    serve("nz", "NZD");
+    render(<RegionPreferences variant="header" />);
+    expect(
+      document.querySelector('img[src="/flags/1x1/nz.svg"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('img[src="/flags/1x1/hk.svg"]')).toBeNull();
+    expect(screen.getByText("NZ")).toBeInTheDocument();
+  });
+
+  it("labels Great Britain UK, and the menu shows the same flag", () => {
+    serve("gb", "GBP");
+    const { unmount } = render(<RegionPreferences variant="header" />);
+    expect(screen.getByText("UK")).toBeInTheDocument();
+    unmount();
+    render(<RegionPreferences variant="menu" />);
+    expect(
+      document.querySelector('img[src="/flags/1x1/gb.svg"]'),
+    ).not.toBeNull();
+  });
+
+  it("shows the EU flag for euro prices, whichever euro country was picked", () => {
+    serve("fr", "EUR");
+    render(<RegionPreferences variant="header" />);
+    expect(
+      document.querySelector('img[src="/flags/1x1/eu.svg"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('img[src="/flags/1x1/fr.svg"]')).toBeNull();
+    expect(screen.getByText("EU")).toBeInTheDocument();
   });
 });

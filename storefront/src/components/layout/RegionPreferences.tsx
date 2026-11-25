@@ -156,12 +156,31 @@ export function RegionPreferences({ variant }: RegionPreferencesProps) {
   // code, otherwise the market this shop sells into.
   const shop = shopKey();
   const homeFlag = HOME_FLAG_BY_SHOP[shop];
+  // The client, 24 Nov 2026 (tracker #7), once his shop had real prices per market:
+  // "when I select say NZ prices and region, it also shows the NZ flag, this way I know
+  // the price is in NZ dollars". A home flag that names a currency stands for that
+  // currency only. A visitor priced in another one sees the flag of that market: the
+  // country they picked, or the EU flag for euros, since one euro market covers many
+  // countries. A home flag without a currency keeps the 16 Nov rule: one flag for all.
+  const marketFlag =
+    homeFlag?.currency && currency && currency !== homeFlag.currency
+      ? currency === "EUR"
+        ? { iso: "eu", label: "EU" }
+        : /^[a-z]{2}$/.test(country)
+          ? {
+              iso: country.toLowerCase(),
+              label:
+                country.toLowerCase() === "gb" ? "UK" : country.toUpperCase(),
+            }
+          : undefined
+      : undefined;
+  const shownFlag = marketFlag ?? homeFlag;
   const headerFlag =
-    homeFlag?.iso ??
+    shownFlag?.iso ??
     (/^[a-z]{2}$/.test(country)
       ? country.toLowerCase()
       : (MARKET_BY_SHOP[shop] ?? ""));
-  const headerLabel = homeFlag?.label ?? headerFlag;
+  const headerLabel = shownFlag?.label ?? headerFlag;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -199,7 +218,7 @@ export function RegionPreferences({ variant }: RegionPreferencesProps) {
             )}
           >
             <CountryFlag
-              country={homeFlag?.iso ?? country}
+              country={shownFlag?.iso ?? country}
               className={cn(
                 "size-3.5 shrink-0 rounded-full shadow-sm ring-1",
                 "ring-black/10",
