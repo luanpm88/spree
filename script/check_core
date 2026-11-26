@@ -18,6 +18,9 @@
 #              fails silently.
 #   containers Every container of the stack is running, and the ones with a health
 #              check report healthy.
+#   watch      The server's own 5-minute watch (scripts/watch.py, cron) ran in the last 15
+#              minutes and reports nothing failing: core and every shop site, from the
+#              server itself, so this laptop is a second look, not the only one.
 #
 # Read only. It never restarts or changes anything.
 
@@ -57,6 +60,7 @@ fi
 # 3 and 4. on the server: last backup and containers
 remote=$(ssh -n -i "${COMMERCIAL_KEY/#\~/$HOME}" -p "${COMMERCIAL_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 \
   "$COMMERCIAL_USER@$COMMERCIAL_HOST" "cd '$CORE_DIR' 2>/dev/null || exit 3
+python3 -c \"import json,time,calendar;d=json.load(open('/root/sprie-core/status.json'));t=calendar.timegm(time.strptime(d['last_run'],'%Y-%m-%dT%H:%M:%SZ'));print('watch',int(time.time()-t),len(d['checks']),','.join(d['failing']) or '-')\" 2>/dev/null || echo 'watch none'
 f=\$(ls -1t backups/sprie-*.dump.gpg 2>/dev/null | head -1)
 if [ -n \"\$f\" ]; then echo \"backup \$(( \$(date +%s) - \$(stat -c %Y \"\$f\") )) \$(stat -c %s \"\$f\") \$( [ -f \"\$f.sha256\" ] && echo sum || echo nosum) \$f\"; else echo 'backup none'; fi
 docker compose ps -a --format '{{.Service}} {{.State}} {{.Health}}'" 2>/dev/null)
@@ -74,8 +78,18 @@ else
   else
     pass "last backup $(( age / 3600 )) h ago, $(( size / 1024 )) KB, checksum beside it"
   fi
-  bad=$(printf '%s\n' "$remote" | grep -v '^backup ' | awk 'NF && $1 != "backup" && ($2 != "running" || ($3 != "" && $3 != "healthy")) {print $1" "$2" "$3}' | grep -v '^migrate exited' || true)
-  running=$(printf '%s\n' "$remote" | grep -v '^backup ' | awk '$2 == "running"' | wc -l | tr -d ' ')
+  read -r _ wage wn wfail <<<"$(printf '%s\n' "$remote" | grep '^watch ')"
+  if [[ -z "$wage" || "$wage" == "none" ]]; then
+    fail "the server's own 5-minute watch has no status file" "ssh in: tail /var/log/sprie-core-watch.log"
+  elif (( wage > 15 * 60 )); then
+    fail "the server's own watch last ran $(( wage / 60 )) minutes ago: its cron stopped" "ssh in: crontab -l; tail /var/log/sprie-core-watch.log"
+  elif [[ "$wfail" != "-" ]]; then
+    fail "the server's own watch reports: $wfail" "ssh in: cat /root/sprie-core/status.json"
+  else
+    pass "server watch ran $(( wage / 60 )) min ago, $wn checks, none failing"
+  fi
+  bad=$(printf '%s\n' "$remote" | grep -vE '^(backup|watch) ' | awk 'NF && $1 != "backup" && ($2 != "running" || ($3 != "" && $3 != "healthy")) {print $1" "$2" "$3}' | grep -v '^migrate exited' || true)
+  running=$(printf '%s\n' "$remote" | grep -vE '^(backup|watch) ' | awk '$2 == "running"' | wc -l | tr -d ' ')
   if [[ -z "$bad" && "$running" -ge 5 ]]; then
     pass "$running containers running, all healthy"
   else
