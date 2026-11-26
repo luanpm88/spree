@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+#
+# Is the core business database healthy: from outside, and on the server it runs on.
+#
+#   script/check_core
+#
+# script/health calls it after the shops when it checks the whole estate. It reads
+# CORE_URL and CORE_DIR from .env.commercial (gitignored: it names the host), and does
+# nothing when they are not set.
+#
+#   health     GET $CORE_URL/api/health answers 200 and every part says ok: the
+#              database, Redis and the job queue's heartbeat.
+#   sign-in    The sign-in page answers 200 over HTTPS with HSTS. A healthy API behind
+#              a broken web container still locks everyone out.
+#   backup     The newest backups/sprie-*.dump.gpg on the server is under 26 hours old,
+#              is not empty, and has its .sha256 beside it. The nightly cron runs at
+#              02:30 UTC; a missing night is the fault this catches, because cron
+#              fails silently.
+#   containers Every container of the stack is running, and the ones with a health
+#              check report healthy.
+#
+# Read only. It never restarts or changes anything.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+[[ -f .env.commercial ]] || { echo "  core: no .env.commercial on this machine, not checked"; exit 0; }
+set -a; . ./.env.commercial; set +a
+[[ -n "${CORE_URL:-}" && -n "${CORE_DIR:-}" ]] || { echo "  core: CORE_URL or CORE_DIR not set in .env.commercial, not checked"; exit 0; }
+
+if [[ -t 1 ]]; then GR=$'\033[32m'; RE=$'\033[31m'; R=$'\033[0m'; else GR=''; RE=''; R=''; fi
+FAILS=0
+pass() { printf '    %sok%s    %s\n' "$GR" "$R" "$1"; }
+fail() { printf '    %sFAIL%s  %s\n          run: %s\n' "$RE" "$R" "$1" "$2"; FAILS=$((FAILS+1)); }
+
+# 1. health, from outside
+body=$(curl -s --max-time 20 "$CORE_URL/api/health" || true)
+if printf '%s' "$body" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+bad = [k for k, v in d.get("checks", {}).items() if v.get("status") != "ok"]
+sys.exit(0 if d.get("status") == "ok" and not bad else 1)' 2>/dev/null; then
+  pass "health: database, redis and job queue ok"
+else
+  fail "health is not ok: ${body:0:160}" "curl -s $CORE_URL/api/health"
+fi
+
+# 2. sign-in page over HTTPS, with HSTS
+head=$(curl -s -D - -o /dev/null --max-time 20 "$CORE_URL/sign-in" || true)
+status=$(printf '%s' "$head" | head -1 | awk '{print $2}')
+if [[ "$status" == "200" ]] && printf '%s' "$head" | grep -qi '^strict-transport-security'; then
+  pass "sign-in page 200, HSTS on"
+else
+  fail "sign-in page answered ${status:-nothing}$(printf '%s' "$head" | grep -qi strict-transport || echo ', no HSTS')" "curl -sI $CORE_URL/sign-in"
+fi
+
+# 3 and 4. on the server: last backup and containers
+remote=$(ssh -n -i "${COMMERCIAL_KEY/#\~/$HOME}" -p "${COMMERCIAL_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 \
+  "$COMMERCIAL_USER@$COMMERCIAL_HOST" "cd '$CORE_DIR' 2>/dev/null || exit 3
+f=\$(ls -1t backups/sprie-*.dump.gpg 2>/dev/null | head -1)
+if [ -n \"\$f\" ]; then echo \"backup \$(( \$(date +%s) - \$(stat -c %Y \"\$f\") )) \$(stat -c %s \"\$f\") \$( [ -f \"\$f.sha256\" ] && echo sum || echo nosum) \$f\"; else echo 'backup none'; fi
+docker compose ps -a --format '{{.Service}} {{.State}} {{.Health}}'" 2>/dev/null)
+rc=$?
+if [[ $rc -ne 0 && -z "$remote" ]]; then
+  fail "could not read the server (ssh exit $rc), so the backup and containers are unmeasured" "script/commercial ssh"
+else
+  read -r _ age size sum file <<<"$(printf '%s\n' "$remote" | grep '^backup ')"
+  if [[ "$age" == "none" || -z "$age" ]]; then
+    fail "no backup file in $CORE_DIR/backups" "ssh in, cd $CORE_DIR && scripts/backup.sh"
+  elif (( age > 26 * 3600 )); then
+    fail "newest backup is $(( age / 3600 )) hours old ($file): last night's did not run" "ssh in: tail /var/log/sprie-core-backup.log"
+  elif (( size < 1024 )) || [[ "$sum" != "sum" ]]; then
+    fail "newest backup looks wrong: $size bytes, ${sum/nosum/no .sha256}" "ssh in: ls -la $CORE_DIR/backups"
+  else
+    pass "last backup $(( age / 3600 )) h ago, $(( size / 1024 )) KB, checksum beside it"
+  fi
+  bad=$(printf '%s\n' "$remote" | grep -v '^backup ' | awk 'NF && $1 != "backup" && ($2 != "running" || ($3 != "" && $3 != "healthy")) {print $1" "$2" "$3}' | grep -v '^migrate exited' || true)
+  running=$(printf '%s\n' "$remote" | grep -v '^backup ' | awk '$2 == "running"' | wc -l | tr -d ' ')
+  if [[ -z "$bad" && "$running" -ge 5 ]]; then
+    pass "$running containers running, all healthy"
+  else
+    fail "containers: ${bad:-only $running running}" "ssh in: cd $CORE_DIR && docker compose ps -a"
+  fi
+fi
+
+exit $(( FAILS > 0 ? 1 : 0 ))

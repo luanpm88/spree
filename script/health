@@ -368,6 +368,19 @@ for row in "${ROWS[@]}"; do
   fi
 done
 
+# ── the core business database, when the whole estate is checked ────────────
+# It runs on the commercial server, not in .estate, so it is its own section.
+if [[ -z "$ONLY" && -x script/check_core ]]; then
+  printf '\n%s==>%s %score database%s\n' "$CY" "$R" "$B" "$R"
+  core_out=$(script/check_core 2>&1); core_rc=$?
+  printf '%s\n' "$core_out"
+  if [[ $core_rc -ne 0 ]]; then
+    FAILS=$((FAILS + $(printf '%s' "$core_out" | grep -c 'FAIL')))
+    REMEDIES="$REMEDIES
+  script/check_core   (each FAIL line above names its own command)"
+  fi
+fi
+
 printf '\n'
 mkdir -p tmp/health
 if [[ $FAILS -gt 0 ]]; then
